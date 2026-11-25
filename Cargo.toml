@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+# The engine-free simulation (incentive-core), the command-line runner
+# (incentive-cli) and the game app (incentive-app, the
+# symbios-incentive-lab binary): every crate under crates/.
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/TheJanusStream/symbios-incentive-lab"
+# A lab, not a library release: nothing here goes to crates.io by accident.
+publish = false
+
+[workspace.dependencies]
+# rand and rand_pcg stay on 0.9 because symbios-genetics takes rand 0.9 RNGs,
+# as in symbios-robot-lab; rand_distr 0.5 is the release built on rand 0.9.
+# Default features off: rand's defaults pull getrandom (os_rng, thread_rng),
+# which fails on wasm32-unknown-unknown, and the simulation only ever uses
+# seeded rand_pcg generators.
+rand = { version = "0.9", default-features = false }
+rand_pcg = "0.9"
+rand_distr = { version = "0.5", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+rayon = "1.12"
+
+# The simulation runs thousands of agent-days per frame in the app and whole
+# runs per test, so the lab's own code builds at opt-level 1 for quick
+# iteration and every dependency at 3, as in symbios-robot-lab.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The browser bundle's profile (deploy.yml builds the app with it): size over
+# speed, symbols stripped, as in symbios-robot-lab. Thin LTO, not fat: fat LTO
+# merges the whole program into one LLVM module, which outgrew the GitHub
+# runner's memory for Overlands on the same engine.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

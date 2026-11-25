@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+/.claude
+/.chainlink
+# Hook-created .chainlink caches inside workspace member crates.
+**/.chainlink/
+Cargo.lock
+CHANGELOG.md
+.mcp.json
+/exports

@@ -1,0 +1,26 @@
+[package]
+name = "incentive-cli"
+description = "Command-line runner for the incentive lab: batch runs, comparisons, sweeps, scenarios and fact checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "incentive"
+path = "src/main.rs"
+
+[dependencies]
+incentive-core = { path = "../incentive-core" }
+clap = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The searches of `incentive explore` (MAP-Elites, NSGA-II and a generational
+# GA). A dependency of the runner only: the core and the app must not pull it
+# in, so the browser bundle stays small. It takes rand 0.9 generators, which
+# is why the workspace stays on rand 0.9.
+symbios-genetics = "0.2.3"
+rand = { workspace = true }
+rand_pcg = { workspace = true }

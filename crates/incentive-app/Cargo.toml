@@ -1,0 +1,80 @@
+[package]
+name = "symbios-incentive-lab"
+description = "The incentive lab's game app: design a social platform and watch engagement, harm and benefit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The library holds the lab's state, logic and egui views and never touches
+# Bevy, so its tests run headless and link quickly; the binary is the thin
+# Bevy layer around it.
+[lib]
+name = "symbios_incentive_lab"
+path = "src/lib.rs"
+
+[[bin]]
+name = "symbios-incentive-lab"
+path = "src/main.rs"
+# The binary has no tests of its own; skipping its harness saves a link of
+# the whole engine on every `cargo test`.
+test = false
+
+[dependencies]
+incentive-core = { path = "../incentive-core" }
+# Only the parts of Bevy an egui-only app uses: the app frame, windowing and
+# input, and the renderer with the core pipeline that draws egui's camera. No
+# PBR, lights, meshes of its own, audio, glTF, Bevy UI, text, gizmos,
+# picking, image formats or tonemapping LUTs: every feature left on is code
+# in the browser bundle.
+bevy = { version = "0.20", default-features = false, features = [
+    # The app frame.
+    "async_executor",
+    "bevy_asset",
+    "bevy_log",
+    "std",
+    "multi_threaded",
+    # Windowing and input, native and web.
+    "bevy_winit",
+    "bevy_window",
+    "webgl2",
+    "x11",
+    "wayland",
+    "keyboard",
+    "mouse",
+    # Rendering: the 2D camera egui draws on.
+    "bevy_render",
+    "bevy_extract",
+    "bevy_core_pipeline",
+    "bevy_camera",
+    "bevy_mesh",
+    "bevy_image",
+    "bevy_shader",
+    "bevy_color",
+] }
+# 0.43.1 is the floor: 0.43.0 broke egui's shader on wasm. No default
+# features (they add Bevy UI, URL opening and picking) but the clipboard, so
+# a configuration can be copied out as JSON for `incentive run --config`.
+bevy_egui = { version = "0.43.1", default-features = false, features = [
+    "default_fonts",
+    "manage_clipboard",
+    "render",
+] }
+# The same egui bevy_egui 0.43 builds on, named directly so the library's
+# views and their headless tests need no engine.
+egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+# 0.37 is the release built on egui 0.36 (0.38 moved to egui 0.37).
+egui_plot = "0.37"
+serde_json = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `default-features = false` here too: Cargo unions every declaration of a
+# dependency, and one that leaves the defaults on turns them all back on.
+# PNG encoding for `--screenshot`, which exists only natively.
+bevy = { version = "0.20", default-features = false, features = ["png"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Pinned exactly: the deploy's wasm-bindgen-cli must be this same version, and
+# with no committed lockfile an open requirement drifts past the CLI.
+wasm-bindgen = "=0.2.128"

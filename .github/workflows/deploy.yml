@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Reads the pinned version and the wasm32 target from rust-toolchain.toml.
+      - name: Install Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          cache: false
+
+      # Must equal the `wasm-bindgen = "=X"` pin in crates/incentive-app/Cargo.toml:
+      # a CLI whose version differs from the crate's refuses the module.
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.128
+
+      # The size-tuned profile (the workspace Cargo.toml) and the app only.
+      - name: Build WASM
+        run: cargo build -p symbios-incentive-lab --profile wasm-release --target wasm32-unknown-unknown
+
+      - name: Generate JS Bindings
+        run: |
+          wasm-bindgen --out-dir ./dist --target web \
+            --out-name symbios-incentive-lab \
+            --no-typescript \
+            target/wasm32-unknown-unknown/wasm-release/symbios-incentive-lab.wasm
+
+      # No wasm-opt step, as in symbios-robot-lab: Rust 1.98 emits post-MVP
+      # instructions Binaryen refuses unless told each feature, and told them,
+      # every level made the compressed download bigger there (measured
+      # 2026-11-20). Pages serves the module compressed, so it ships as built.
+
+      - name: Assemble Site
+        run: |
+          cp index.html ./dist/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "./dist"
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
