@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  # Builds the browser bundle and uploads it as the run's "github-pages"
+  # artifact.
+  build:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -61,6 +63,21 @@ jobs:
         with:
           path: "./dist"
 
+  # Deploys from its own job, the shape of deploy-pages' README and GitHub's
+  # starter workflows. In one job, deploy-pages lists the run's artifacts a
+  # fraction of a second after the upload finalizes, and that listing can come
+  # back empty: the first deploy here failed that way on 2026-11-25
+  # (actions/deploy-pages#451). Re-running such a job cannot recover the run:
+  # it uploads a second "github-pages" artifact, and the lookup then refuses
+  # both (actions/deploy-pages#338). Here "Re-run failed jobs" re-runs only
+  # this job, against the build's one artifact.
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
