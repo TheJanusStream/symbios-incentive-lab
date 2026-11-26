@@ -2,7 +2,9 @@
 //! section 9).
 //!
 //! Missing values are `f32::NAN`: survey satisfaction exists only on survey
-//! days and 30-day retention only from day 30. [`DailyMetrics::get_opt`]
+//! days, 30-day retention only from day 30, and the deactivation effect and
+//! the break group's change only on the last day of a run with that
+//! experiment. [`DailyMetrics::get_opt`]
 //! turns them into `None`, summaries average only the days that have a value,
 //! and JSON writes them as `null`.
 
@@ -116,10 +118,13 @@ metrics! {
     BotEngagementShare, "bot_engagement_share", "Bot engagement", Share, Harm, Truth, "Share of reported engagement that came from bots.";
     BotFlagShare, "bot_flag_share", "Bot reports and marks", Share, Harm, Truth, "Share of reports and see-less marks that brigading bots filed.";
     ReflectivePerImpression, "reflective_per_impression", "Value per impression", Decimal, Participants, Truth, "Mean reflective value of what people were shown.";
+    LowValueTime, "low_value_time", "Time not worth it", Share, Participants, Truth, "Share of time spent on items worth less, on reflection, than the time they took.";
     WellbeingUsers, "wellbeing_users", "Wellbeing of users", Score, Participants, Truth, "Mean wellbeing of current users.";
     WellbeingEverUsers, "wellbeing_ever_users", "Wellbeing of all who used it", Score, Participants, Truth, "Mean wellbeing of current and former users, free of survivorship bias.";
     MeaningfulPerUser, "meaningful_per_user", "Meaningful interactions", Decimal, Participants, Truth, "Likes and friendly replies between mutual follows on personal posts, per user.";
     VulnerableLeftShare, "vulnerable_left_share", "Vulnerable who left", Share, Participants, Truth, "Share of vulnerable people who used the platform and left.";
+    DeactivationEffect, "deactivation_effect", "Deactivation effect", Decimal, Participants, Truth, "Wellbeing gain of a deactivation experiment's break group over the users who stayed, in standard deviations; only on the last day of a run that sets one up.";
+    BreakChange, "break_change", "Break group's change", Decimal, Participants, Truth, "Wellbeing change of a deactivation experiment's break group, in standard deviations; compared between a run and its placebo, it is the break's effect; only on the last day of a run that sets one up.";
     PolarisationUsers, "polarisation_users", "Polarisation of users", Score, Participants, Truth, "Mean affective polarisation of users.";
     InformednessUsers, "informedness_users", "Informedness of users", Score, Participants, Truth, "Mean informedness of users.";
     PolarisationNonUsers, "polarisation_non_users", "Polarisation of non-users", Score, NonUsers, Truth, "Mean affective polarisation of non-users.";
@@ -203,6 +208,14 @@ impl MetricId {
     /// Looks a metric up by its key.
     pub fn from_key(key: &str) -> Option<MetricId> {
         INFOS.iter().find(|i| i.key == key).map(|i| i.id)
+    }
+
+    /// Whether the metric exists only in a run that sets up an experiment
+    /// (the deactivation experiment's effect and its break group's change):
+    /// it has no value in an ordinary run, so metric pickers and default
+    /// tables leave it out.
+    pub fn needs_experiment(self) -> bool {
+        matches!(self, MetricId::DeactivationEffect | MetricId::BreakChange)
     }
 
     /// The post-share metric of a style.

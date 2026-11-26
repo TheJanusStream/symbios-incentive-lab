@@ -3,6 +3,7 @@
 
 use crate::config::Config;
 use crate::content::Style;
+use crate::experiment;
 use crate::metrics::{DailyMetrics, MetricId as M, nan_mean};
 use crate::population::{ARCHETYPE_COUNT, Archetype};
 use crate::rng::{self, Stream};
@@ -94,6 +95,9 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
         M::ReflectivePerImpression,
         ratio(t.reflective_sum, impressions),
     );
+    m.set(M::LowValueTime, ratio(t.low_value_dwell, t.dwell));
+    m.set(M::DeactivationEffect, experiment::effect(world, ctx));
+    m.set(M::BreakChange, experiment::break_change(world, ctx));
     m.set(M::TopToxicShare, t.top_toxic_share);
     m.set(M::TopTruthfulShare, t.top_truthful_share);
     m.set(
@@ -415,6 +419,21 @@ fn harm_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_value_time_is_a_share_of_dwell() {
+        let mut config = Config::default();
+        config.run.population_size = 100;
+        let mut world = crate::init::build_world(&config);
+        let ctx = DayCtx {
+            config: &config,
+            day: 3,
+        };
+        assert_eq!(measure(&world, &ctx).get(M::LowValueTime), 0.0, "no time");
+        world.tally.dwell = 8.0;
+        world.tally.low_value_dwell = 2.0;
+        assert_eq!(measure(&world, &ctx).get(M::LowValueTime), 0.25);
+    }
 
     #[test]
     fn wrongful_sanctions_raise_the_harm_index() {

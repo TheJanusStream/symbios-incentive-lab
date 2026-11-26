@@ -1,6 +1,6 @@
 //! A run is a pure function of its configuration (docs/model.md, section 12).
 
-use incentive_core::{Config, DailyMetrics, MetricId, Simulation};
+use incentive_core::{Config, DailyMetrics, Deactivation, MetricId, Simulation};
 
 fn small(seed: u64) -> Config {
     let mut config = Config::default();
@@ -129,4 +129,56 @@ fn identical_design_changes_give_identical_runs() {
         plain[10].get(MetricId::Impressions).to_bits(),
         a.history()[10].get(MetricId::Impressions).to_bits()
     );
+}
+
+#[test]
+fn a_deactivation_experiment_changes_nothing_before_it_starts() {
+    let mut with = small(3);
+    with.run.days = 40;
+    with.run.deactivation = Some(Deactivation {
+        days: 10,
+        share: 0.5,
+        placebo: false,
+    });
+    let mut without = with.clone();
+    without.run.deactivation = None;
+    let (a, b) = (run(with), run(without));
+    // The experiment draws on its own stream from its first day on, so the
+    // thirty days before it are bit for bit those of a run without it.
+    assert_identical(&a[..30], &b[..30]);
+    assert_ne!(
+        a[35].get(MetricId::HumanDailyActives),
+        b[35].get(MetricId::HumanDailyActives),
+        "the break keeps people away"
+    );
+}
+
+#[test]
+fn a_placebo_experiment_changes_nothing_but_its_own_metrics() {
+    let mut placebo = small(3);
+    placebo.run.days = 40;
+    placebo.run.deactivation = Some(Deactivation {
+        days: 10,
+        share: 0.5,
+        placebo: true,
+    });
+    let mut without = placebo.clone();
+    without.run.deactivation = None;
+    let (a, b) = (run(placebo), run(without));
+    // Nobody takes the break, and the assignment draws on its own stream,
+    // so every other metric is bit for bit that of a run without it.
+    for (da, db) in a.iter().zip(&b) {
+        for id in MetricId::all().filter(|id| !id.needs_experiment()) {
+            assert_eq!(
+                da.get(id).to_bits(),
+                db.get(id).to_bits(),
+                "day {} metric {} differs",
+                da.day,
+                id.info().key
+            );
+        }
+    }
+    let last = a.last().expect("days");
+    assert!(last.get(MetricId::BreakChange).is_finite());
+    assert!(last.get(MetricId::DeactivationEffect).is_finite());
 }

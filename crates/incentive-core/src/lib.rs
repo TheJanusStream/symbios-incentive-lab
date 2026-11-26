@@ -26,6 +26,7 @@ mod config_path;
 mod content;
 mod economy;
 mod error;
+mod experiment;
 mod facts;
 mod init;
 mod inspector;
@@ -55,8 +56,9 @@ pub use atlas::{
     MapCell, MapGrid, ParetoAtlas, inert_levers,
 };
 pub use config::{
-    AltFeed, ArchetypeShares, BotStrategy, Config, DesignLevers, ModerationAction, PayoutScheme,
-    PopulationSettings, RunSettings, Sanctions, WorldAssumptions,
+    AltFeed, ArchetypeShares, BotStrategy, Config, DEACTIVATION_DAYS, DEACTIVATION_SHARE,
+    Deactivation, DesignLevers, ModerationAction, PayoutScheme, PopulationSettings, RunSettings,
+    Sanctions, WorldAssumptions,
 };
 pub use config_path::FieldValue;
 pub use content::{Group, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS};

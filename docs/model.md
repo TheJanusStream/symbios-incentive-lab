@@ -1,4 +1,4 @@
-# The incentive lab model (v0.2)
+# The incentive lab model (v0.3)
 
 This document specifies the simulation in `incentive-core`. It is the contract between the model and everything built
 on it: the command-line runner, the game app and the exploration tools. Values marked *calibrate* are starting
@@ -206,7 +206,8 @@ A post is a feed candidate for `run.post_lifetime_days` (default 3) days.
 ## 5. A simulated day
 
 The phases run in this order, and within a phase in ascending individual index, so a run is a pure function of its
-configuration (section 12):
+configuration (section 12). Before them, on the first day of a deactivation experiment (13.2), the experiment finds
+the regular users and draws its break group.
 
 1. Bots: replace banned bots (3.5).
 2. Joining: non-users may join, churned users may return (7.4).
@@ -418,7 +419,7 @@ Mullainathan and Raghavan (2023): engagement measures the impulsive self, while 
 
 ### 7.2 Experience
 
-Each impression adds to two daily sums.
+Each impression adds to two daily sums and to the day's time cost.
 
 - Impulsive pleasure `E_imp += A * (1 if liked else 0.5)`.
 - Reflective utility `E_ref += R - world.ad_annoyance * ads_share` (default `ad_annoyance` 0.02), and -0.3 more if `v`
@@ -428,6 +429,10 @@ Each impression adds to two daily sums.
 - Social comparison: with visible like counts, a post by a non-Creator with more likes than the viewer's own typical
   count subtracts `world.comparison_cost * vulnerability * min(1, ln(1 + likes) / ln(1000))` (default 0.1).
 - Regret: each item beyond `time_budget` subtracts `world.regret_cost` (default 0.05).
+- Time cost: every impression costs `world.time_cost * D`, where `D` is its dwell (7.1, the quantity time spent
+  sums), default `time_cost` 0.115 (calibrated in 13.2). It is what the time could have given people if spent on
+  something else, the same for everyone. The time cost is kept in its own daily sum `C`, apart from `E_ref`; an item
+  is worth its time when `R > time_cost * D`.
 - Belief: a post with `truth < 0.5` is believed with probability `credulity * world.credulity_scale` (0.3 times that
   if noted; default `credulity_scale` 1.0) and lowers `informedness` by `0.05 * (0.5 - truth)`. An Informative post
   with `truth > 0.7` raises it by `0.01 * quality * min(m, 2) / 2`.
@@ -446,13 +451,17 @@ for income received that day.
 
 ### 7.3 Wellbeing, habit and stay utility
 
+Wellbeing and stay utility read the day's reflective utility net of the time cost, `E_net = E_ref - C` (7.2). The
+subscription decision (8.3) reads `E_ref`, the value before the time cost (13.2 gives the reason), and fan funding
+reads each post's `R`.
+
 Once a day, for every user:
 
-- `wellbeing += 0.05 * tanh(E_ref / 5) + 0.02 * (wb0 - wellbeing)`, clamped to `[0, 1]`. On a day without a session
+- `wellbeing += 0.05 * tanh(E_net / 5) + 0.02 * (wb0 - wellbeing)`, clamped to `[0, 1]`. On a day without a session
   only the second term applies.
 - `habit += world.habit_gain * (1 + 0.5 * notification_intensity) * tanh(E_imp / 5) - 0.05 * habit`, clamped
   (default `habit_gain` 0.08). Without a session only the decay applies.
-- Stay utility `U = 0.4 * tanh(E_imp / 5) + 0.6 * tanh(E_ref / 5) + 0.3 * min(1, active mutual follows / 10) +
+- Stay utility `U = 0.4 * tanh(E_imp / 5) + 0.6 * tanh(E_net / 5) + 0.3 * min(1, active mutual follows / 10) +
   0.5 * habit - 0.5 * harassment events today`, and `stay_ema = 0.9 * stay_ema + 0.1 * U` on active days.
 - Recent pleasure: `pleasure += 0.2 * (felt - pleasure)`, where `felt` is the habit term's `tanh(E_imp / 5)` (13.1
   records the scale the code uses) on a day with a session and 0 otherwise. It is a smoothed, squashed daily
@@ -509,7 +518,7 @@ harassed; the harassment exit term and the reputation term are the model's versi
   `world.polish_cost` (default 0.03) included. Polish pays only when the ranking or the payouts read `Q_hat`, and
   under a quality ranking it pays less the more others polish, because reach is a contest for rank. At the defaults
   (8 seeds, 13.3) the polished share of human posts is 0.07 in the week before day 90 and 0.12 over the last 110
-  days of a year under the Engagement ranking, and 0.27 over those days under Quality and bridging. Adaptive bots
+  days of a year under the Engagement ranking, and 0.28 over those days under Quality and bridging. Adaptive bots
   polish by rule, not by learning (3.5).
 - Imitation: with daily probability `world.imitation_rate` (default 0.02) a user picks a random followed account with
   a higher `reward_ema` and moves its style values 20% of the way toward that account's.
@@ -614,7 +623,15 @@ per metric and the list of `moving` metrics, and the runner's tables mark moving
   that brigading bots filed (3.5).
 - Participants: mean wellbeing of current users; mean wellbeing of everyone who ever used the platform (current and
   former users, which removes survivorship bias); wellbeing by archetype; meaningful interactions per user (positive
-  replies and likes between mutual follows on Personal posts); the share of Vulnerable individuals who left.
+  replies and likes between mutual follows on Personal posts); the share of Vulnerable individuals who left; time not
+  worth it (`low_value_time`): dwell on impressions whose reflective value is below their time cost,
+  `R < time_cost * D`, divided by all dwell (at `time_cost` 0, the share of time on items with negative `R`).
+- Experiment: the deactivation effect (`deactivation_effect`), the mean wellbeing change of a deactivation
+  experiment's break group minus that of its stayers, and the break group's change (`break_change`), the mean
+  wellbeing change of everyone assigned to the break, both in standard deviations of the participants' wellbeing at
+  the start (13.2). Compared between a run and its placebo, the break group's change gives the break's effect, fact
+  6's measure. Both exist only on the last day of a run that sets the experiment up, so the app's metric pickers and
+  the runner's default tables leave them out.
 - Non-users: mean affective polarisation and informedness of non-users, and the same for users.
 - Public discourse: toxic and truthful shares among the day's top 5% most-viewed posts; positive cross-group likes per
   impression; society-wide affective polarisation.
@@ -676,6 +693,7 @@ a conclusion survives a different world.
 | --- | --- | --- |
 | `outrage_appeal`, `arousal_appeal`, `social_proof` | 1.2, 1.0, 0.3 | 0-3, 0-2, 0-1 |
 | `harassment_harm`, `comparison_cost`, `regret_cost` | 3.0, 0.1, 0.05 | 0-6, 0-0.5, 0-0.2 |
+| `time_cost` (7.2) | 0.115 | 0-0.4 |
 | `wrongful_sanction_cost` | 0.5 | 0-2 |
 | `learning_rate`, `imitation_rate`, `choice_temperature` | 0.1, 0.02, 0.25 | 0-0.5, 0-0.1, 0.05-1 |
 | `evasion_rate`, `evasion_decay`, `evasion_cost` | 0.15, 0.01, 0.3 | 0-0.5, 0-0.1, 0-1 |
@@ -699,7 +717,8 @@ a conclusion survives a different world.
 
 Run settings (`run`): `seed`, `days` (default 365), `population_size` (default 2,000 natively, 1,000 in the browser),
 `initial_user_share` (0.6), `post_lifetime_days` (3), `candidate_cap` (80), `offline_ties` (8), `initial_follows`
-(30), `summary_window` (0.3), `tracked_agents` (default 10, two per archetype, for the inspector).
+(30), `summary_window` (0.3), `tracked_agents` (default 10, two per archetype, for the inspector), `deactivation`
+(default none; when set, `days` 35, `share` 0.1 and `placebo` false unless given: a deactivation experiment, 13.2).
 
 ## 12. Determinism
 
@@ -710,8 +729,8 @@ Run settings (`run`): `seed`, `days` (default 365), `population_size` (default 2
 - Randomness comes from counter-based streams: each draw site seeds a `rand_pcg` generator from
   `(seed, day, entity, stream)` mixed with SplitMix64, where `stream` names the purpose (population, archetype race,
   posting, post draws, feed, engagement, moderation, economy, social, spillover, survey, bots, bot boosts,
-  brigade). Two runs that differ in one lever therefore share every draw the lever does not touch, which sharpens
-  side-by-side comparisons (common random numbers).
+  brigade, experiment). Two runs that differ in one lever therefore share every draw the lever does not touch,
+  which sharpens side-by-side comparisons (common random numbers).
 - Per-post draws are keyed on the post's author and the author's own post ordinal (`posts_written` before the
   post), never on the global post id: the post's style, polish, topic, content noise and Attack target (stream post
   draws, day 0), and the classifier, harassment-delivery and community-note draws (their streams, on the day they
@@ -722,6 +741,13 @@ Run settings (`run`): `seed`, `days` (default 365), `population_size` (default 2
   the bot account and the kind of action (report or see-less mark), so switching reports or marks off, or
   brigading altogether, leaves the boosts and the other kind's draws unchanged. The adaptive tactic split and bot
   polish are rules, not draws: polish adds no draw to a post's stream.
+- The deactivation experiment (13.2) assigns its participants on its own stream, keyed on the person and the
+  experiment's first day, and draws only on that day. People on the break skip their opening and churn draws, which
+  are keyed on them alone, and Attacks aimed at them skip their delivery draw, which is keyed on the Attack post, so
+  no other draw shifts. A run without the experiment makes exactly the draws it made before the
+  experiment existed, and a run with it shares every draw with that run up to the experiment's first day. A placebo
+  run makes the same assignment draws but keeps nobody off, so it matches the run without the experiment in every
+  metric but the experiment's own.
 - No iteration over hash maps influences results. Phases visit individuals in ascending index.
 
 ## 13. Calibration record
@@ -824,6 +850,58 @@ Additions the text does not have, each kept as small as possible:
   empty slot refills after at least 3 days. Bots have no evasion, can be followed, and can be paid. Fan funding pays
   any author whose post gave positive `R`.
 - Subscriptions: on day 0 there is no history, so the mean daily `E_ref` is taken to equal the hurdle.
+- Subscriptions read the day's reflective utility before the time cost (`E_ref`, 7.3), while wellbeing and stay
+  utility read it after. Uptake is not calibrated (section 16, revenue scales), and pricing it on the net value
+  would move revenue by an amount nobody has measured. Fan funding reads each post's `R`, also before the time cost.
+- The deactivation experiment (`run.deactivation`, fact 6 of section 15) is a researcher's intervention, kept on the
+  truth side: nothing the platform reads depends on it, though the platform sees its consequence, fewer opens. It
+  starts `days` days before the end of the run (default 35) and lasts to the end. At the start of its first day the
+  eligible people are the users who opened the app on at least 4 of the previous 7 days; each joins the break group
+  with probability `share` (default 0.1), drawn on its own stream (section 12), and the rest are the stayers. People
+  on the break do not open the app, so they neither post nor read; they receive no Attacks; and they do not churn,
+  because they are paid participants, as in the field. Everything else follows the usual rules: wellbeing recovers
+  toward its baseline on days without a session and habit decays. In a placebo run (`placebo` true) the eligible
+  people are found and the break group drawn in the same way, with the same draws, but nobody goes on the break. Two
+  measures read the experiment on the run's last day, both divided by the standard deviation of wellbeing over all
+  participants at the start of the first day; a change is the wellbeing at the end of the run's last day minus that
+  at the start of the first.
+- The field's design (`deactivation_effect`): the mean wellbeing change of the break group minus that of the
+  stayers, in one run. Participants who left during the experiment are left out, because their wellbeing froze when
+  they left; only stayers leave. It is NaN when a group is empty, as at share 1. Under the integrity preset at
+  the default `time_cost` (0.115, 8 seeds, full size) the experiment has 5,641 participants, 705 a seed and 61% of
+  the users on its first day, of whom 552 (9.8%) take the break; 264 of the 5,089 stayers (5.2%) leave before the
+  end, and the standard deviation of the participants' starting wellbeing is 0.153 (0.145 to 0.160 across seeds), so
+  the field design's effect there, 0.074, is about 0.011 of wellbeing. Under the Engagement ranking 4,992 take part
+  (67% of the users), 319 of the 4,486 stayers (7.1%) leave, and the standard deviation is 0.172. With about 70
+  people a seed on the break, and people's distance from their wellbeing baseline varying widely, the per-seed effects
+  scatter by 0.082 standard deviations (0.080 at 0.105), so the 95% interval at 8 seeds is about ± 0.068. A larger
+  share inside one run would empty the stayers' feeds. The field compared six weeks off with one week off; the model
+  compares five weeks off with staying on.
+- The paired design (`break_change`, fact 6), which only a simulation can run: a run with the experiment at share 1,
+  every regular user on the break, and its placebo on the same seed are identical up to the first day and assign the
+  same people, so the difference of their `break_change` compares the same people with and without the break, and who
+  happens to be in the break group no longer adds noise. `break_change` is the mean change of everyone assigned to the
+  break; members who leave count with their wellbeing frozen, which happens only in the placebo. Freezing is a
+  simplification (7.3 updates users only): the field kept surveying control participants who quit, and their
+  wellbeing kept moving. The breakdown at the end of this item puts its weight, with any spillover, at about 0.015
+  standard deviations, a quarter of the target or about 0.005 of `time_cost`. Under the integrity preset at the
+  default `time_cost` (0.115, 8 seeds, full size) the paired effect is 0.054 ± 0.048 (standard deviation of the
+  per-seed effect), against 0.074 ± 0.082 for the field's design on the same
+  seeds; across the grid below the paired spread lies between 0.048 and 0.075 up to `time_cost` 0.225 (0.084 at 0.25,
+  0.130 at 0.3). The spread that remains comes from the real run, not the placebo: the break group's change is
+  0.017 ± 0.051 in the real run and -0.037 ± 0.008 in the placebo. On the break, wellbeing closes 51% of its gap to the
+  baseline in 35 days (7.3: one minus 0.98 to the 35th power), so the real run's change measures how far the year on the
+  platform moved the group from its baseline, and that differs between seeds, which draw different populations and
+  platforms; on the platform, wellbeing stays near where the year left it. More seeds narrow it; no design within a run
+  can. The field's design gives larger effects than the paired one on the same seeds at every value of the grid: by
+  0.025 at `time_cost` 0, by 0.017 to 0.041 at each step from 0.085 to 0.13, and by 0.043, 0.055 and 0.080 at 0.15,
+  0.2 and 0.3. At the default the gap of 0.020 splits three ways (a real run and its placebo at share 0.1, 8 seeds).
+  About +0.011 comes from which tenth of the regular users is drawn: the paired effect is 0.064 at share 0.1 against
+  0.054 at share 1, and since the assignment draws are keyed on the person and the first day, nearly the same people
+  are drawn at every `time_cost`, so the shift repeats along the grid. About -0.005 is imbalance between the groups
+  (the placebo's `deactivation_effect`). About +0.015 comes from how the designs count leavers, which the field's
+  design drops and the paired one counts with their wellbeing frozen, together with any spillover onto the stayers;
+  these measures cannot separate the two. That part should grow with churn, as the gap grows with `time_cost`.
 - Wellbeing of former users stays where it was when they left (7.3 updates users only).
 - A banned person may return after a wait drawn uniformly from 7 to 30 days. Review capacity below one review is a
   chance of one review.
@@ -857,7 +935,7 @@ The new world assumptions kept at the builders' starting values, with the reason
   documented further circumvention; evasion that a removal teaches quickly and that fades with a half-life of about
   70 days matches that pace. Coded toxicity reaches fewer people, so a fully evading post gives up 30% of its arousal
   and outrage (judgement). With fading and retraining, evasion now matters little: a threshold of 0.3 cuts toxic
-  impressions by 94% at `evasion_rate` 0.15, 98% at 0.05 and 94% without retraining (13.3).
+  impressions by 94% at `evasion_rate` 0.15, 98% at 0.05 and 95% without retraining (13.3).
 - `deterrence` 0.5: a ban adds two removals' worth of penalty to the reward of the post
   that drew it. Nagin (2013) concludes that the
   certainty of sanctions deters more than their severity, so the severity term stays smaller than the removal
@@ -876,10 +954,79 @@ The new world assumptions kept at the builders' starting values, with the reason
   pleasure and habit. Schwarz and Clore (1983) showed that momentary mood colours reports of life satisfaction.
   Judgement for the sizes.
 - `bot_strategy` adaptive and `bot_brigading` 1: farms aim at what the design rewards; three reports and marks per bot
-  a day keep brigade reports a quarter of all reports and marks under the Engagement ranking. Judgement.
+  a day keep brigade reports between a quarter and a third of all reports and marks under the Engagement ranking
+  (29%, 13.3). Judgement.
 - `polarisation_backfire` 0: Bail et al. (2018) found backfire among Republicans, but Nyhan et al. (2023) found that
   reducing exposure to like-minded sources on Facebook for three months changed no measured attitude; the default
-  leaves contact as the only effect of calm out-group posts. Not measured at other values in this round.
+  leaves contact as the only effect of calm out-group posts. Not measured at other values.
+- `time_cost` (7.2), calibrated by a rule: the default is the value at which fact 6's effect (section 15) at full size
+  (`N = 2,000`, 365 days, seeds 1 to 8, `incentive facts --fact deactivation`) lies closest to 0.060 standard
+  deviations, the Facebook estimate of Allcott, Gentzkow, Wittenbrink et al. (2025), on a grid of 0.005. The target,
+  the integrity preset as the design that has to match it, "closest" and the grid's step were fixed before any value
+  was tried. The search range, 0.06 to 0.14, was set for the paired design, after the field's design had covered 0,
+  0.05, each step from 0.085 to 0.13, and 0.15, 0.2 and 0.3. The rule first ran on the field's design (above), which
+  gave 0.105 (effect 0.071, against
+  0.040 at 0.095, 0.032 at 0.1, 0.081 at 0.11 and 0.074 at 0.115) but could not pin the value: its interval at 8 seeds
+  is about ± 0.067, wider than the whole span of its effects from 0.095 to 0.115. The paired design replaced it for
+  calibration, and fact 6 uses it. On the paired design the rule gives 0.115 (effect 0.054, 0.013 to 0.094), against
+  0.053 at 0.11 and 0.076 at 0.12; the field's design gives 0.074 (0.006 to 0.142) at 0.115 on the same seeds. The
+  paired interval still reaches below the band's lower bound of 0.02, so fact 6 stays undecided at 8 seeds (13.4). The
+  choice between 0.11 and 0.115 is a tie (0.0533 against 0.0536). The paired effects from 0.06 to 0.14 under the
+  integrity preset, 8-seed mean ± the standard deviation of the per-seed effect:
+
+| `time_cost` | 0.06 | 0.065 | 0.07 | 0.075 | 0.08 | 0.085 | 0.09 | 0.095 | 0.1 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Effect (SD) | -0.091 | -0.075 | -0.072 | -0.048 | -0.037 | -0.022 | -0.011 | 0.020 | 0.009 |
+| ± | 0.072 | 0.062 | 0.069 | 0.059 | 0.065 | 0.075 | 0.056 | 0.057 | 0.061 |
+
+| `time_cost` | 0.105 | 0.11 | **0.115** | 0.12 | 0.125 | 0.13 | 0.135 | 0.14 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Effect (SD) | 0.034 | 0.053 | 0.054 | 0.076 | 0.106 | 0.097 | 0.118 | 0.131 |
+| ± | 0.055 | 0.058 | 0.048 | 0.065 | 0.058 | 0.058 | 0.073 | 0.065 |
+
+The paired grid rises by about 0.028 standard deviations per 0.01 of `time_cost` and turns down only twice, by 0.011
+and 0.009: its values share seeds, so the seeds' noise moves them together. The 8-seed mean has a standard error of
+about 0.02, so the rule fixes `time_cost` to within about 0.007 (one standard error); the 95% intervals of every
+value from 0.095 to 0.135 contain 0.060, except at 0.1, where the interval ends just short of it (at 0.05996).
+
+The grid behind `time_cost`, at full size (`N = 2,000`, 365 days, seeds 1 to 8). The effect is fact 6's paired
+effect, from a run with the experiment (35 days, share 1) and its placebo on each seed: 8-seed mean ± the standard
+deviation of the per-seed effect, with the 95% t-interval of the per-seed effects. The other columns are 8-seed means
+over the summary window (the last 110 days) of the same design without the experiment, which a placebo run matches
+(section 12): the wellbeing of current users and of everyone who ever used the platform, the user share, the
+engagement and benefit indices, and time not worth it (`low_value_time`, 9.2).
+
+Under the integrity preset (fact 6's design):
+
+| `time_cost` | Effect (SD) | 95% interval | Wellbeing | Ever-users | User share | Engagement | Benefit | Not worth it |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | -0.267 ± 0.067 | -0.323 to -0.212 | 0.675 | 0.673 | 0.705 | 0.218 | 0.455 | 0.319 |
+| 0.05 | -0.107 ± 0.060 | -0.157 to -0.057 | 0.646 | 0.645 | 0.665 | 0.208 | 0.446 | 0.347 |
+| 0.1 | 0.009 ± 0.061 | -0.041 to 0.060 | 0.618 | 0.618 | 0.608 | 0.190 | 0.445 | 0.382 |
+| **0.115** | 0.054 ± 0.048 | 0.013 to 0.094 | 0.609 | 0.610 | 0.586 | 0.184 | 0.443 | 0.395 |
+| 0.15 | 0.165 ± 0.053 | 0.120 to 0.209 | 0.584 | 0.588 | 0.523 | 0.167 | 0.436 | 0.450 |
+| 0.2 | 0.287 ± 0.054 | 0.242 to 0.333 | 0.553 | 0.562 | 0.428 | 0.138 | 0.432 | 0.509 |
+| 0.3 | 0.656 ± 0.130 | 0.547 to 0.765 | 0.460 | 0.511 | 0.201 | 0.074 | 0.404 | 0.755 |
+
+Under the Engagement ranking (`engagement-maximiser`, the default design):
+
+| `time_cost` | Effect (SD) | 95% interval | Wellbeing | Ever-users | User share | Engagement | Benefit | Not worth it |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 0.048 ± 0.060 | -0.003 to 0.098 | 0.610 | 0.610 | 0.647 | 0.239 | 0.424 | 0.533 |
+| 0.05 | 0.190 ± 0.062 | 0.138 to 0.242 | 0.575 | 0.578 | 0.582 | 0.217 | 0.418 | 0.553 |
+| 0.1 | 0.314 ± 0.062 | 0.263 to 0.366 | 0.541 | 0.551 | 0.507 | 0.192 | 0.414 | 0.578 |
+| **0.115** | 0.361 ± 0.062 | 0.309 to 0.412 | 0.530 | 0.542 | 0.479 | 0.183 | 0.412 | 0.589 |
+| 0.15 | 0.451 ± 0.059 | 0.402 to 0.501 | 0.500 | 0.522 | 0.406 | 0.160 | 0.406 | 0.624 |
+| 0.2 | 0.607 ± 0.074 | 0.545 to 0.669 | 0.459 | 0.499 | 0.304 | 0.125 | 0.399 | 0.685 |
+| 0.3 | 1.016 ± 0.104 | 0.929 to 1.103 | 0.359 | 0.465 | 0.139 | 0.067 | 0.373 | 0.875 |
+
+Without a time cost, leaving the integrity preset's feed lowers the break group's wellbeing by about a quarter of a
+standard deviation, and leaving the Engagement ranking's raises it by 0.048, close to the field's figure: the Engagement
+ranking's items are worth 0.034 each on reflection, the integrity preset's 0.208. The field's design estimated -0.243
+and 0.069 there. At 0.115 the default design stays inside the calibration targets of section 13: its user share is 0.479
+over the summary window and 0.444 on day 365 (0.405 on the lowest seed; 0.647 and 0.641 without a time cost), its toxic
+impression share 0.174, and the Outrage share of its posts rises by 0.021 from the first fifth of the year to the last,
+to 0.257 (8 seeds).
 
 ### 13.3 Presets, comparisons and findings
 
@@ -893,468 +1040,606 @@ Over 365 days:
 
 | Metric | ER | Chrono | Integrity | Q&B |
 | --- | --- | --- | --- | --- |
-| Engagement index (O) | 0.239±0.005 | 0.165±0.004 | 0.218±0.005 | 0.188±0.005 |
-| Harm index | 0.393±0.036 | 0.112±0.012 | 0.339±0.038 | 0.081±0.012 |
-| Harm index without polarisation | 0.403±0.033 | 0.140±0.016 | 0.407±0.039 | 0.102±0.015 |
-| Discourse quality | 0.673±0.031 | 0.822±0.005 | 0.822±0.017 | 0.887±0.003 |
-| Benefit index | 0.424±0.007 | 0.438±0.003 | 0.455±0.005 | 0.450±0.001 |
-| Benefit index without creators | 0.530±0.009 | 0.547±0.003 | 0.569±0.006 | 0.562±0.001 |
-| Users in society | 0.647±0.021 | 0.637±0.013 | 0.705±0.015 | 0.728±0.013 |
-| Human daily actives | 811±19 | 700±15 | 822±14 | 794±15 |
-| Impressions (O) | 14327±281 | 9899±236 | 13089±313 | 11282±291 |
-| Net revenue (O) | 14.33±0.28 | 9.90±0.24 | 13.09±0.31 | 11.28±0.29 |
-| Toxic impressions | 0.181±0.030 | 0.017±0.004 | 0.076±0.012 | 0.002±0.000 |
-| Outrage impressions | 0.439±0.037 | 0.049±0.005 | 0.247±0.032 | 0.010±0.001~ |
-| Misinformation impr. | 0.147±0.007~ | 0.059±0.007 | 0.097±0.007 | 0.025±0.003 |
-| Harassment per 1,000 | 2.38±0.63 | 3.59±0.70 | 7.82±1.54 | 4.41±1.08 |
-| Outrage posts | 0.255±0.018 | 0.169±0.010 | 0.226±0.015 | 0.169±0.010 |
-| Wellbeing, ever-users | 0.610±0.013 | 0.655±0.004 | 0.673±0.008 | 0.696±0.003 |
-| Survey (O) | 0.586±0.008 | 0.550±0.006 | 0.592±0.005 | 0.575±0.007 |
-| Polarisation | 0.491±0.012 | 0.415±0.003 | 0.435±0.009 | 0.372±0.003 |
-| Informed non-users | 0.583±0.003 | 0.600±0.001 | 0.614±0.003 | 0.633±0.002 |
+| Engagement index (O) | 0.183±0.007 | 0.115±0.003~ | 0.184±0.005 | 0.158±0.005 |
+| Harm index | 0.411±0.047~ | 0.125±0.015 | 0.361±0.041 | 0.086±0.009 |
+| Harm index without polarisation | 0.424±0.043~ | 0.156±0.018 | 0.432±0.042 | 0.107±0.011 |
+| Discourse quality | 0.659±0.036 | 0.818±0.007 | 0.821±0.017 | 0.883±0.004 |
+| Benefit index | 0.412±0.008 | 0.427±0.003 | 0.443±0.006 | 0.438±0.001 |
+| Benefit index without creators | 0.515±0.011 | 0.534±0.004 | 0.554±0.007 | 0.548±0.002 |
+| Users in society | 0.479±0.027~ | 0.443±0.014~ | 0.586±0.015 | 0.613±0.011 |
+| Human daily actives | 614±29~ | 492±15~ | 690±13 | 671±16 |
+| Impressions (O) | 10989±438 | 6925±195~ | 11012±274 | 9485±271 |
+| Net revenue (O) | 10.99±0.44 | 6.93±0.20~ | 11.01±0.27 | 9.48±0.27 |
+| Toxic impressions | 0.174±0.033 | 0.016±0.003 | 0.075±0.011 | 0.003±0.001 |
+| Outrage impressions | 0.451±0.039 | 0.049±0.005 | 0.248±0.030 | 0.012±0.001 |
+| Misinformation impr. | 0.166±0.010~ | 0.072±0.011 | 0.107±0.006 | 0.028±0.003 |
+| Harassment per 1,000 | 2.67±0.58 | 3.49±0.66 | 8.24±1.73 | 4.45±0.76 |
+| Outrage posts | 0.258±0.020 | 0.165±0.013 | 0.224±0.016 | 0.167±0.010 |
+| Wellbeing, ever-users | 0.542±0.013 | 0.601±0.004 | 0.610±0.010 | 0.645±0.003 |
+| Survey (O) | 0.541±0.008 | 0.516±0.007 | 0.551±0.006 | 0.544±0.005 |
+| Polarisation | 0.493±0.014 | 0.417±0.004 | 0.436±0.009 | 0.375±0.003 |
+| Informed non-users | 0.580±0.003 | 0.599±0.002 | 0.611±0.004 | 0.633±0.002 |
 | Creators living | 0 | 0 | 0 | 0 |
 | Harmful payouts | - | - | - | - |
-| Bot engagement | 0.171±0.006 | 0.390±0.006 | 0.203±0.010 | 0.355±0.007 |
+| Bot engagement | 0.209±0.009 | 0.477±0.004 | 0.232±0.010 | 0.397±0.008 |
 
 The other presets, with ER again for reference:
 
 | Metric | ER | Calm | Sub | Paid | Max |
 | --- | --- | --- | --- | --- | --- |
-| Engagement index (O) | 0.239±0.005 | 0.129±0.002 | 0.183±0.002 | 0.229±0.007 | 0.428±0.010 |
-| Harm index | 0.393±0.036 | 0.354±0.016 | 0.059±0.007 | 0.451±0.052 | 0.495±0.036 |
-| Harm index without polarisation | 0.403±0.033 | 0.440±0.018 | 0.074±0.008 | 0.428±0.035 | 0.411±0.017 |
-| Discourse quality | 0.673±0.031 | 0.830±0.005 | 0.889±0.004 | 0.572±0.061 | 0.491±0.060~ |
-| Benefit index | 0.424±0.007 | 0.458±0.002 | 0.535±0.009 | 0.443±0.014 | 0.439±0.029 |
-| Benefit index without creators | 0.530±0.009 | 0.573±0.003 | 0.569±0.002 | 0.503±0.024 | 0.426±0.024 |
-| Users in society | 0.647±0.021 | 0.640±0.010 | 0.743±0.009 | 0.574±0.042 | 0.656±0.030 |
-| Human daily actives | 811±19 | 610±9 | 795±8 | 745±37 | 1046±33 |
-| Impressions (O) | 14327±281 | 7768±146 | 10972±116 | 13728±405 | 25699±583 |
-| Net revenue (O) | 14.33±0.28 | 7.77±0.15 | 100.82±1.81 | 9.61±0.28 | 23.91±7.52 |
-| Toxic impressions | 0.181±0.030 | 0.041±0.008 | 0.002±0.000 | 0.269±0.059 | 0.358±0.045 |
-| Outrage impressions | 0.439±0.037 | 0.127±0.016 | 0.008±0.001 | 0.560±0.067 | 0.634±0.048 |
-| Misinformation impr. | 0.147±0.007~ | 0.175±0.006 | 0.015±0.001 | 0.143±0.010~ | 0.093±0.006 |
-| Harassment per 1,000 | 2.38±0.63 | 1.14±0.35~ | 3.15±0.70~ | 1.91±0.50 | 6.70±1.07 |
-| Outrage posts | 0.255±0.018 | 0.150±0.012 | 0.125±0.007 | 0.313±0.033 | 0.375±0.021 |
-| Wellbeing, ever-users | 0.610±0.013 | 0.649±0.004 | 0.712±0.003 | 0.575±0.024 | 0.547±0.036 |
-| Survey (O) | 0.586±0.008 | 0.538±0.007 | 0.578±0.005 | 0.577±0.006 | 0.662±0.015 |
-| Polarisation | 0.491±0.012 | 0.422±0.005 | 0.368±0.002 | 0.530±0.025 | 0.590±0.032 |
-| Informed non-users | 0.583±0.003 | 0.583±0.002 | 0.643±0.003 | 0.578±0.002 | 0.584±0.005 |
-| Creators living | 0 | 0 | 0.397±0.042~ | 0.207±0.046~ | 0.491±0.055~ |
-| Harmful payouts | - | - | 0.000±0.000 | 0.760±0.047 | 0.715±0.051 |
-| Bot engagement | 0.171±0.006 | 0.322±0.007 | 0.364±0.003 | 0.175±0.007 | 0.115±0.004 |
+| Engagement index (O) | 0.183±0.007 | 0.094±0.003~ | 0.160±0.004 | 0.163±0.010~ | 0.382±0.006 |
+| Harm index | 0.411±0.047~ | 0.390±0.020 | 0.064±0.008 | 0.491±0.054~ | 0.359±0.066 |
+| Harm index without polarisation | 0.424±0.043~ | 0.486±0.024 | 0.080±0.010 | 0.470±0.038 | 0.347±0.047 |
+| Discourse quality | 0.659±0.036 | 0.818±0.010 | 0.888±0.005 | 0.549±0.074~ | 0.717±0.062 |
+| Benefit index | 0.412±0.008 | 0.450±0.002 | 0.524±0.011 | 0.410±0.020 | 0.473±0.020 |
+| Benefit index without creators | 0.515±0.011 | 0.562±0.003 | 0.557±0.003 | 0.482±0.030 | 0.467±0.022 |
+| Users in society | 0.479±0.027~ | 0.460±0.020~ | 0.649±0.013 | 0.381±0.051~ | 0.673±0.032 |
+| Human daily actives | 614±29~ | 441±17~ | 698±18 | 516±50~ | 1026±34 |
+| Impressions (O) | 10989±438 | 5634±203~ | 9583±267 | 9781±625~ | 22906±360 |
+| Net revenue (O) | 10.99±0.44 | 5.63±0.20~ | 87.91±1.76 | 6.85±0.44~ | 42.93±5.77 |
+| Toxic impressions | 0.174±0.033 | 0.039±0.008 | 0.003±0.000 | 0.270±0.078 | 0.168±0.030 |
+| Outrage impressions | 0.451±0.039 | 0.125±0.017 | 0.010±0.001 | 0.583±0.084 | 0.409±0.059 |
+| Misinformation impr. | 0.166±0.010~ | 0.211±0.010~ | 0.017±0.001 | 0.170±0.010~ | 0.101±0.009 |
+| Harassment per 1,000 | 2.67±0.58 | 1.45±0.53 | 3.41±0.79 | 2.42±1.04 | 3.07±0.73 |
+| Outrage posts | 0.258±0.020 | 0.143±0.014 | 0.126±0.009 | 0.323±0.040 | 0.284±0.028 |
+| Wellbeing, ever-users | 0.542±0.013 | 0.602±0.005 | 0.667±0.004 | 0.505±0.023 | 0.550±0.032 |
+| Survey (O) | 0.541±0.008 | 0.510±0.005 | 0.552±0.006 | 0.539±0.006 | 0.582±0.012 |
+| Polarisation | 0.493±0.014 | 0.420±0.006 | 0.371±0.003 | 0.536±0.025 | 0.502±0.030 |
+| Informed non-users | 0.580±0.003 | 0.580±0.003 | 0.644±0.002 | 0.573±0.003 | 0.580±0.004 |
+| Creators living | 0 | 0 | 0.392±0.049~ | 0.124±0.024~ | 0.495±0.031~ |
+| Harmful payouts | - | - | 0.000±0.000 | 0.810±0.053 | 0.429±0.069 |
+| Bot engagement | 0.209±0.009 | 0.400±0.010 | 0.396±0.007 | 0.224±0.011~ | 0.151±0.004 |
 
 Over 90 days, the horizon of a field experiment:
 
 | Metric | ER | Chrono | Integrity | Q&B |
 | --- | --- | --- | --- | --- |
-| Engagement index (O) | 0.205±0.007 | 0.160±0.002 | 0.178±0.004 | 0.157±0.003 |
-| Harm index | 0.266±0.034~ | 0.122±0.019 | 0.280±0.021 | 0.093±0.010 |
-| Harm index without polarisation | 0.320±0.039~ | 0.152±0.023 | 0.349±0.026 | 0.117±0.013 |
-| Discourse quality | 0.788±0.014 | 0.819±0.004 | 0.851±0.003 | 0.878±0.002 |
-| Benefit index | 0.461±0.007 | 0.437±0.003 | 0.467±0.003 | 0.437±0.001 |
-| Benefit index without creators | 0.577±0.009 | 0.546±0.003 | 0.584±0.004 | 0.547±0.001 |
-| Users in society | 0.629±0.005 | 0.624±0.006 | 0.637±0.006 | 0.641±0.007 |
-| Human daily actives | 751±12 | 679±8 | 717±11 | 685±9 |
-| Impressions (O) | 12328±397 | 9582±100 | 10671±257 | 9433±171 |
-| Net revenue (O) | 12.33±0.40 | 9.58±0.10 | 10.67±0.26 | 9.43±0.17 |
-| Toxic impressions | 0.120±0.024~ | 0.016±0.006 | 0.050±0.008 | 0.004±0.001 |
-| Outrage impressions | 0.351±0.034~ | 0.053±0.012 | 0.178±0.018 | 0.015±0.001 |
-| Misinformation impr. | 0.110±0.009 | 0.056±0.011 | 0.078±0.004 | 0.026±0.002 |
-| Harassment per 1,000 | 3.73±0.96 | 4.83±0.74 | 7.93±1.23 | 5.30±1.00 |
-| Outrage posts | 0.259±0.017 | 0.179±0.013 | 0.226±0.017 | 0.172±0.012 |
-| Wellbeing, ever-users | 0.638±0.007 | 0.643±0.004 | 0.669±0.003 | 0.673±0.003 |
-| Survey (O) | 0.579±0.014 | 0.543±0.015 | 0.572±0.016 | 0.554±0.015 |
-| Polarisation | 0.431±0.004 | 0.419±0.002 | 0.420±0.003 | 0.409±0.002 |
-| Informed non-users | 0.599±0.001 | 0.601±0.000 | 0.606±0.001 | 0.611±0.000 |
+| Engagement index (O) | 0.195±0.006 | 0.149±0.003 | 0.172±0.004 | 0.152±0.003 |
+| Harm index | 0.267±0.036~ | 0.123±0.016 | 0.286±0.023 | 0.095±0.010 |
+| Harm index without polarisation | 0.322±0.042~ | 0.154±0.020 | 0.358±0.029 | 0.118±0.012 |
+| Discourse quality | 0.787±0.019 | 0.820±0.003 | 0.849±0.005 | 0.877±0.002 |
+| Benefit index | 0.453±0.008 | 0.430±0.002 | 0.457±0.004 | 0.430±0.001 |
+| Benefit index without creators | 0.566±0.010 | 0.537±0.003 | 0.571±0.005 | 0.537±0.001 |
+| Users in society | 0.597±0.009 | 0.583±0.009 | 0.613±0.008 | 0.620±0.007 |
+| Human daily actives | 714±14 | 635±12 | 692±12 | 663±11 |
+| Impressions (O) | 11728±379 | 8943±169 | 10343±255 | 9118±180 |
+| Net revenue (O) | 11.73±0.38 | 8.94±0.17 | 10.34±0.25 | 9.12±0.18 |
+| Toxic impressions | 0.118±0.027~ | 0.015±0.005 | 0.053±0.010 | 0.004±0.001 |
+| Outrage impressions | 0.347±0.044~ | 0.051±0.008 | 0.186±0.022~ | 0.015±0.002 |
+| Misinformation impr. | 0.113±0.007 | 0.058±0.008~ | 0.081±0.006 | 0.026±0.001 |
+| Harassment per 1,000 | 3.77±1.11 | 4.83±0.76 | 8.05±1.37 | 5.43±1.03 |
+| Outrage posts | 0.258±0.020 | 0.177±0.014 | 0.227±0.018 | 0.171±0.011 |
+| Wellbeing, ever-users | 0.587±0.008 | 0.602±0.003 | 0.624±0.004 | 0.636±0.003 |
+| Survey (O) | 0.549±0.014 | 0.518±0.012 | 0.542±0.014 | 0.530±0.015 |
+| Polarisation | 0.431±0.004 | 0.419±0.002 | 0.420±0.003 | 0.410±0.002 |
+| Informed non-users | 0.598±0.001 | 0.601±0.000 | 0.606±0.001 | 0.611±0.001 |
 | Creators living | 0 | 0 | 0 | 0 |
 | Harmful payouts | - | - | - | - |
-| Bot engagement | 0.207±0.010 | 0.402±0.005 | 0.258±0.010 | 0.402±0.005 |
+| Bot engagement | 0.216±0.011 | 0.418±0.006 | 0.263±0.010 | 0.411±0.006 |
 
 The other presets, with ER again for reference:
 
 | Metric | ER | Calm | Sub | Paid | Max |
 | --- | --- | --- | --- | --- | --- |
-| Engagement index (O) | 0.205±0.007 | 0.124±0.002 | 0.158±0.003 | 0.222±0.011 | 0.349±0.016 |
-| Harm index | 0.266±0.034~ | 0.330±0.010 | 0.076±0.009~ | 0.320±0.047~ | 0.344±0.038~ |
-| Harm index without polarisation | 0.320±0.039~ | 0.413±0.012 | 0.095±0.011~ | 0.375±0.053 | 0.391±0.037 |
-| Discourse quality | 0.788±0.014 | 0.833±0.005 | 0.880±0.001 | 0.729±0.033 | 0.716±0.034 |
-| Benefit index | 0.461±0.007 | 0.463±0.003 | 0.559±0.009 | 0.489±0.010 | 0.560±0.014 |
-| Benefit index without creators | 0.577±0.009 | 0.579±0.004 | 0.550±0.001 | 0.559±0.016 | 0.524±0.013 |
-| Users in society | 0.629±0.005 | 0.629±0.007 | 0.645±0.006 | 0.620±0.008 | 0.633±0.007 |
-| Human daily actives | 751±12 | 592±8 | 688±8 | 765±14 | 944±10 |
-| Impressions (O) | 12328±397 | 7424±134 | 9465±171 | 13300±647 | 20926±953 |
-| Net revenue (O) | 12.33±0.40 | 7.42±0.13 | 85.17±2.51 | 9.31±0.45 | 36.67±6.90 |
-| Toxic impressions | 0.120±0.024~ | 0.031±0.006 | 0.003±0.001 | 0.169±0.044~ | 0.193±0.030~ |
-| Outrage impressions | 0.351±0.034~ | 0.105±0.013 | 0.012±0.001~ | 0.505±0.079 | 0.505±0.070 |
-| Misinformation impr. | 0.110±0.009 | 0.148±0.007 | 0.017±0.001 | 0.114±0.007 | 0.085±0.007 |
-| Harassment per 1,000 | 3.73±0.96 | 2.05±0.39 | 4.43±1.03~ | 3.45±1.18 | 7.59±1.30 |
-| Outrage posts | 0.259±0.017 | 0.162±0.015 | 0.136±0.010 | 0.307±0.033 | 0.330±0.030 |
-| Wellbeing, ever-users | 0.638±0.007 | 0.647±0.003 | 0.684±0.003 | 0.611±0.015 | 0.629±0.025 |
-| Survey (O) | 0.579±0.014 | 0.531±0.013 | 0.561±0.013 | 0.583±0.014 | 0.611±0.018 |
-| Polarisation | 0.431±0.004 | 0.420±0.002 | 0.409±0.002 | 0.441±0.007 | 0.452±0.010 |
-| Informed non-users | 0.599±0.001 | 0.597±0.001 | 0.611±0.001 | 0.597±0.001 | 0.598±0.001 |
-| Creators living | 0 | 0 | 0.595±0.045 | 0.210±0.060~ | 0.705±0.028 |
-| Harmful payouts | - | - | 0.000±0.000 | 0.704±0.052 | 0.607±0.071 |
-| Bot engagement | 0.207±0.010 | 0.346±0.007 | 0.400±0.005 | 0.188±0.013 | 0.146±0.010 |
+| Engagement index (O) | 0.195±0.006 | 0.117±0.003 | 0.153±0.004 | 0.208±0.008 | 0.326±0.014 |
+| Harm index | 0.267±0.036~ | 0.336±0.010 | 0.076±0.008 | 0.325±0.044~ | 0.258±0.042~ |
+| Harm index without polarisation | 0.322±0.042~ | 0.420±0.012 | 0.095±0.009 | 0.381±0.049~ | 0.299±0.042 |
+| Discourse quality | 0.787±0.019 | 0.833±0.006 | 0.881±0.002 | 0.728±0.028 | 0.798±0.031 |
+| Benefit index | 0.453±0.008 | 0.457±0.003 | 0.549±0.008 | 0.478±0.007 | 0.549±0.010 |
+| Benefit index without creators | 0.566±0.010 | 0.571±0.004 | 0.541±0.002 | 0.549±0.011 | 0.510±0.012 |
+| Users in society | 0.597±0.009 | 0.596±0.008 | 0.626±0.007 | 0.580±0.012 | 0.628±0.009 |
+| Human daily actives | 714±14 | 561±10 | 669±12 | 719±12 | 919±12 |
+| Impressions (O) | 11728±379 | 7038±155 | 9187±223 | 12505±476 | 19565±827 |
+| Net revenue (O) | 11.73±0.38 | 7.04±0.16 | 82.34±2.57 | 8.75±0.33 | 41.29±3.71 |
+| Toxic impressions | 0.118±0.027~ | 0.033±0.005 | 0.004±0.001 | 0.166±0.039~ | 0.122±0.022~ |
+| Outrage impressions | 0.347±0.044~ | 0.107±0.011 | 0.012±0.001 | 0.503±0.065 | 0.376±0.066 |
+| Misinformation impr. | 0.113±0.007 | 0.150±0.006 | 0.018±0.001 | 0.119±0.008 | 0.089±0.005 |
+| Harassment per 1,000 | 3.77±1.11 | 2.11±0.44 | 4.30±0.86 | 3.47±1.11 | 4.12±0.92 |
+| Outrage posts | 0.258±0.020 | 0.163±0.014 | 0.135±0.012 | 0.306±0.029 | 0.295±0.031 |
+| Wellbeing, ever-users | 0.587±0.008 | 0.613±0.003 | 0.649±0.003 | 0.558±0.015 | 0.582±0.021 |
+| Survey (O) | 0.549±0.014 | 0.512±0.012 | 0.539±0.016 | 0.550±0.013 | 0.564±0.018 |
+| Polarisation | 0.431±0.004 | 0.420±0.002 | 0.409±0.002 | 0.441±0.007 | 0.440±0.009 |
+| Informed non-users | 0.598±0.001 | 0.597±0.001 | 0.612±0.001 | 0.597±0.001 | 0.597±0.001 |
+| Creators living | 0 | 0 | 0.584±0.042 | 0.192±0.052~ | 0.706±0.032 |
+| Harmful payouts | - | - | 0.000±0.000 | 0.710±0.041 | 0.315±0.071 |
+| Bot engagement | 0.216±0.011 | 0.358±0.007 | 0.407±0.007 | 0.197±0.012 | 0.179±0.012 |
 
-**Targets.** Under the default design 0.647 ± 0.021 of individuals are users after a year (target 0.40 to 0.90). The
-Outrage share of human posts rises from 0.208 on day 0 to 0.255 ± 0.018 in the summary window (below 0.50); it peaks
-near 0.27 around day 140 and then gives a little ground to Clickbait, which bot boosts teach (13.1). The toxic
-impression share is 0.181 ± 0.030 (target 0.03 to 0.20): the mean meets the target, but two of the eight seeds lie
-above 0.20 (the highest 0.233). Society-wide polarisation starts at 0.42. All three targets hold on the mean.
+**Targets.** Under the default design 0.479 ± 0.027 of individuals are users over the summary window and 0.444 on
+day 365, 0.405 on the lowest seed (target 0.40 to 0.90; v0.2, without the time cost: 0.647). The Outrage share of
+human posts rises from 0.208 on day 0 to 0.258 ± 0.020 in the summary window (below 0.50); it peaks near 0.27 around
+day 130 and then gives a little ground to Clickbait, which bot boosts teach (13.1). The toxic impression share is
+0.174 ± 0.033 (target 0.03 to 0.20): the mean meets the target, but two of the eight seeds lie above 0.20 (the
+highest 0.222). Society-wide polarisation starts at 0.42. All three targets hold on the mean; the user share now lies
+near the lower bound of its target.
 
-**The trade-off runs both ways.** Quality and bridging cuts the harm index by 79% (0.393 to 0.081, row 20, ratio
-0.207) for 21% of the engagement index (0.239 to 0.188). The engagement trap's new known solution cuts the harm index
-by 44% (row 1: -0.174, -0.193 to -0.154) and keeps all of the engagement (+0.008, +0.003 to +0.012). The
-engagement ranking's lead over Quality and bridging grows over the year in the default world (1.13 times in the first
-30 days, row 12; 1.27 times in the last 95, row 13), because habit builds; with weak habit formation and a strong
-reputation effect (`habit_gain` 0.01, `reputation_sensitivity` 5, `harassment_exit` 0.15) it starts at 1.07 (row 14)
-and reverses to 0.82 in the last 95 days (row 15: -0.025, -0.031 to -0.019), while the engagement ranking ends with
-0.19 fewer of society as users (-0.217 to -0.159).
+**The trade-off runs both ways.** Quality and bridging cuts the harm index by 79% (0.411 to 0.086, row 20, ratio
+of 0.208) for 14% of the engagement index (0.183 to 0.158; v0.2: 21%). The engagement trap's known solution cuts the
+harm index by 41% (row 1: -0.169, -0.194 to -0.145) and raises the engagement index by 14% (+0.025, +0.020 to +0.030;
+v0.2: +3%). The engagement ranking's lead over Quality and bridging grows a little over the year in the default world
+(1.13 times in the first 30 days, row 12; 1.15 times in the last 95, row 13; v0.2: 1.13 and 1.27), because habit
+builds, although the engagement ranking ends with 0.137 fewer of society as users (row 13: -0.155 to -0.118). With
+weak habit formation and a strong reputation effect (`habit_gain` 0.01, `reputation_sensitivity` 5,
+`harassment_exit` 0.15) the lead starts at 1.07 (row 14) and reverses to 0.60 in the last 95 days (row 15: -0.043,
+-0.048 to -0.038; v0.2: 0.82), while the engagement ranking ends with 0.23 fewer of society as users (-0.260 to
+-0.207; v0.2: 0.19). Both targets on the trade-off hold, the reversal more strongly than in v0.2.
+
+**What the time cost changed.** The time cost (7.2) took about a quarter of the engagement ranking's engagement and
+of its users (v0.2: 0.239 and 0.647), and about a sixth of Quality and bridging's (0.188 and 0.728), whose items are
+mostly worth their time. The conclusions it moved, each with its v0.2 value, are marked "moved" below; in short:
+
+- The engagement ranking's engagement lead is smaller. Its engagement index is 1.16 times Quality and bridging's,
+  against 1.27 without the time cost, and the lead grows less over the year (above).
+- The survey no longer ranks the engagement ranking above Quality and bridging over the year; it reads them as equal.
+- The integrity preset no longer costs engagement, and a high account cost no longer measurably keeps people out.
+- At the strongest polish Quality and bridging no longer halves the harm index (0.54 of the Engagement ranking's,
+  where v0.2 had 0.43).
+- Fact 2 now passes on its interval, and three failing worlds of 13.4 fail only with the time cost removed as well.
+
+The comparisons added for the time cost, all against the defaults on the same seeds:
+
+- Without a time cost (`time_cost` 0) the engagement ranking has 30% more engagement (row 33: 0.183 to 0.239), 0.168
+  more of society as users (0.479 to 0.647), users' wellbeing 0.080 higher (+0.075 to +0.084) and a share of time
+  not worth it 0.056 lower (0.589 to 0.534). Under Quality and bridging the time cost matters less: without it there
+  is 19% more engagement (row 34), 0.116 more users and wellbeing 0.051 higher, and time not worth it falls from 0.276
+  to 0.043, since few of its items are worth less than nothing. The harm and benefit indices move by at most 0.019.
+- Notifications at full strength (`notification_intensity` 1 against the default 0.6) raise the engagement index by
+  half under the engagement ranking (row 31: 0.183 to 0.275) and by 46% under Quality and bridging (row 32), and keep
+  more people on the platform: 0.078 and 0.062 more of society as users. On the good feed they still raise wellbeing
+  now that time costs something: under Quality and bridging users' wellbeing rises by 0.019 (+0.018 to +0.020),
+  ever-users' by 0.018 (+0.016 to +0.019) and the benefit index by 0.010, the harm index falls by 0.024, and time not
+  worth it does not move (-0.003, -0.007 to +0.000). Under the engagement ranking they leave wellbeing unchanged
+  (users +0.000, -0.010 to +0.010; ever-users -0.003, -0.011 to +0.005), raise the benefit index by 0.016 and lower
+  time not worth it by 0.053 (-0.069 to -0.037). The time cost prices the time a notification brings, not the
+  interruption (section 16), so on a feed worth more than its time an extra session still pays.
+- A daily time limit for everyone (`time_limit_share` 1) cuts the engagement index by 3% (row 35: -0.0057, -0.0076
+  to -0.0038) and moves nothing else beyond its interval: users' wellbeing +0.002 (-0.004 to +0.007), time not worth
+  it +0.001 (-0.013 to +0.015). The limit is each person's time budget (6.10), which typical sessions rarely exceed
+  (the held-out target, 13.4), so it binds on few days.
 
 **Findings of v0.1, as they now stand.**
 
 - A stricter classifier now works, which reverses v0.1. At a threshold of 0.3 the toxic share falls by 94% (row 9:
-  0.181 to 0.011; v0.1: by 16%). Evasion barely dents the cut and retraining does not carry it: 98% at
-  `evasion_rate` 0.05 (row 10) and still 94% with `classifier_retraining` 0 (row 11). This round's other changes to
+  0.174 to 0.010; v0.1: by 16%). Evasion barely dents the cut and retraining does not carry it: 98% at
+  `evasion_rate` 0.05 (row 10) and 95% with `classifier_retraining` 0 (row 11). This round's other changes to
   evasion were not taken apart one by one, so which of them turned the v0.1 result is not measured. The cost moved to
-  wrongful sanctions, which the harm index now counts: they rise from 3.7 to 50.3 a day (+46.6, +45.7 to +47.4),
-  enough to fill their component, so the harm index falls only 24% (0.393 to 0.300). A threshold of 0.55 alone halves
-  the toxic share (row 3: ratio 0.39) for six times the wrongful sanctions (22.4 a day).
+  wrongful sanctions, which the harm index now counts: they rise from 3.3 to 46.6 a day (+43.3, +42.3 to +44.4),
+  fourteen times as many, enough to fill their component, so the harm index falls only 25% (0.411 to 0.308). A
+  threshold of 0.55 alone cuts the toxic share to 0.45 of the baseline (row 3; v0.2: 0.39) for six times the
+  wrongful sanctions (20.4 a day).
 - Down-ranking in place of removal (v0.1: strict enforcement with heavy down-ranking caught fewer trolls) was not
   re-measured as such. Its cousin shows in the integrity preset: a demoted Attack still reaches its target (6.9), so
-  harassment is 7.82 per 1,000 users under Integrity against 2.38 under the Engagement ranking.
+  harassment is 8.24 per 1,000 users under Integrity against 2.67 under the Engagement ranking.
 - Bridging gamed by bots no longer reproduces: with every user on the bridging alternative feed, misinformation
-  impressions fall under every bot strategy (shared pool 0.138 to 0.043, own side 0.142 to 0.027, adaptive 0.147 to
-  0.066; rows 16 to 18, every interval below zero), while bots supply 37% to 38% of the engagement. In v0.1 they rose
+  impressions fall under every bot strategy (shared pool 0.153 to 0.061, own side 0.157 to 0.023, adaptive 0.166 to
+  0.111; rows 16 to 18, every interval below zero), while bots supply 40% to 44% of the engagement. In v0.1 they rose
   from 0.11 to 0.20 under the shared pool. Bots boost 8 posts a day instead of 20 (13.1), and the bridging feed's
   quality weight now outweighs the inflated bridging score. The adaptive farms still game it the most.
 - The v0.1 trap solution (`w_reply` 0, `w_see_less` 5) fails: brigading bots file see-less marks against popular
-  out-group posts (3.5), and the toxic share falls only to 0.81 of the baseline (row 5) while the harm index rises
-  0.059 (-0.008 to +0.126). The see-less penalty alone raises the harm index by 0.122 (row 6: +0.061 to +0.184); with
-  `bot_brigading` 0 it lowers it by 0.075 (row 7: -0.088 to -0.063). Stated preferences that bots can file now
-  backfire at high weight. The new solution is in 13.5. Without any cost of toxicity (`churn_base`,
-  `harassment_exit`, `reputation_sensitivity` 0) it costs 7.7% of the engagement index (row 8: 0.301 to 0.278).
-- The weak-habit lead reverses more strongly than in v0.1 (0.82 against 0.92 in the last 95 days).
+  out-group posts (3.5), and the toxic share falls only to 0.92 of the baseline (row 5) while the harm index rises
+  0.101 (+0.060 to +0.141; v0.2: +0.059, -0.008 to +0.126, now wholly above zero). The see-less penalty alone raises
+  the harm index by 0.177 (row 6: +0.100 to +0.254); with `bot_brigading` 0 it lowers it by 0.076 (row 7: -0.088 to
+  -0.063). Stated preferences that bots can file backfire at high weight. The new solution is in 13.5. Without any
+  cost of toxicity (`churn_base`, `harassment_exit`, `reputation_sensitivity` 0) it costs 7.7% of the engagement
+  index (row 8: 0.301 to 0.278), as in v0.2.
+- The weak-habit lead reverses more strongly than in v0.1 and v0.2 (0.60 against 0.92 and 0.82 in the last 95
+  days).
 
-**New findings.**
+**Findings of v0.2, as they now stand.**
 
-- Brigading and report trust. Brigading bots file 24% of all reports and see-less marks under the Engagement ranking
-  and 59% under Quality and bridging (rows 25, 26), where the see-less weight invites marks. Weighting reports by
-  their reporters' record (`report_trust` 1) does not stop the filing but takes its effect: under the Engagement
-  ranking the toxic share falls by 0.032 (row 25: -0.056 to -0.007) and the harm index by 0.031 (-0.051 to -0.011);
-  under Quality and bridging harassment falls from 4.41 to 1.31 per 1,000 users (row 26: -3.10, -3.91 to -2.30). It
-  carries the trap's new solution: with ten reviews per 1,000 users and `w_reply` 0 but without trust, the toxic share
-  falls to 0.52 of the baseline (row 4), short of half; with trust to 0.35 (row 1).
-- Polish against the quality ranking. Authors and adaptive bots polish where the ranking reads `Q_hat`: 27% of human
-  posts under Quality and bridging against 12% under the Engagement ranking (row 20). The gaming costs the quality
-  ranking part of its edge but not most of it: Quality and bridging's harm index is 0.19 of the Engagement ranking's
-  without polish (row 19), 0.21 at the default gain (row 20), 0.25 at a gain of 0.6 (row 21) and 0.43 at the maximum
-  of 1 (`incentive compare --a engagement-maximiser --b quality-bridging --set world.polish_gain=1`, 8 seeds: 0.168
-  against 0.393). Its harm cut so falls from 81% to 57%; it does not halve within the range. The misinformation cut
-  goes faster: misinformation impressions are 0.13, 0.17, 0.41 and 0.92 of the Engagement ranking's at those gains.
-  Without its quality weight Quality and bridging has 2.2 times the harm (row 22) and 6.3 times the misinformation.
-- The survey is now gameable and misleads. Answers mix wellbeing with recent pleasure and habit, and the survey ranks
-  the Engagement ranking first (0.586 ± 0.008 against 0.575 ± 0.007 for Quality and bridging and 0.550 ± 0.006 for
-  the chronological feed) while wellbeing of ever-users ranks it last (0.610 against 0.696 and 0.655). Timing games it
-  too, though not upward at the defaults: collecting every answer right after a session lowers the survey by 0.100
-  (row 27: -0.108 to -0.092) at unchanged wellbeing, because recent pleasure (a smoothed `tanh(E_imp / 20)`) lies
-  below wellbeing; a platform that maximised the survey would keep the lever at 0.
-- Account cost's trade-off. Raising it from 0.2 to 1 cuts the bots' share of engagement from 0.171 to 0.063 (row 24),
-  misinformation impressions by 0.063 and the harm index by 0.078 (-0.107 to -0.049), but now also keeps people out:
-  the user share falls by 0.038 (-0.057 to -0.020) and the engagement index by 0.029 (-0.033 to -0.026).
-- Wrongful sanctions in the harm index. Calm by design's classifier threshold of 0.5 wrongly removes 25.2 posts a day
-  against the Engagement ranking's 3.7 (row 23: +21.5, +20.5 to +22.5); without polarisation its harm index is 0.037
-  above the Engagement ranking's (+0.014 to +0.060), and with it only 0.039 below (0.354 against 0.393). Its
-  misinformation share is also higher (+0.028): hidden like counts, share friction and depth caps cut human sharing,
-  so bot-boosted posts carry more of the trending signal (bots supply 32% of its engagement).
+- Brigading and report trust. Brigading bots file 29% of all reports and see-less marks under the Engagement ranking
+  and 62% under Quality and bridging (rows 25, 26; v0.2: 24% and 59%), where the see-less weight invites marks.
+  Weighting reports by their reporters' record (`report_trust` 1) does not stop the filing but takes its effect:
+  under the Engagement ranking the toxic share falls by 0.025 (row 25: -0.050 to -0.001) and the harm index by 0.031
+  (-0.057 to -0.006); under Quality and bridging harassment falls from 4.45 to 1.31 per 1,000 users (row 26: -3.14,
+  -3.75 to -2.54), by 71%. It carries the trap's solution: with ten reviews per 1,000 users and `w_reply` 0 but
+  without trust, the toxic share falls to 0.57 of the baseline (row 4), short of half; with trust to 0.40 (row 1).
+- Polish against the quality ranking. Authors and adaptive bots polish where the ranking reads `Q_hat`: 28% of human
+  posts under Quality and bridging against 12% under the Engagement ranking (row 20). Quality and bridging's harm
+  index is 0.20 of the Engagement ranking's without polish (row 19), 0.21 at the default gain (row 20), 0.29 at a
+  gain of 0.6 (row 21) and 0.54 at the maximum of 1 (`incentive compare --a engagement-maximiser --b
+  quality-bridging --set world.polish_gain=1`, 8 seeds: 0.220 against 0.411). Its harm cut so falls from 80% to 46%,
+  0.58 of the cut at the default gain (moved: v0.2 fell from 81% to 57%, so Quality and bridging still halved the
+  harm at the maximum). The misinformation cut goes faster:
+  misinformation impressions are 0.13, 0.17, 0.40 and 1.11 of the Engagement ranking's at those gains, so at the
+  maximum Quality and bridging shows as much misinformation as the Engagement ranking (+0.019, -0.009 to +0.047).
+  Without its quality weight Quality and bridging has 2.9 times the harm (row 22) and 8.3 times the misinformation.
+- The survey is gameable and misleads, though less over the year than in v0.2 (moved). Answers mix wellbeing with
+  recent pleasure and habit. Over the year the survey reads the Engagement ranking (0.541 ± 0.008) as level with
+  Quality and bridging (0.544 ± 0.005; paired +0.002, -0.003 to +0.007, `incentive compare`, 8 seeds), below the
+  subscription (0.552, +0.011, +0.006 to +0.016) and above the chronological feed (0.516) and calm by design
+  (0.510), while wellbeing of ever-users ranks the Engagement ranking below all four (0.542 against 0.645, 0.667,
+  0.601 and 0.602; paired gap to Quality and bridging +0.104, +0.094 to +0.113). In v0.2 the survey ranked it first
+  over the year (0.586 against 0.575 for Quality and bridging). Over 90 days it still does: 0.549 against 0.539 for
+  the subscription, 0.530 for Quality and bridging, 0.518 for the chronological feed and 0.512 for calm by design,
+  while ever-users' wellbeing ranks it last. Timing games the survey too, though not upward at the defaults:
+  collecting every answer right after a session lowers it by 0.077 (row 27: -0.087 to -0.066) at unchanged
+  wellbeing, because recent pleasure (a smoothed `tanh(E_imp / 20)`) lies below wellbeing; a platform that maximised
+  the survey would keep the lever at 0.
+- Account cost's trade-off. Raising it from 0.2 to 1 cuts the bots' share of engagement from 0.209 to 0.075
+  (row 24), misinformation impressions by 0.075 and the harm index by 0.086 (-0.107 to -0.064), and the engagement
+  index by 0.014 (-0.018 to -0.009; v0.2: 0.029). It no longer measurably keeps people out (moved): the user share
+  changes by +0.001 (-0.017 to +0.018), where v0.2 measured -0.038 (-0.057 to -0.020). These runs do not separate
+  why.
+- Wrongful sanctions in the harm index. Calm by design's classifier threshold of 0.5 wrongly removes 21.9 posts a day
+  against the Engagement ranking's 3.3 (row 23: +18.6, +18.1 to +19.2); without polarisation its harm index is 0.062
+  above the Engagement ranking's (+0.038 to +0.086), and with it 0.021 below (0.390 against 0.411, -0.049 to
+  +0.007). Its misinformation share is also higher (+0.046): hidden like counts, share friction and depth caps cut
+  human sharing, so bot-boosted posts carry more of the trending signal (bots supply 40% of its engagement).
 - The chronological feed against the realistic ranked feed. Over the first 90 days, the horizon of Guess et al.
-  (2023), the chronological feed has 0.87 of the integrity preset's time spent (row 29), 0.40 of its toxic
-  impressions, unchanged polarisation (+0.000), and 0.80 of its misinformation impressions, where the field found
-  more; fact 3 records this as a known limit (13.4, section 16). Over the year the chronological feed's polarisation
-  is 4.5% below the integrity preset's (row 30: -0.020, -0.026 to -0.013) and 15% below the Engagement ranking's
-  (row 28: -0.076, -0.085 to -0.067). That year-long effect is a model prediction, flagged as such: field
-  experiments lasted three months and found none.
+  (2023), the chronological feed has 0.86 of the integrity preset's time spent (row 29), 0.37 of its toxic
+  impressions, unchanged polarisation (-0.000, -0.001 to +0.000), and 0.79 of its misinformation impressions, where
+  the field found more; fact 3 records this as a known limit (13.4, section 16). Over the year the chronological
+  feed's polarisation is 4.4% below the integrity preset's (row 30: -0.019, -0.024 to -0.014) and 15% below the
+  Engagement ranking's (row 28: -0.076, -0.085 to -0.067). That year-long effect is a model prediction, flagged as
+  such: field experiments lasted three months and found none.
 - Integrity measures pay off in the model except for harassment: against the Engagement ranking the integrity preset
-  has 42% of the toxic share (0.076 against 0.181), two thirds of the misinformation (0.097 against 0.147), a harm
-  index of 0.339 against 0.393 and 91% of the engagement index (0.218 against 0.239).
+  has 43% of the toxic share (0.075 against 0.174), two thirds of the misinformation (0.107 against 0.166), a harm
+  index of 0.361 against 0.411, and now the same engagement index (0.184 against 0.183; moved: v0.2 had 91%),
+  because it keeps more users (0.586 of society against 0.479).
 
 ### 13.4 Stylized facts
 
 `incentive facts`: 8 paired seeds, `N = 2,000`, 365 days; the same checks run in `crates/incentive-core/tests/facts.rs`
-on 4 seeds at `N = 600` for 120 days (240 days for fact 5), where they judge only the seed means, as regression
-checks of direction. Effects are paired mean differences, means or ratios of means, ± the standard deviation of the
-per-seed effect. The interval is the 95% t-interval of the per-seed effect (of the per-seed ratios for a ratio, of
-the signed relative differences for the polarisation check); the verdict is pass when the interval lies inside the
-band, fail when it lies wholly outside, undecided otherwise. A failing world is a world assumption (via
-`incentive facts --set`) in which the check fails at full size; section 15 explains each.
+on 4 seeds at `N = 600` for 120 days (240 days for fact 5, `N = 1,500` and 365 days for fact 6), where they judge only
+the seed means, as regression checks of direction. Effects are paired mean differences, means or ratios of means, ± the
+standard deviation of the per-seed effect. The interval is the 95% t-interval of the per-seed effect (of the per-seed
+ratios for a ratio, of the signed relative differences for the polarisation check); the verdict is pass when the
+interval lies inside the band, fail when it lies wholly outside, undecided otherwise. A failing world is a world
+assumption (via `incentive facts --set`) in which the check fails at full size; section 15 explains each.
 
 | Fact | Check | Effect | Interval | Band | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Outrage impressions, ER minus chronological | 0.383 ± 0.039 | 0.350 to 0.415 | 0.15 to 0.6 | pass |
-| 1 | Reflective value per impression, chronological minus ER | 0.149 ± 0.029 | 0.125 to 0.174 | 0.05 to 0.4 | pass |
-| 2 | Rise of the Outrage share of posts under ER | 0.015 ± 0.008 | 0.009 to 0.021 | 0.01 to 0.15 | undecided |
-| 2 | That rise minus the rise with `learning_rate` 0 | 0.016 ± 0.006 | 0.011 to 0.021 | 0.01 to 0.15 | pass |
-| 3 | Time spent, chronological over ER | 0.654 ± 0.016 | 0.641 to 0.668 | 0.4 to 0.9 | pass |
-| 3 | Relative difference in polarisation, days 80 to 90 | 0.033 ± 0.006 | -0.038 to -0.028 | < 0.05 | pass |
-| 3 | Toxic, days 30-90, chrono over Integrity | 0.344 ± 0.100 | 0.256 to 0.424 | 0.5 to 0.9 | fail (limit) |
-| 3 | Misinformation, days 30-90, chrono over Integrity | 0.709 ± 0.132 | 0.598 to 0.820 | 1.05 to 3 | fail (limit) |
-| 4 | Largest cascades with `reshare_depth_cap` 1 over without | 0.727 ± 0.031 | 0.702 to 0.754 | 0.3 to 0.85 | pass |
-| 5 | Vulnerable users who left, Troll share 0.12 minus 0.03 | 0.078 ± 0.023 | 0.058 to 0.097 | 0.03 to 0.3 | pass |
+| 1 | Outrage impressions, ER minus chronological | 0.390 ± 0.036 | 0.360 to 0.421 | 0.15 to 0.6 | pass |
+| 1 | Reflective value per impression, chronological minus ER | 0.159 ± 0.029 | 0.134 to 0.183 | 0.05 to 0.4 | pass |
+| 2 | Rise of the Outrage share of posts under ER | 0.021 ± 0.009 | 0.013 to 0.029 | 0.01 to 0.15 | pass |
+| 2 | That rise minus the rise with `learning_rate` 0 | 0.019 ± 0.009 | 0.011 to 0.026 | 0.01 to 0.15 | pass |
+| 3 | Time spent, chronological over ER | 0.617 ± 0.023 | 0.599 to 0.637 | 0.4 to 0.9 | pass |
+| 3 | Relative difference in polarisation, days 80 to 90 | 0.032 ± 0.007 | -0.038 to -0.027 | < 0.05 | pass |
+| 3 | Toxic, days 30-90, chrono over Integrity | 0.312 ± 0.082 | 0.242 to 0.380 | 0.5 to 0.9 | fail (limit) |
+| 3 | Misinformation, days 30-90, chrono over Integrity | 0.702 ± 0.094 | 0.623 to 0.779 | 1.05 to 3 | fail (limit) |
+| 4 | Largest cascades with `reshare_depth_cap` 1 over without | 0.715 ± 0.049 | 0.676 to 0.758 | 0.3 to 0.85 | pass |
+| 5 | Vulnerable users who left, Troll share 0.12 minus 0.03 | 0.078 ± 0.031 | 0.052 to 0.104 | 0.03 to 0.3 | pass |
+| 6 | Break group's change, break minus placebo, Integrity | 0.054 ± 0.048 | 0.013 to 0.094 | 0.02 to 0.25 | undecided |
 
-Of the eight required checks seven pass on their intervals and one is undecided; all eight hold on the seed means.
-Both known limits fail ("limit" in the table).
+Of the nine required checks eight pass on their intervals and one, fact 6, is undecided; all nine hold on the seed
+means. Both known limits fail ("limit" in the table). In v0.2, before the time cost, seven passed and fact 2's rise
+was undecided (0.015, 0.009 to 0.021). Supplementary, not a verdict: on 16 seeds (`incentive facts --fact
+deactivation --seeds 16`, seeds 1 to 16) fact 6's effect is 0.054 ± 0.053 with an interval of 0.025 to 0.082,
+inside the band. Every fact is judged on 8 seeds, so the verdict in the table stands.
 
-The worlds in which each check fails at full size (8 seeds, `incentive facts --set ...`):
+The worlds in which each check fails at full size (8 seeds, `incentive facts --set ...`), with the 95% interval and
+verdict there:
 
-| Fact | Check | World | Effect there |
-| --- | --- | --- | --- |
-| 1 | Outrage impressions | `outrage_appeal` 0, `arousal_appeal` 0 | 0.081 |
-| 1 | Outrage impressions (upper bound) | `outrage_appeal` 2.5 | 0.634 |
-| 1 | Reflective value | `outrage_appeal` 0, `arousal_appeal` 0 | -0.044 |
-| 2 | Rise | `population.bot_boosts` 20 | 0.000 |
-| 2 | Rise minus no learning | `population.bot_boosts` 20; `outrage_appeal` 0.6 | -0.003; 0.008 |
-| 3 | Time spent | `habit_gain` 0, `stop_bias` -5 | 0.954 |
-| 3 | Polarisation at day 90 | `polarisation_rate` 0.0005 | 0.103 |
-| 3 | Toxic impressions against Integrity | the defaults; `outrage_appeal` 2.5 | 0.344; 0.163 |
-| 3 | Misinformation against Integrity | the defaults | 0.709 |
-| 4 | Cascades | `outrage_appeal`, `arousal_appeal`, `social_proof` 0 | 0.860 |
-| 5 | Vulnerable users who left | `harassment_harm` 0, `harassment_exit` 0 | 0.023 |
+| Fact | Check | World | Effect there | Interval | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Outrage impressions | `outrage_appeal` 0, `arousal_appeal` 0, `time_cost` 0 | 0.081 | 0.072 to 0.090 | fail |
+| 1 | Outrage impressions (upper bound) | `outrage_appeal` 2.5 | 0.639 | 0.619 to 0.658 | fail |
+| 1 | Reflective value | `outrage_appeal` 0, `arousal_appeal` 0, `time_cost` 0 | -0.044 | -0.056 to -0.033 | fail |
+| 2 | Rise | `outrage_appeal` 0.6 | -0.020 | -0.026 to -0.013 | fail |
+| 2 | Rise minus no learning | `outrage_appeal` 0.6 | -0.008 | -0.014 to -0.003 | fail |
+| 3 | Time spent | `habit_gain` 0, `stop_bias` -5 | 0.967 | 0.938 to 0.998 | fail |
+| 3 | Polarisation at day 90 | `polarisation_rate` 0.0005 | 0.101 | -0.111 to -0.090 | fail |
+| 3 | Toxic impressions against Integrity | the defaults | 0.312 | 0.242 to 0.380 | fail |
+| 3 | Toxic impressions against Integrity | `outrage_appeal` 2.5 | 0.171 | 0.127 to 0.212 | fail |
+| 3 | Misinformation against Integrity | the defaults | 0.702 | 0.623 to 0.779 | fail |
+| 4 | Cascades | `outrage_appeal`, `arousal_appeal`, `social_proof`, `time_cost` 0 | 0.860 | 0.851 to 0.869 | fail |
+| 5 | Vulnerable who left | `harassment_harm`, `harassment_exit`, `time_cost` 0 | 0.023 | 0.007 to 0.038 | undecided |
+| 6 | Break minus placebo | `time_cost` 0 | -0.267 | -0.323 to -0.212 | fail |
+| 6 | Break minus placebo (upper bound) | `time_cost` 0.225 | 0.391 | 0.337 to 0.445 | fail |
 
-The fact 2 margin is thin at a year (the Outrage share rises fast and then gives ground to Clickbait, 13.3), and its
-interval (0.009 to 0.021) straddles the lower bound, so the rise alone is undecided at full size: with
-`harassment_exit` and `harassment_harm` 0, or `stop_bias` -4, the rise dips to 0.0099 and 0.0066 while the
-difference from no learning stays above 0.01. At the tests' 120 days the rise is 0.056. Fact 1 against the
-chronological feed is ninefold in the model (0.439 against 0.049 outrage impressions); its field magnitude is checked
-in fact 3 against the integrity preset. The depth cap shrinks the largest cascades by about a quarter, not more,
-because trending recommendations expose original posts at depth 0 and the cap only stops the second hop.
+The time cost moved three of v0.2's failing worlds back into the band or across it, so they now include `time_cost` 0,
+which gives back v0.2's effects there to the last digit. At the default time cost, without arousal or in-group
+hostility, fact 1's difference in outrage impressions is 0.147 (0.139 to 0.154, undecided) and its reflective value
+gap 0.083 (0.071 to 0.094, pass); with bots boosting 20 posts a day, fact 2's rise is 0.017 (0.001 to 0.032) and the
+rise beyond no learning 0.007 (-0.003 to 0.017), both undecided; without anything impulsive behind sharing, fact 4's
+ratio is 0.870 (0.843 to 0.897, undecided). Fact 5 fails in no world tried on its interval, only on the seed means:
+with harassment harmless at the default time cost the difference is 0.041 (0.016 to 0.065), with
+`reputation_sensitivity` 0 as well 0.032 (0.018 to 0.045), and only with `time_cost` 0 as well does it fall below the
+band's 0.03. In v0.2 the same world gave the same undecided 0.023. Why the time cost keeps facts 1 and 4 alive in
+worlds without impulse was not taken apart; one candidate is that it shrinks the engagement ranking's audience, so
+bots supply more of its engagement (0.209 against 0.171 in v0.2).
+
+Fact 2 now passes at full size: the Outrage share of posts rises by 0.021 (0.013 to 0.029) from the first fifth of
+the year to the last (0.236 to 0.257) and by 0.019 more than without learning; it still rises fast and then gives a
+little ground to Clickbait (13.3). At the tests' 120 days (`N = 600`, 4 seeds) the rise is 0.064 and its difference
+from no learning 0.069. Fact 1 against the chronological feed is ninefold in the model (0.451 against 0.049 outrage
+impressions); its field magnitude is checked in fact 3 against the integrity preset. The depth cap shrinks the
+largest cascades by about a quarter, not more, because trending recommendations expose original posts at depth 0 and
+the cap only stops the second hop.
 
 **Held-out target.** Named before tuning and not tuned against: under the default design, the regretted share of
 time (items beyond a person's time budget, 9.2) should lie between 0.20 and 0.42, around the 31% of social-media use
-that Allcott, Gentzkow and Song (2022) attribute to self-control problems. It fails by an order of magnitude: 0.029 ±
-0.002 (8 seeds, summary window). Typical sessions of about 20 items, opened on some days only, stay under budgets of
-15 to 40 items, so few items count as regretted. The two measures differ (a fixed daily budget against the use people
-would cut if they could commit), but the gap says the model prices compulsive use far lower than the field does
-(section 16).
+that Allcott, Gentzkow and Song (2022) attribute to self-control problems. It still fails by an order of magnitude
+after the time cost: 0.025 ± 0.002 (8 seeds, summary window; v0.2: 0.029). Typical sessions of about 20 items, opened
+on some days only, stay under budgets of 15 to 40 items, so few items count as regretted. The two measures differ (a
+fixed daily budget against the use people would cut if they could commit), but the gap says the model prices
+compulsive use far lower than the field does (section 16). The time cost added a different measure, the share of time
+on items worth less than their time (`low_value_time`, 9.2: 0.589 under the default design); it was defined after
+this target failed, prices value rather than self-control, and is not a test of the target.
 
 ### 13.5 Scenarios
 
 Thresholds as in 14.2. The misinformation surge asks for +0.03 (the best designs found reach about +0.04, because
 non-users are only half pulled toward their user ties), and the public square for at least 10% less polarisation.
 The engagement trap gained a third goal in v0.2, at most twice the baseline's wrongful removals and demotions: with
-evasion fading and the classifier retraining, a stricter classifier alone now solves the first two goals (a threshold
-of 0.55, row 3 of 13.3) at six times the wrongful sanctions. The misinformation surge's Clickbait-heavy bots are
-`population.bot_clickbait_share` 0.9. Known solutions, as changes to the scenario's starting design, at full size on
-8 paired seeds (`incentive scenario <id> --solution --seeds 1..8`), with the goal margins' 95% intervals:
+evasion fading and the classifier retraining, a stricter classifier alone solved the first two goals in v0.2 (a
+threshold of 0.55, row 3 of 13.3) at six times the wrongful sanctions; with the time cost its toxicity goal is
+undecided (below). The misinformation surge's Clickbait-heavy bots are `population.bot_clickbait_share` 0.9. Known
+solutions, as changes to the scenario's starting design, at full size on 8 paired seeds (`incentive scenario <id>
+--solution --seeds 1..8`, the same runs as the report's scenario table), with the goal margins' 95% intervals. Every
+known solution still passes with the time cost, unchanged:
 
 | Scenario | Known solution | Against the baseline (verdict: pass) |
 | --- | --- | --- |
-| Engagement trap | `w_reply` 0, `review_capacity` 10, `report_trust` 1 | engagement 1.03x, toxic 0.35x, FP 0.94x |
-| Toxicity spiral | `review_capacity` 10, `account_cost` 1, `classifier_threshold` 0.3 | harassment 0.0003x, DAU 0.90x |
-| A living for creators | `payout_scheme` FanFunded | living 0.40 against 0.21, harmful payouts 0.5% |
-| Misinformation surge | Quality and bridging ranking with notes, `account_cost` 1 | non-users' informedness +0.044 |
-| Public square | `w_reply` 0, `w_bridging` 0.6 | polarisation 0.82x, engagement 1.05x |
+| Engagement trap | `w_reply` 0, `review_capacity` 10, `report_trust` 1 | engagement 1.14x, toxic 0.40x, FP 0.98x |
+| Toxicity spiral | `review_capacity` 10, `account_cost` 1, `classifier_threshold` 0.3 | harassment 0.0002x, DAU 0.98x |
+| A living for creators | `payout_scheme` FanFunded | living 0.34 against 0.12, harmful payouts 0.7% |
+| Misinformation surge | Quality and bridging ranking with notes, `account_cost` 1 | non-users' informedness +0.046 |
+| Public square | `w_reply` 0, `w_bridging` 0.6 | polarisation 0.83x, engagement 1.18x |
 
-Margins: the trap's engagement +0.044 (+0.039 to +0.048), toxic share +0.027 (+0.016 to +0.037), wrongful sanctions
-+3.94 (+3.78 to +4.10); the spiral's harassment +4.15 (+3.82 to +4.48) and actives +78 (+73 to +84); creators +0.190
-(+0.165 to +0.215) and payouts +0.195 (+0.193 to +0.197); the surge's +0.014 (+0.012 to +0.016) above its +0.03; the
-square's polarisation +0.038 (+0.033 to +0.044) and engagement +0.060 (+0.054 to +0.066); FP in the table are the
-wrongful removals and demotions. Naive attempts fail: the
-chronological feed loses the trap's engagement goal (0.165 against a threshold of 0.203), `w_reply` 0 alone keeps 0.67
-of the toxic share (row 2), a threshold of 0.55 alone breaks the wrongful-sanction goal (22.4 against 7.4), and the
-public square fails with `w_reply` 0 alone (polarisation 0.95x) and is undecided with `w_bridging` 0.6 alone. The
-tests in `crates/incentive-core/tests/scenarios.rs` check every known solution at `N = 600` on six seeds (three left the
-trap's toxicity interval straddling the threshold).
+Margins: the trap's engagement +0.053 (+0.048 to +0.057), toxic share +0.018 (+0.007 to +0.029; v0.2: +0.027),
+wrongful sanctions +3.36 (+2.89 to +3.83); the spiral's harassment +4.43 (+4.03 to +4.84) and actives +119 (+111 to
++127); creators +0.217 (+0.204 to +0.230) and payouts +0.193 (+0.191 to +0.196); the surge's +0.016 (+0.015 to
++0.017) above its +0.03; the square's polarisation +0.033 (+0.027 to +0.040) and engagement +0.070 (+0.064 to
++0.076); FP in the table are the wrongful removals and demotions. The trap's toxicity margin is the thinnest, a fifth
+of its threshold. Naive attempts fail, on the same 8 seeds: the chronological feed loses the trap's engagement goal
+(0.115 against a threshold of 0.156; margin -0.040, -0.045 to -0.036); `w_reply` 0 alone keeps 0.75 of the toxic
+share (row 2; margin -0.044, -0.057 to -0.030); a threshold of 0.55 alone breaks the wrongful-sanction goal (20.4
+against 6.6) and leaves the toxicity goal undecided (0.45 of the baseline; margin +0.009, -0.010 to +0.028); and the
+public square fails with `w_reply` 0 alone (polarisation 0.95x; margin -0.025, -0.029 to -0.021) and is undecided
+with `w_bridging` 0.6 alone (0.90x; margin -0.002, -0.006 to +0.002). The tests in
+`crates/incentive-core/tests/scenarios.rs` check every known solution at `N = 600` on six seeds (three left the trap's
+toxicity interval straddling the threshold).
 
 ### 13.6 Run time
 
-One run of 365 days at `N = 2,000` takes 3.5 seconds single-threaded in release on the owner's desktop
-(`incentive run --seeds 1`, wall time including the CSV export). `incentive report` at full size takes about 3
-minutes (184 seconds) on 8 CPUs. The core and CLI test suites run in about 23 seconds under the dev profile on 8
-threads, compile excluded; the scenario tests take 14 seconds of that.
+One run of 365 days at `N = 2,000` takes 2.9 seconds single-threaded in release on the owner's desktop
+(`incentive run --seeds 1`, wall time including the CSV export; 3.5 before the time cost, which leaves fewer users).
+`incentive report` at full size, now with 35 comparisons (872 runs, 504 distinct), takes about 3.5 minutes (205
+seconds) on 8 CPUs. The core and CLI test suites run in about 33 seconds under the dev profile on 8 threads, compile
+excluded: the fact tests take 19 seconds, almost all of it fact 6 (`N = 1,500`, 365 days), and the scenario tests
+take 12 seconds.
 
 ### 13.7 Exploration
 
 `incentive explore` searched every design lever at once (37 genes: one per lever, two for the reshare depth cap) with
-the world assumptions at their defaults. Each candidate ran on seeds 1 and 2 at `N = 600` for 180 days, and its metrics
-are the mean of the two summaries. After each search every design in its file was rerun at the same size on the fresh
-seeds 9 to 16 (`--confirm-seeds`, the default), and the file keeps those confirmed metrics beside the search's. The four
-searches behind the app's Atlas tab, with search seed 1 and a mutation rate of 0.1 per gene:
+the world assumptions at their defaults, the time cost included (7.2). Each candidate ran on seeds 1 and 2 at `N = 600`
+for 180 days, and its metrics are the mean of the two summaries. After each search every design in its file was rerun at
+the same size on the fresh seeds 9 to 16 (`--confirm-seeds`, the default), and the file keeps those confirmed metrics
+beside the search's. The four searches behind the app's Atlas tab, with search seed 1 and a mutation rate of 0.1 per
+gene:
 
 | Search | Library algorithm | Generations x batch | Designs simulated | Confirmed | Wall time |
 | --- | --- | --- | --- | --- | --- |
-| Goodhart, `engagement_index` | `SimpleGA`, elitism 2, from 40 random designs | 25 x 40 | 949 | 14 | 175 s |
-| Goodhart, `survey_satisfaction` | the same | 25 x 40 | 947 | 18 | 173 s |
-| Map | `MapElites`, 16 x 16 grid, 128 initial designs (the presets first) | 50 x 64 | 3,113 | 169 | 462 s |
-| Pareto front | `Nsga2`, population 64 (the presets and random designs) | 40 x 64 | 2,621 | 64 | 468 s |
+| Goodhart, `engagement_index` | `SimpleGA`, elitism 2, from 40 random designs | 25 x 40 | 947 | 18 | 167 s |
+| Goodhart, `survey_satisfaction` | the same | 25 x 40 | 947 | 21 | 146 s |
+| Map | `MapElites`, 16 x 16 grid, 128 initial designs (the presets first) | 50 x 64 | 3,129 | 156 | 398 s |
+| Pareto front | `Nsga2`, population 64 (the presets and random designs) | 40 x 64 | 2,623 | 64 | 463 s |
 
-That is 7,630 designs and 15,260 search runs, plus 2,120 confirmation runs, in 21 minutes on 8 CPUs; the confirmation
-takes 10 to 90 seconds of each search. The exact commands are in the README. The searches start from the presets except
-`max-engagement` (14.1), which comes from the Pareto search itself, so the commands regenerate these files byte for
-byte. The map's axes are the engagement index from 0.04 to 0.36 and the harm index from 0 to 0.64, in cells of 0.02 by
-0.04; values outside fall into the edge cells.
+That is 7,646 designs and 15,292 search runs, plus 2,072 confirmation runs, in 20 minutes on 8 CPUs; the confirmation
+takes 10 to 70 seconds of each search. The exact commands are in the README. The searches start from the presets except
+`max-engagement` (14.1), which comes from the Pareto search itself: the initial designs leave it out by its id, so its
+levers never reach a search, and the commands regenerate these files byte for byte whatever the preset holds (checked by
+running small map and Pareto searches before and after the preset changed: the files were identical). The map's axes are
+the engagement index from 0.04 to 0.36 and the harm index from 0 to 0.64, in cells of 0.02 by 0.04; values outside fall
+into the edge cells.
 
-The reduced size changes the numbers. On seeds 9 to 16 the engagement ranking scores engagement 0.219, harm 0.328 and
-benefit 0.531 at `N = 600` over 180 days, against 0.237, 0.384 and 0.431 at full size: a shorter run has less time for
-harm and churn to build up. Every number below that is not marked as a search or confirmed value comes from full-size
-runs (`N = 2,000`, 365 days) on seeds 9 to 16, which no search selected on: `incentive config --from-atlas
-<file> --design <n>` turned each design into a configuration, and `incentive compare --population 2000 --days
-365 --seeds 9..16` ran it, paired by seed, with 95% intervals.
+The reduced size changes the numbers. On seeds 9 to 16 the engagement ranking scores engagement 0.195, harm 0.332 and
+benefit 0.517 at `N = 600` over 180 days, against 0.179, 0.415 and 0.415 at full size: a shorter run has less time for
+harm and churn to build up, and with the time cost churn takes engagement too. The engaging front designs move the other
+way and gain engagement at full size (front design 61: 0.353 confirmed, 0.382 at full size). Every number below that is
+not marked as a search or confirmed value comes from full-size runs (`N = 2,000`, 365 days) on seeds 9 to 16, which no
+search selected on: `incentive config --from-atlas <file> --design <n>` turned each design into a configuration, and
+`incentive run --population 2000 --days 365 --seeds 9..16` ran it; differences are paired by seed, with 95% intervals,
+as `incentive compare` computes them.
 
-**The most engaging design found** is front design 64 of the Pareto search, now the preset `max-engagement` (14.1):
-engagement 0.429 at full size, 1.81 times the engagement ranking's 0.237 (+0.193, +0.187 to +0.198). The final design of
-the engagement Goodhart search reaches 0.407, 0.022 less (-0.031 to -0.013); front design 63 reaches 0.426, which is not
-distinguishable from design 64 (-0.003, -0.007 to +0.001). Design 64 weighs likes (2.9 against 1.0) and dwell (3.0
-against 0.5) far above the engagement ranking while keeping its reply and share weights (`w_reply` 1.5, `w_share` 1.7
-against 2.0), shows no recommended posts from strangers, pushes notifications at full strength and has no working
-classifier (its threshold of 1.05 flags nothing); ten reviews per 1,000 users a day, weighted by reporters' records
-(`report_trust` 0.65), remove reported posts but carry no sanctions. Against the engagement ranking it has 31% more harm
-(0.505 against 0.384, +0.121, +0.104 to +0.139), twice the toxic share (0.329 against 0.163), more polarisation (0.584
-against 0.491) and lower wellbeing of ever-users (0.558 against 0.613). Its benefit index is no higher (+0.013, -0.001
-to +0.027) only because it pays creators: without the creators term it is 0.102 lower (-0.114 to -0.091). On seeds 1 to
-8 the report gives it 0.428 ± 0.010 engagement and 0.495 ± 0.036 harm (13.3, column Max).
+**The most engaging design found** is front design 61 of the Pareto search, now the preset `max-engagement` (14.1):
+engagement 0.382 at full size, 2.14 times the engagement ranking's 0.179 (+0.204, +0.200 to +0.208). The six front
+designs with the highest confirmed engagement (63, 58, 64, 60, 62 and 61) were rerun at full size, and design 61 had the
+highest mean; designs 62 (-0.0015, -0.005 to +0.002) and 63 (-0.003, -0.008 to +0.001) cannot be told apart from it. The
+top of the front is flat at full size: six front designs lie within 0.006 of one another (0.379 to 0.385), and the
+highest mean belongs to design 51, thirteenth on its confirmed engagement and so outside the six, at +0.003 (-0.003
+to +0.009) over design 61, which is no difference. The final design of the engagement Goodhart search
+reaches 0.330, 0.052 less (-0.062 to -0.043). Design 61 weighs likes (3.0 against 1.0) and dwell (2.7 against 0.5) far
+above the engagement ranking and shares far below it (0.2 against 2.0), shows half the recommended posts from strangers
+(20% against 40%), pushes notifications at full strength and lets blocks filter nothing (`block_effectiveness` 0). Its
+classifier removes at 0.75, a little laxer than the engagement ranking's 0.7; nine reviews per 1,000 users a day,
+weighted by reporters' records (`report_trust` 0.7), remove reported posts but carry no sanctions. Against the
+engagement ranking it has 14% less harm (0.356 against 0.415, -0.058, -0.092 to -0.025), the same toxic share (0.166
+against 0.174, -0.008, -0.034 to +0.018) and the same polarisation (0.500 against 0.493), users' wellbeing 0.020 higher
+(0.553 against 0.533, +0.004 to +0.037), a share of time not worth it 0.108 lower (0.479 against 0.588, -0.151
+to -0.065) and 0.204 more of society as users (0.675 against 0.471). Its benefit index is higher (+0.060, +0.051
+to +0.068) only because it pays creators: without the creators term it is 0.050 lower (-0.063 to -0.037). On seeds 1
+to 8 the report gives it 0.382 ± 0.006 engagement and 0.359 ± 0.066 harm (13.3, column Max).
 
 **Lowest harm at a given share of that engagement.** Of the 64 front designs, rerun at full size:
 
-| Share of design 64's engagement | At least | Lowest harm on the front | Design | Its engagement | Confirmed values |
+| Share of design 61's engagement | At least | Lowest harm on the front | Design | Its engagement | Confirmed values |
 | --- | --- | --- | --- | --- | --- |
-| 80% | 0.343 | 0.086 | front design 32 | 0.353 | 0.121 at 0.311 (design 33) |
-| 90% | 0.386 | 0.182 | front design 51 | 0.390 | 0.222 at 0.340 (design 53) |
-| 100% | 0.429 | 0.505 | front design 64 | 0.429 | 0.383 at 0.377 (design 64) |
+| 80% | 0.306 | 0.048 | front design 32 | 0.312 | 0.126 at 0.286 (design 35) |
+| 90% | 0.344 | 0.168 | front design 42 | 0.355 | 0.191 at 0.337 (design 51) |
+| 100% | 0.382 | 0.217 | front design 51 | 0.385 | 0.368 at 0.357 (design 63) |
 
-The last column applies the same shares to the confirmed values at the search's size, where design 64 is again the most
-engaging (0.377). Front design 44 misses the 90% line by 0.0001 with harm 0.177. The trade-off steepens near the top:
-giving up a fifth of the engagement removes 83% of the harm (design 32 against 64: engagement -0.077, -0.083 to -0.070;
-harm -0.420, -0.445 to -0.395), giving up a tenth removes 64% (design 51: -0.039 and -0.323), and the last tenth costs
-harm at about three times the rate of the tenth before it. Below that the front holds harm under 0.10 up to an
-engagement of 0.371. Of the 64 front designs, 44 beat the engagement ranking on engagement, harm and benefit at once at
-full size (39 on their confirmed values).
+The last column applies the same shares to the confirmed values at the search's size, where design 63 is the most
+engaging (0.357). The trade-off no longer steepens at the top. Equal engagement is available at 39% less harm than
+design 61's (design 51: engagement +0.003, -0.003 to +0.009; harm -0.139, -0.157 to -0.121); giving up a tenth of the
+engagement removes 53% of design 61's harm (design 42: -0.027, -0.034 to -0.021; harm -0.188, -0.204 to -0.173), and
+giving up a fifth removes 86% (design 32: -0.070 and -0.308). From design 32 to design 42 harm rises by 0.120 for 0.043
+of engagement, from design 42 to design 51 by 0.049 for 0.030. The front holds harm under 0.10 up to an engagement
+of 0.312 (design 32) and under 0.15 up to 0.335 (design 36, harm 0.107). Of the 64 front designs, 49 beat the engagement
+ranking on engagement, harm and benefit at once at full size (44 on their confirmed values).
 
-**High engagement with low harm, against the most engaging design.** Front design 36 is the clearest case: at full size
+**High engagement with low harm, against the most engaging design.** Front design 32, the most engaging front design
+with harm under 0.10, is the clearest case: at full size
 
-| Design | Eng. | Harm | Benefit | Without creators | Toxic | Wellbeing | Meaningful | Net revenue | Wrongful |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Engagement ranking | 0.237 | 0.384 | 0.431 | 0.538 | 0.163 | 0.613 | 0.058 | 14.2 | 3.6 |
-| Most engaging found (64) | 0.429 | 0.505 | 0.444 | 0.436 | 0.329 | 0.558 | 0.021 | 26.3 | 0.0 |
-| Front design 51 | 0.390 | 0.182 | 0.473 | 0.552 | 0.086 | 0.731 | 0.004 | 41.0 | 0.5 |
-| Front design 36 | 0.371 | 0.093 | 0.511 | 0.569 | 0.030 | 0.759 | 0.002 | 60.8 | 1.5 |
-| Front design 32 | 0.353 | 0.086 | 0.509 | 0.581 | 0.028 | 0.744 | 0.016 | 59.9 | 1.5 |
-| Goodhart, engagement, final | 0.407 | 0.595 | 0.343 | 0.386 | 0.349 | 0.494 | 0.011 | 12.8 | 0.0 |
-| Goodhart, survey, final | 0.334 | 0.161 | 0.562 | 0.578 | 0.081 | 0.769 | 0.001 | 70.0 | 0.0 |
+| Design | Eng. | Harm | Benefit | No creators | Toxic | Wellbeing | Ever-users | Low value | Revenue | Wrongful |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Engagement ranking | 0.179 | 0.415 | 0.415 | 0.519 | 0.174 | 0.533 | 0.543 | 0.588 | 10.7 | 3.2 |
+| Most engaging found (61) | 0.382 | 0.356 | 0.475 | 0.469 | 0.166 | 0.553 | 0.553 | 0.479 | 43.2 | 1.8 |
+| Front design 51 | 0.385 | 0.217 | 0.470 | 0.521 | 0.101 | 0.622 | 0.619 | 0.337 | 60.8 | 1.6 |
+| Front design 42 | 0.355 | 0.168 | 0.545 | 0.546 | 0.095 | 0.674 | 0.670 | 0.264 | 33.6 | 3.7 |
+| Front design 36 | 0.335 | 0.107 | 0.577 | 0.560 | 0.049 | 0.691 | 0.687 | 0.266 | 41.5 | 3.7 |
+| Front design 32 | 0.312 | 0.048 | 0.595 | 0.556 | 0.004 | 0.694 | 0.689 | 0.251 | 40.9 | 1.0 |
+| Goodhart, engagement, final | 0.330 | 0.612 | 0.317 | 0.380 | 0.305 | 0.429 | 0.454 | 0.718 | 21.9 | 0.0 |
+| Goodhart, survey, final | 0.327 | 0.361 | 0.495 | 0.485 | 0.269 | 0.603 | 0.606 | 0.428 | 64.0 | 0.0 |
 
-(Wellbeing of ever-users, meaningful interactions per user, wrongful removals and demotions a day.) Against design 64,
-design 36 gives up 14% of the engagement (-0.059, -0.065 to -0.052) for 82% less harm (-0.412, -0.437 to -0.387), a
-tenth of the toxic share, 0.21 less polarisation, 0.20 more wellbeing of ever-users and 0.145 more of society as users.
-Its benefit lead over design 64 (+0.067, +0.046 to +0.088) does not rest on creators, since design 64 pays them too:
-without the creators term the lead is +0.134 (+0.116 to +0.151). Against the engagement ranking the creators term
-supplies most of it: +0.081 (+0.071 to +0.090) with creators, +0.031 (+0.023 to +0.040) without; in the factorial below,
-payouts alone carry +0.056 ± 0.004 of the benefit lead (Shapley value). Meaningful interactions nearly vanish (0.002 a
-user against 0.058), as on most of the engaging front designs; the front's benefit comes from the other components. Net
-revenue is four times the engagement ranking's (60.8 against 14.2) because 88% of its revenue comes from subscriptions,
-which happier users buy (8.3). Design 36 removes at a classifier threshold of 0.75, and wrongly removes or demotes 1.5
-posts a day against the engagement ranking's 3.6: unlike v0.1, its harm cut does not rest on a strict classifier.
+(Benefit without the creators term, wellbeing of users and of ever-users, the share of time not worth it
+(`low_value_time`, 9.2), net revenue, wrongful removals and demotions a day.) Against design 61, design 32 gives up 18%
+of the engagement (-0.070, -0.077 to -0.064) for 86% less harm (-0.308, -0.329 to -0.286), a fortieth of the toxic
+share, 0.144 less polarisation, 0.141 more wellbeing of users (+0.129 to +0.153), 0.228 less time not worth it (-0.252
+to -0.204) and 0.039 more of society as users. Its benefit lead over design 61 (+0.120, +0.109 to +0.131) does not rest
+on creators, since design 61 pays them too: without the creators term the lead is +0.087 (+0.079 to +0.095). Against the
+engagement ranking it has 74% more engagement (+0.133, +0.127 to +0.140) and 88% less harm (-0.366, -0.401 to -0.331);
+the creators term supplies most of its benefit lead there: +0.180 (+0.172 to +0.187) with creators, +0.037 (+0.024
+to +0.049) without. Meaningful interactions nearly vanish (0.002 a user against 0.060), as on most of the engaging front
+designs; the front's benefit comes from the other components. Net revenue is four times the engagement ranking's (40.9
+against 10.7) although design 32 pays half its revenue to creators, because 92% of its revenue comes from subscriptions,
+which users buy when the platform is worth it to them. It keeps the engagement ranking's predictor quality, share of
+recommended posts and graduated sanctions, removes at 0.75 and wrongly removes or demotes 1.0 post a day against 3.2:
+its harm cut rests on neither a strict classifier nor a predictor at the cap.
 
-**What front design 36 rests on.** `incentive factorial --a engagement-maximiser --b front-36.json --levers
-notification_intensity,report_trust,review_capacity,recommended_share,predictor_quality,payout_share --population
-2000 --days 365` (64 cells, seeds 9 to 16; ± is the 95% interval) sets every subset of six of its levers back to the
-engagement ranking's values: notifications 1.0 (ranking 0.6), `report_trust` 0.85 (0), ten reviews per 1,000 users
-(one), 5% recommended posts (40%), predictor quality 0.95 (0.85, and the cap) and 25% of revenue paid to creators (0).
-With all six back it keeps engagement 0.270, harm 0.168 and benefit 0.438: still 14% more engagement than the engagement
-ranking (+0.034, +0.030 to +0.038) with 56% less harm (-0.217, -0.240 to -0.193), but no more benefit (+0.007, -0.001
-to +0.016). The six levers carry 0.100 of its engagement lead of 0.134, 0.074 of its harm cut of 0.291 and 0.073 of its
-benefit lead of 0.081.
+**What front design 32 rests on.** `incentive factorial --a engagement-maximiser --b front-32.json --levers
+notification_intensity,w_dwell,w_bridging,w_in_network,payout_share,ads_share --population 2000 --days 365` (64 cells,
+seeds 9 to 16; ± is the 95% interval) sets every subset of six of its levers back to the engagement ranking's values:
+notifications 1.0 (ranking 0.6), `w_dwell` 2.6 (0.5), `w_bridging` 1.8 (0), `w_in_network` 1.0 (0.2), 50% of revenue
+paid to creators (0) and `ads_share` 0.35 (1). The six were chosen by setting each of the 19 levers in which design 32
+differs from the engagement ranking back one at a time: they had the largest effects on engagement, harm, benefit or
+users' wellbeing; review capacity (-0.020 harm alone), account cost and the like weight came next. With all six back the
+design keeps engagement 0.212, harm 0.304, benefit 0.432 and users' wellbeing 0.575: still 19% more engagement than the
+engagement ranking (+0.034, +0.029 to +0.038) with 27% less harm (-0.110, -0.135 to -0.085), a little more benefit
+(+0.017, +0.010 to +0.023) and more wellbeing (+0.043, +0.033 to +0.052). The six levers carry 0.100 of its engagement
+lead of 0.133, 0.256 of its harm cut of 0.366, 0.163 of its benefit lead of 0.180 and 0.119 of its wellbeing lead
+of 0.161. Main effects (from the engagement ranking's value to design 32's) and Shapley values:
 
-- Engagement: notifications at full strength carry all of it (main effect +0.103 ± 0.002, Shapley share 102%). Every
-  other lever moves engagement by 0.004 or less, and no interaction exceeds 0.003 (notifications with predictor
-  quality -0.002 ± 0.001). Notifications alone thus supply three quarters of the design's engagement lead over the
-  engagement ranking; the rest comes from levers outside the six, mainly its ranking weights.
-- Harm: predictor quality 41% of the six levers' cut (Shapley -0.030 ± 0.003), notifications 27% (-0.020 ± 0.005),
-  review capacity 27% (-0.020 ± 0.005), payouts 23% (-0.017 ± 0.004) and report trust 4% (-0.003 ± 0.002), while cutting
-  strangers' posts to 5% adds harm here (+0.017 ± 0.005, -22%). The interactions are small and partly offsetting:
-  notifications with predictor quality +0.009 ± 0.004, report trust with review capacity +0.008 ± 0.004 (each does part
-  of the other's work), recommended share with predictor quality -0.008 ± 0.003.
-- Benefit: payouts 77% (+0.056 ± 0.004), notifications 18% (+0.013 ± 0.001), predictor quality 13% (+0.010 ± 0.001),
-  recommended share -12% (-0.009 ± 0.001); review capacity and report trust under 4% together.
+- Engagement: notifications at full strength carry 92% of the six levers' gain (main effect +0.091 ± 0.003,
+  Shapley +0.092 ± 0.003) and dwell weight 34% (+0.035 ± 0.002), while bridging (-0.010 ± 0.003) and the in-network
+  weight (-0.015 ± 0.002) cost engagement alone. The weights work together: dwell with bridging +0.034 ± 0.003, bridging
+  with the in-network weight +0.023 ± 0.003, notifications with dwell +0.015 ± 0.002, notifications with the in-network
+  weight -0.009 ± 0.002. So notifications supply about 70% of the design's engagement lead over the engagement ranking
+  (0.092 of 0.133); the rest comes from the ranking weights.
+- Harm: bridging carries 61% of the six levers' cut (Shapley -0.157 ± 0.020), the in-network weight 25% (-0.064
+  ± 0.007), notifications 15% (-0.038 ± 0.003) and dwell 6% (-0.016 ± 0.003), while payouts add harm alone (+0.020
+  ± 0.007, -8%). The largest interactions: bridging with payouts -0.077 ± 0.016 (payouts add harm under the engagement
+  ranking's weights and lower it under strong bridging), bridging with the in-network weight +0.051 ± 0.008 (each does
+  part of the other's work), dwell with the in-network weight +0.032 ± 0.005, notifications with the in-network
+  weight +0.020 ± 0.005 and with bridging +0.017 ± 0.005.
+- Benefit: payouts 57% (+0.093 ± 0.005), the subscription share 27% (+0.044 ± 0.004), bridging 13%, the in-network
+  weight 13%, notifications 12% (+0.019 ± 0.002), dwell -21% (-0.035 ± 0.006); payouts with subscriptions +0.083
+  ± 0.007, since a subscription business has more revenue to pay out.
+- Users' wellbeing (decomposed from the same runs): bridging 36% (+0.043 ± 0.010), the in-network weight 29% (+0.034
+  ± 0.005), notifications 19% (+0.022 ± 0.002), fewer ads 9% (+0.011 ± 0.002), dwell 8% (+0.009 ± 0.002) and payouts 0%
+  alone, but bridging with payouts +0.031 ± 0.007. Notifications also lower the share of time not worth it (main
+  effect -0.054 ± 0.005).
 
-So the levers the model may still flatter carry what the six explain: notifications supply the engagement and help harm
-and benefit, because the model charges nothing for them on a good feed (section 16); a predictor at the cap is the
-largest single harm reduction among the six; payouts are most of the benefit. Three quarters of the harm cut (0.217 of
-0.291) lies in levers this factorial did not take apart, chiefly the ranking weights (`w_share` 0.4 against 2.0,
-`w_see_less` 1.8, `w_bridging` 0.8, `w_dwell` 3.0) and the absent sanctions. The other designs were not taken apart this
-way.
+So design 32 rests on its ranking for harm and wellbeing (a strong bridging weight and a feed of followed accounts that
+cut toxicity and wasted time), on notifications for engagement, and on payouts and subscriptions for benefit.
+Notifications still help it on every count, as they help Quality and bridging (13.3, row 32): its feed is worth its
+time, so the sessions they bring add more than they cost. The other designs were not taken apart this way.
+
+**What notifications do on the front.** Every one of the 64 front designs keeps notifications at 0.9 or more (62 at full
+strength), as both final Goodhart designs do; the time cost moved no part of the front off them. Setting notifications
+back to 0.6 in three front designs, with the rest as found, gives the effect of full strength (± is the 95% interval):
+
+| Design | Engagement | Harm | Users' wellbeing | Time not worth it |
+| --- | --- | --- | --- | --- |
+| Front design 61 | +0.125 ± 0.004 | -0.023 ± 0.018 | +0.003 ± 0.013 | -0.046 ± 0.024 |
+| Front design 51 | +0.116 ± 0.005 | -0.049 ± 0.018 | +0.022 ± 0.010 | -0.063 ± 0.022 |
+| Front design 32 | +0.099 ± 0.004 | -0.008 ± 0.005 | +0.023 ± 0.002 | -0.007 ± 0.003 |
+
+The front agrees with the report's rows 31 and 32. Notifications raise engagement by 43% to 49% (design 61 without them
+would have 0.257, still 1.44 times the engagement ranking's). Where the feed is mostly worth its time (designs 32
+and 51, time not worth it 0.25 and 0.34) they raise users' wellbeing by about 0.02, as under Quality and bridging
+(+0.019); on the most engaging design, whose share of time not worth it (0.48) lies nearer the engagement ranking's
+(0.59), they leave wellbeing unchanged, as under the engagement ranking (+0.000). They lower harm in all three. The time
+cost thus took the free lunch away where the feed wastes time, but not on the front's best designs, and the model still
+charges nothing for the interruption itself (section 16).
 
 **The winner's curse.** Confirmed values (seeds 9 to 16) against search values (seeds 1 and 2), both at the search's
-size, as mean differences. The seed sets differ too: the seven presets, which no search selected, lose 0.008 engagement,
-0.016 harm, 0.007 benefit and 0.029 survey satisfaction from seeds 1 and 2 to seeds 9 to 16. Against that shift:
+size, as mean differences. The seed sets differ too: the seven presets, which no search selected, lose 0.007
+engagement, 0.017 harm, 0.004 benefit and 0.027 survey satisfaction from seeds 1 and 2 to seeds 9 to 16. Against that
+shift:
 
-- The 169 map elites lose 0.007 engagement (in 81% of them), 0.009 harm and 0.009 benefit: close to the presets' shift,
-  so the map as a whole is not inflated much. The 16 elites with the highest benefit lose 0.010 benefit (15 of 16); the
-  16 with the lowest harm keep their harm (-0.001, higher in 5 of 16), which is 0.014 worse than the shift, and lose
-  0.025 benefit (11 of 16), 0.018 more than the shift.
-- The 64 front designs lose 0.017 engagement (89% of them), twice the shift, and 0.025 harm, because selection for
-  engagement also picks draws with high harm; their benefit rises by 0.004. The six most engaging front designs lose
-  0.035 engagement on average (all six), 0.027 more than the shift: about 8% of their search value.
-- The final engagement Goodhart design falls from 0.402 to 0.376 (-0.026, 0.018 beyond the shift), the final survey
-  design from 0.714 to 0.667 (-0.047, 0.018 beyond the shift).
+- The 156 map elites lose 0.005 engagement (in 79% of them), 0.010 harm and 0.012 benefit, 0.008 more benefit than the
+  shift: the map as a whole is inflated little. The 16 elites with the highest benefit lose 0.001 benefit (8 of 16);
+  the 16 with the lowest harm gain 0.004 harm (higher in 11 of 16), 0.021 worse than the shift, and lose 0.024 benefit
+  (15 of 16), 0.020 more than the shift.
+- The 64 front designs lose 0.011 engagement (88% of them), 0.004 beyond the shift, 0.018 harm (the shift) and 0.004
+  benefit (the shift). The six most engaging front designs lose 0.023 engagement on average (all six), 0.017 more than
+  the shift, about 6% of their search value; their harm falls by 0.044 and their benefit rises by 0.025, because
+  selection for engagement also picked draws with high harm and low benefit.
+- The final engagement Goodhart design falls from 0.367 to 0.329 (-0.038, 0.031 beyond the shift), the final survey
+  design from 0.683 to 0.639 (-0.044, 0.017 beyond the shift).
 
 A search value is thus optimistic by 0.01 to 0.03 in whatever the search pushed on hardest; ranks hold better than
-levels. In v0.1, without the shift as a reference, the lowest-harm map elites gained 0.019 harm on fresh seeds.
+levels, though not at the flat top of the front, where full size reorders designs that differ by less than 0.01.
 
-**Goodhart runs.** Maximising the engagement index alone raised the best design's engagement from 0.192 to 0.402 over 25
-generations (search values). At full size, generation 0's best against the final design: engagement 0.196 to 0.407
-(+0.211, +0.207 to +0.216), harm 0.319 to 0.595 (+0.277, +0.263 to +0.291), toxic share 0.032 to 0.349, polarisation
-0.420 to 0.607, wellbeing of ever-users 0.659 to 0.494 (-0.165, -0.188 to -0.142), benefit 0.469 to 0.343 and
-misinformation 0.10 to 0.17. The search learned to switch the classifier off (from generation 6), drop sanctions, push
-notifications to full strength and weight likes (2.1), shares (2.7) and dwell (1.9); unlike v0.1 it kept human review
-(6.8 per 1,000 users, weighted by reporters' records). The survey rose with it, from 0.462 to 0.637 (+0.175, +0.168
-to +0.182), while wellbeing fell by as much: the survey would have praised every step. The final design is worse than
-the engagement ranking on harm, toxicity, polarisation, benefit and wellbeing, and below design 64 on engagement.
+**Goodhart runs.** Maximising the engagement index alone raised the best design's engagement from 0.179 to 0.367 over 25
+generations (search values). At full size, generation 0's best against the final design: engagement 0.178 to 0.330
+(+0.152, +0.142 to +0.161), harm 0.087 to 0.612 (+0.524, +0.488 to +0.561), toxic share 0.011 to 0.305,
+polarisation 0.384 to 0.568, users' wellbeing 0.688 to 0.429 (-0.259, -0.293 to -0.224), time not worth it 0.199
+to 0.718, benefit 0.557 to 0.317 and misinformation 0.05 to 0.19. The search started from a random design without a
+classifier, never switched it on, dropped human review (0.2 per 1,000 users from generation 2, none at the end), pushed
+notifications to full strength from generation 1, showed no recommended posts and weighted likes (2.5), shares (3.0),
+dwell (3.0) and followed accounts (1.9). The survey rose with it, from 0.520 to 0.586 (+0.066, +0.053 to +0.080), while
+wellbeing fell four times as far. The final design is worse than the engagement ranking on harm, toxicity, polarisation,
+benefit and wellbeing, and below design 61 on engagement (-0.052): it keeps users' attention but not the users (0.518 of
+society against design 61's 0.675).
 
-Maximising survey satisfaction alone raised it from 0.564 to 0.714 (search values). At full size: survey 0.550 to 0.701
-(+0.151, +0.145 to +0.157), engagement 0.151 to 0.334, harm 0.220 to 0.161 (-0.059, -0.078 to -0.040), benefit 0.452 to
-0.562, wellbeing of ever-users 0.657 to 0.769 and Creators earning a living 0.15 to 0.50, but the toxic share rose from
-0.025 to 0.081 (+0.055, +0.036 to +0.075). The final design beats the engagement ranking on engagement (0.334 against
-0.237), harm (0.161 against 0.384) and benefit (0.562 against 0.431). What it exploits is not the timing:
+Maximising survey satisfaction alone raised it from 0.526 to 0.683 (search values). At full size: survey 0.513 to 0.647
+(+0.135, +0.125 to +0.144), engagement 0.118 to 0.327, benefit 0.437 to 0.495 and 0.163 more of society as users, but
+harm rose from 0.165 to 0.361 (+0.195, +0.151 to +0.240) and the toxic share from 0.011 to 0.269 (+0.258, +0.213
+to +0.303), while users' wellbeing did not move (0.618 to 0.603, -0.015, -0.038 to +0.009). The search kept the
+classifier off (from generation 0), dropped sanctions, kept seven reviews per 1,000 users and pushed notifications to
+full strength by generation 4. Against the engagement ranking the final design has more engagement (0.327
+against 0.179), less harm (0.361 against 0.415, -0.054, -0.088 to -0.020), more benefit (+0.080) and more wellbeing
+(+0.071), but a higher toxic share (0.269 against 0.174, +0.095, +0.058 to +0.133). It does not exploit the timing:
 `survey_after_session` stayed at 0 in all 25 generations' best designs, and setting it to 1 in the final design lowers
-the survey by 0.132 (-0.141 to -0.123) with every truth metric unchanged, because recent pleasure lies below wellbeing
-even there (13.3). It exploits the pleasure and habit in the answers through notifications: at full strength instead of
-0.6 they raise the survey by 0.053 (+0.050 to +0.056) and users' wellbeing by 0.039 (+0.035 to +0.044), and since
-wellbeing weighs 0.6 in an answer, about half of the survey gain is pleasure and habit. In v0.1 an answer was wellbeing
-plus 0.1 and noise, there was nothing to exploit, and the final design beat the engagement ranking on engagement by 5%
-and cut harm to a quarter. Now the survey is still a far better proxy than engagement, but it is no longer a check on
-engagement: it rises under both searches.
+the survey by 0.056 (-0.072 to -0.040) with every truth metric unchanged. It exploits the pleasure and habit in the
+answers through notifications: at full strength instead of 0.6 they raise the survey by 0.034 (+0.030 to +0.038) and
+users' wellbeing by 0.002 (-0.010 to +0.015), so all of that gain is pleasure and habit. Where the rest of its survey
+gain comes from, with wellbeing flat and toxicity rising, these runs do not separate. The survey stays a better proxy
+than engagement, but it is no check on harm: maximising it raised harm.
 
-**What changed from v0.1.**
+**What changed from v0.2.** The only change to what a run does is the time cost (7.2), so every difference here comes
+from it.
 
-- The baseline. v0.1 measured coexistence against the engagement ranking (front design 33: 36% more engagement, 72% less
-  harm). The engagement ranking reaches 55% of the most engaging design found, so coexistence is now stated against
-  design 64, as a trade: 14% of the engagement for 82% of the harm (design 36).
-- The brakes. v0.1's front design 33 cut harm with a classifier that removed at 0.2 and wrongly removed or demoted 66
-  posts a day, which the harm index did not count; with that threshold, notifications, account cost and predictor
-  quality back at the engagement ranking's values it kept about half its lead. Wrongful sanctions now count in the harm
-  index, predictor quality is capped at 0.95, reports can be weighted by trust and brigaded by bots, and the survey can
-  be gamed. The low-harm front now removes at 0.75 to 0.8 with fewer wrongful sanctions than the engagement ranking; its
-  harm cut comes from the ranking, few recommended posts, human review weighted by trust, a predictor at the cap and
-  notifications.
-- The map filled 169 of 256 cells (66%, v0.1: 148), with engagement from 0.09 to 0.39 and harm from 0.02 to 0.66 (search
-  values). Benefit across its cells follows the share of Creators earning a living (correlation 0.76, v0.1: 0.82). The
-  map's fitness is benefit, so at high engagement its lowest harm (confirmed) lies far above the front's: 0.11 at 0.27,
-  0.28 at 0.30, 0.50 at 0.37.
-- The engagement Goodhart search ended lower at full size (0.407 against v0.1's 0.435) and the survey search learned to
-  game the survey's pleasure and habit terms.
-- Every design in the atlas carries confirmed values on seeds 9 to 16, and every result here is on those seeds unless it
-  is marked as a search value.
+- The most engaging design costs no harm. v0.2's most engaging design (front design 64) had 1.81 times the engagement
+  ranking's engagement with 31% more harm, twice the toxic share and lower wellbeing. Design 61 has 2.14 times the
+  engagement ranking's (which the time cost lowered from 0.237 to 0.179) with 14% less harm, the same toxic share and
+  slightly higher wellbeing. It also wastes less of its users' time than the engagement ranking (time not worth it
+  0.479 against 0.588) and keeps 0.204 more of society on the platform; it differs from design 64 in its classifier
+  (it removes at 0.75, where design 64 flagged nothing) and its ranking weights as well, so these runs do not separate
+  why. Its own engagement is lower than design 64's was (0.382 against 0.429).
+- The coexistence trade got better. v0.2's design 36 gave up 14% of the most engaging design's engagement for 82% of its
+  harm; design 32 gives up 18% for 86%, and design 51 gives up nothing for 39%. Where v0.2's trade-off steepened at the
+  top (the last tenth of engagement cost harm at three times the rate of the tenth before), now it does not. Design 32
+  shares v0.2's design 36's notifications, payouts and review weighted by trust, but cuts harm by bridging and a feed of
+  followed accounts rather than by few recommended posts and a predictor at the cap.
+- Notifications. v0.2's design 36 drew all of its six levers' engagement from notifications (102%), and they helped harm
+  and benefit because time was free. On design 32 they carry 92% of the six levers' engagement and still help harm,
+  benefit and wellbeing, because its feed is worth its time; on the most engaging design they no longer raise wellbeing.
+- The map filled 156 of 256 cells (61%, v0.2: 169), with engagement from 0.06 to 0.33 and harm from 0.03 to 0.69 (search
+  values); v0.2 reached 0.39. Its high-engagement edge moved up the harm axis: its three elites above an engagement
+  of 0.30 all have harm of 0.41 or more, and its lowest confirmed harm at a confirmed engagement of at least 0.25
+  is 0.32 (v0.2: 0.11 at 0.27), where the front holds 0.07. The map's fitness is benefit, so it keeps designs that pay
+  creators over designs that do little harm; benefit across its cells follows the share of Creators earning a living
+  even more closely than in v0.2 (correlation 0.85, v0.2: 0.76).
+- The engagement Goodhart search ended lower (0.330 at full size against 0.407) and further below the most engaging
+  design (-0.052 against -0.022), because a feed worth less than its time drains its own users. The survey search, which
+  in v0.2 cut harm (0.220 to 0.161), now raises it (0.165 to 0.361), and the notifications it learned add no wellbeing
+  to the survey's gain, where in v0.2 they added half.
 
 **Limits of these results.** One world (the defaults), one search seed per search, two seeds per candidate and a reduced
-size: the front designs gain engagement at full size (design 36: 0.322 confirmed, 0.371 at full size), so the search
-size understates what the high-engagement designs reach. "Most engaging found" is what these searches found, not a
-bound: designs 63 and 64 tie, and a longer search may find more. The factorial covers six levers of one design. The
-model makes notifications free on a good feed and prices compulsive use far below the field (13.4, section 16), which
-flatters exactly the lever that carries design 36's engagement. Net revenue rests on the subscription price and ad rate,
-which are not calibrated (11). Levers without effect in a design (the alternative feed when nobody uses it, the
-classifier's settings when it is off, the payout scheme when nothing is paid) drift freely during a search; the reports
-and the Atlas tab leave them out when they list how a design differs. Rerunning with another `--config` tests whether a
-finding survives a different world.
+size: the front designs gain engagement at full size (design 32: 0.273 confirmed, 0.312 at full size), so the search
+size understates what the high-engagement designs reach, and it reorders the flat top of the front. "Most engaging
+found" is what these searches found, not a bound: six designs tie at full size, design 61 by the rule above, and a
+longer search may find more. The factorial covers six levers of one design and leaves review capacity out. The time cost
+is one value of time for everyone, calibrated on the integrity preset (section 16); notifications cost only the time
+they bring and not the interruption, which still flatters the lever that carries design 32's engagement. Net revenue
+rests on the subscription price and ad rate, which are not calibrated (11). Levers without effect in a design (the
+alternative feed when nobody uses it, the classifier's settings when it is off, the payout scheme when nothing is paid)
+drift freely during a search; the reports and the Atlas tab leave them out when they list how a design differs.
+Rerunning with another `--config` tests whether a finding survives a different world.
 
 ## 14. Presets and scenarios
 
@@ -1377,16 +1662,18 @@ finding survives a different world.
   automatically; human review still removes, and a demoted Attack still reaches its target (6.9), so the preset
   shows more harassment than the plain ranking. The preset exists so that a chronological feed can be compared with
   a realistic ranked feed, not only with the bare Engagement ranking (fact 3, section 15).
-- Most engaging design found (`max-engagement`): front design 64 of the Pareto atlas, the most engaging design the
-  searches found (13.7), with every lever as found: `w_like` 2.9, `w_share` 1.7, `w_dwell` 3.0, `w_in_network` 1.0,
-  `recommended_share` 0, `diversity` 0.2, `predictor_quality` 0.9, `share_friction` 0.35, `classifier_threshold`
-  1.05 (it flags nothing), `review_capacity` 10, `report_trust` 0.65, `sanctions` None, `payout_share` 0.2 with
-  PerEngagement payouts, `payout_threshold_followers` 86, `time_limit_share` 0.1, `notification_intensity` 1.0,
-  `account_cost` 0.15, `ads_share` 0.35 and `survey_after_session` 0.95; `demote_penalty` 0.4 and `noted_penalty` 2.4
-  have no effect in it. No one proposes it: it shows what maximising engagement looks like in this model and what it
-  costs, about 80% more engagement than the Engagement ranking for about 30% more harm, twice the toxic share and
-  lower wellbeing (13.3, column Max). `incentive explore` leaves it out of its initial designs, so the searches it
-  comes from regenerate the same atlas.
+- Most engaging design found (`max-engagement`): front design 61 of the Pareto atlas, the most engaging design the
+  searches found (13.7), with every lever as found: `w_like` 3.0, `w_reply` 1.0, `w_share` 0.2, `w_dwell` 2.7,
+  `w_bridging` 0.1, `w_see_less` 1.6, `w_recency` 0.1, `w_in_network` 0, `recommended_share` 0.2, `diversity` 0.15,
+  `classifier_threshold` 0.75, `review_capacity` 9, `report_trust` 0.7, `sanctions` None, `payout_share` 0.15 with
+  PerView payouts, `payout_threshold_followers` 42, `block_effectiveness` 0, `notification_intensity` 1.0,
+  `account_cost` 0.05, `ads_share` 0.5 and `survey_after_session` 0.9; `demote_penalty` 2.1 and `noted_penalty` 2.4
+  have no effect in it (its classifier removes, and it has no community notes). No one proposes it: it shows what
+  maximising engagement looks like in this model, now that time spent has a price. It has about twice the
+  Engagement ranking's engagement for 13% less harm, the same toxic share and slightly higher wellbeing (13.3, column
+  Max); it also wastes less of people's time and keeps more of them on the platform, and front designs as engaging as
+  it have less harm still (13.7). `incentive explore` leaves it out of its initial designs, so the searches it comes
+  from regenerate the same atlas.
 
 ### 14.2 Scenarios
 
@@ -1416,28 +1703,32 @@ scenario passes only when every goal passes; it fails when any goal fails, and i
 
 ## 15. Stylized facts the model is checked against
 
-Each fact becomes an automated test on small runs (`N` = 600, 120 days, 4 seeds, paired by seed; fact 5 runs 240
-days) and a check at full size in the CLI's `facts` command, which prints the effect sizes. Each check is a band: a
-lower bound with a margin that a world without the mechanism misses, and an upper bound where an effect could be
-implausibly large. `incentive facts --set path=value` checks the facts in another world; for each fact below a
-plausible world is named in which it fails, so the check is not true by construction. Effects at the defaults are in
-13.4.
+Each fact becomes an automated test on small runs (`N` = 600, 120 days, 4 seeds, paired by seed; fact 5 runs 240 days,
+and fact 6 runs at `N` = 1,500 for 365 days) and a check at full size in the CLI's `facts` command, which prints the
+effect sizes. Each check is a band: a lower bound with a margin that a world without the mechanism misses, and an upper
+bound where an effect could be implausibly large. `incentive facts --set path=value` checks the facts in another world;
+for each fact below a world is named in which it fails, so the check is not true by construction. Two qualifications:
+the lower bounds of facts 1 and 4 fail only in worlds that also set `time_cost` to 0, a world fact 6 rejects, and
+fact 5's world misses its band only on the seed means, with an undecided interval. Effects at the defaults are in 13.4.
 
 1. Engagement ranking amplifies divisive content that users do not value. Against a chronological feed, the
    Engagement ranking shows more Outrage impressions (paired difference of the share over the second half of the run
    between 0.15 and 0.6), and the reflective value of what it shows is lower (between 0.05 and 0.4 per impression).
    Milli et al. (2025) found in an audit of Twitter's ranking that the engagement-based algorithm amplified
    emotionally charged, out-group hostile content that users did not prefer. Fails when people are not drawn by
-   arousal or in-group hostility (`outrage_appeal` and `arousal_appeal` 0: difference 0.081, reflective value
-   -0.044) and, at the upper bound, when hostility pulls twice as hard as the default (`outrage_appeal` 2.5:
-   difference 0.634). The upper bound guards against a feed taken over by outrage; field audits compare a
+   arousal or in-group hostility and time is free (`outrage_appeal`, `arousal_appeal` and `time_cost` 0: difference
+   0.081, reflective value -0.044; with the default time cost the difference is undecided at 0.147 and the reflective
+   value passes, 13.4) and, at the upper bound, when hostility pulls twice as hard as the default (`outrage_appeal`
+   2.5: difference 0.639). The upper bound guards against a feed taken over by outrage; field audits compare a
    chronological feed with a real ranker, which carries integrity measures, so the field magnitude is checked
    against the integrity preset in fact 3.
 2. Social reward teaches outrage. Under the Engagement ranking the Outrage share of posts rises from the first fifth
    of the run to the last (by 0.01 to 0.15), and by 0.01 to 0.15 more than with `learning_rate` 0. Brady et al.
-   (2021). Fails when bot farms boost two and a half times as much (`population.bot_boosts` 20, the starting value:
-   rise 0.000, -0.003 against no learning), because bot-boosted Clickbait then out-earns Outrage, and when in-group
-   hostility pulls half as hard (`outrage_appeal` 0.6: rise 0.001 and 0.008).
+   (2021). Fails when in-group hostility pulls half as hard (`outrage_appeal` 0.6: rise -0.020, and -0.008 against
+   no learning), and when bot farms boost two and a half times as much and time is free (`population.bot_boosts` 20,
+   the starting value, with `time_cost` 0: rise 0.000, -0.003 against no learning), because bot-boosted Clickbait
+   then out-earns Outrage; with the default time cost that world is undecided (rise 0.017, and 0.007 against no
+   learning; 13.4).
 3. A chronological feed cuts time spent, barely moves polarisation in three months, and shifts exposure from incivility
    toward untrustworthy content. Guess et al. (2023) found on Facebook and Instagram during the 2020 US election that
    the chronological feed cut time spent and left polarisation and other attitudes unchanged over three months; it
@@ -1448,17 +1739,38 @@ plausible world is named in which it fails, so the check is not true by construc
    (the field experiment lasted three months), toxic impressions chronological over integrity between 0.5 and 0.9
    (a cut by tens of percent), and misinformation impressions chronological over integrity between 1.05 and 3. Both
    are known limits (section 16): the model fails them at the defaults and the tests do not require them; the
-   chronological feed cuts toxic impressions to 0.344 of the integrity preset's, about threefold. Failing worlds:
+   chronological feed cuts toxic impressions to 0.312 of the integrity preset's, about threefold. Failing worlds:
    when feeds change neither session length nor habit (`habit_gain` 0, `stop_bias` -5) time spent falls only to
-   0.954; with three times the polarisation per hostile impression (`polarisation_rate` 0.0005) polarisation
-   differs by 10% at day 90; with `outrage_appeal` 2.5 the toxic ratio drops further, to 0.16.
+   0.967; with three times the polarisation per hostile impression (`polarisation_rate` 0.0005) polarisation
+   differs by 10% at day 90; with `outrage_appeal` 2.5 the toxic ratio drops further, to 0.17.
 4. Forwarding limits slow viral spread. With `reshare_depth_cap` 1 the largest share cascades shrink to between 0.3
    and 0.85 of their size without a cap. de Freitas Melo et al. (2019) modelled WhatsApp's limits. Fails when nothing
-   impulsive drives sharing (`outrage_appeal`, `arousal_appeal` and `social_proof` 0: ratio 0.860), because cascades
-   then stay short with or without the cap.
+   impulsive drives sharing and time is free (`outrage_appeal`, `arousal_appeal`, `social_proof` and `time_cost` 0:
+   ratio 0.860), because cascades then stay short with or without the cap; with the default time cost that world is
+   undecided (0.870, 0.843 to 0.897).
 5. Harassment drives its targets away. Four times the Trolls raise the share of Vulnerable users who left by 0.03 to
-   0.3. Pew Research Center (2017). Fails when harassment neither hurts nor drives people out (`harassment_harm` and
-   `harassment_exit` 0: difference 0.023): the remaining effect comes from toxic feeds and reputation alone.
+   0.3 (Pew Research Center, 2017). Misses the band on the seed means, though not on its interval, when harassment
+   neither hurts nor drives people out and time is free (`harassment_harm`, `harassment_exit` and `time_cost` 0:
+   difference 0.023, 0.007 to 0.038): the remaining effect comes from toxic feeds and reputation alone. With the
+   default time cost the same world gives 0.041 (0.016 to 0.065), inside the band on the means; no world tried fails
+   this check on its interval (13.4).
+6. Leaving the platform raises wellbeing. Under the integrity preset (14.1, the model's realistic ranked feed, the
+   comparison of fact 3), a deactivation experiment (13.2) keeps every regular user off the platform for the last 35
+   days of the run, and its placebo on the same seed draws the same people but keeps them on; the break group's
+   wellbeing change minus its change in the placebo lies between 0.02 and 0.25 standard deviations of the
+   participants' starting wellbeing: positive, and below about four times the field estimate. The paired design
+   compares the same people with and without the break, which the field cannot do; the field's design, a tenth on
+   the break against the stayers in one run, scatters more across seeds (13.2). Allcott, Gentzkow,
+   Wittenbrink et al. (2025) found that people who deactivated Facebook for the six weeks before the 2020 US
+   election reported a 0.060 standard deviation improvement in an index of happiness, depression and anxiety,
+   relative to controls who deactivated for only the first of those weeks; for Instagram the figure was 0.041
+   (samples of 19,857 Facebook and 15,585 Instagram users). Allcott et al. (2020) found that four weeks of
+   deactivation before the 2018 midterms increased subjective well-being. `time_cost` is calibrated on this
+   fact (13.2), so passing it shows the calibration, not an independent prediction. Fails without a time cost
+   (`time_cost` 0: effect -0.267), because every item of a good feed then adds reflective value and leaving costs
+   people that value, and at the upper bound when time is worth about twice the default (`time_cost` 0.225: effect
+   0.391; at 0.2 the effect of 0.287 lies above the band on the seed means, but its interval, 0.242 to 0.333, reaches
+   into it). The effect builds up over the year (section 16), so its test runs for 365 days, at `N` = 1,500.
 
 ## 16. Known limits
 
@@ -1473,10 +1785,28 @@ plausible world is named in which it fails, so the check is not true by construc
   authors feel them, but their weight (`wrongful_sanction_cost` and the harm index's scale of 20) is a guess; a
   wrongful sanction also teaches no restraint beyond the existing removal penalty, and a suppressed opinion has no
   cost to readers.
-- Time on the platform has no opportunity cost. On a good feed every extra session adds reflective value, so
-  notifications raise wellbeing; only items beyond a person's time budget cost anything. In a randomised experiment,
-  deactivating Facebook for four weeks raised subjective wellbeing and freed time for offline activities (Allcott et
-  al., 2020).
+- Time on the platform has a price, but a crude one. Every impression costs `time_cost` times its dwell (7.2),
+  calibrated on a deactivation experiment (13.2, fact 6). What remains of the free lunch:
+
+  - one value of time for everyone, whatever else each person would do with it;
+  - writing posts takes no time;
+  - notifications cost only the time they bring, with no cost for the interruption itself, so on a feed worth more
+    than its time they still raise wellbeing (Quality and bridging at full notification strength: users' wellbeing
+    +0.019, 13.3);
+  - the reflective self never ends a session: sessions stop on impulse and habit (6.1), so within a session a feed
+    worth less than its time holds people as long as one worth more, and only churn answers the difference;
+  - one session a day, so there is no habit of checking many times.
+
+  The value of time is calibrated on one preset, the integrity preset taken as the realistic ranked feed (as fact 3
+  takes it). On the Engagement ranking the same experiment's paired effect is 0.048 (-0.003 to 0.098) at
+  `time_cost` 0, already close to the field's 0.060, and 0.361 (0.309 to 0.412) at the default, six times the
+  field's figure (13.2, 8 seeds each). Calibrated on the Engagement ranking, the value that matches the field would lie
+  near 0, below the rule's grid: the effect there is 0.048 at `time_cost` 0 and 0.190 at 0.05.
+  Which preset the field's Facebook feed resembles more decides the value, and the model cannot tell.
+
+  The fact 6 effect also rests on the year's state of the platform: on the paired design at the default, at
+  `N = 2,000` it is -0.087 standard deviations after 120 days, 0.001 after 240 and 0.054 after 365, and 0.055 at
+  `N = 1,500` after 365 days (8 seeds each).
 - Revenue scales are not calibrated. A subscriber brings in the price over 30 days (about 0.17 a day at the default
   price) against about 0.02 a day from ads at the default rate, and uptake ignores the price: each user subscribes
   with a chance of up to one half when the feed is good. This flatters subscription designs and the creator incomes
@@ -1512,20 +1842,23 @@ plausible world is named in which it fails, so the check is not true by construc
   recommendations, which a chronological feed never shows. A platform that is chronological from day 0 therefore
   never follows bots or the prolific sources that post misinformation, while in the ranked feeds misinformation
   rides on bot-inflated engagement. So the model fails the field direction of Guess et al. (2023): over days 30 to
-  90 the chronological feed shows 0.71 of the integrity preset's misinformation impressions where the field found
+  90 the chronological feed shows 0.70 of the integrity preset's misinformation impressions where the field found
   about two thirds more (fact 3, a known limit), and it shows a ninth of the Engagement ranking's outrage impressions
   where field audits find differences of tens of percent. Against the integrity preset too the cut in incivility is
-  too deep: over the same days the chronological feed shows 0.344 of its toxic impressions, about a threefold cut,
+  too deep: over the same days the chronological feed shows 0.312 of its toxic impressions, about a threefold cut,
   where the field lowered the share of uncivil content by tens of percent (fact 3's toxic check, band 0.5 to 0.9, a
   second known limit). The field experiment moved people whose networks had
   formed under ranking; the model has neither a mid-run switch for part of the population nor untrustworthy pages
   that people follow.
-- Compulsive use is priced low. Items beyond a person's time budget are 2.9% of time under the default design,
-  against the 31% of social-media use that Allcott, Gentzkow and Song (2022) attribute to self-control problems (the
-  held-out target of 13.4). Regret, wellbeing and the benefit index therefore understate what an engaging feed costs.
+- Compulsive use is priced low. Items beyond a person's time budget are 2.5% of time under the default design (2.9%
+  before the time cost), against the 31% of social-media use that Allcott, Gentzkow and Song (2022) attribute to
+  self-control problems (the held-out target of 13.4). The time cost charges every minute at one price, whatever drew
+  the person in, so it prices time, not the lack of self-control: regret, wellbeing and the benefit index still
+  understate what compulsive use costs.
 - Outrage learning over a year rests on the bot model. Bot boosts teach Clickbait, which takes share from Outrage
-  after the first months; at the default the Outrage share still rises (fact 2, by 0.015 from the first fifth of the
-  year to the last), but with bots boosting 20 posts a day instead of 8 it does not.
+  after the first months; at the default the Outrage share still rises (fact 2, by 0.021 from the first fifth of the
+  year to the last), but with bots boosting 20 posts a day instead of 8 the rise is undecided (0.017, interval
+  0.001 to 0.032), and without the time cost as well it vanishes (0.000).
 - The classifier has one action. A design that demotes instead of removing still delivers every Attack to its target,
   so the integrity preset shows three times the Engagement ranking's harassment; real platforms remove clear
   violations and demote borderline posts at once.
@@ -1539,6 +1872,8 @@ plausible world is named in which it fails, so the check is not true by construc
 
 - Allcott, H., Braghieri, L., Eichmeyer, S., & Gentzkow, M. (2020). The welfare effects of social media. *American
   Economic Review*, 110(3), 629-676. <https://doi.org/10.1257/aer.20190658>
+- Allcott, H., Gentzkow, M., Wittenbrink, B., et al. (2025). The effect of deactivating Facebook and Instagram on
+  users' emotional state. *NBER Working Paper* 33697. <https://doi.org/10.3386/w33697>
 - Bail, C. A., Argyle, L. P., Brown, T. W., Bumpus, J. P., Chen, H., Hunzaker, M. B. F., Lee, J., Mann, M.,
   Merhout, F., & Volfovsky, A. (2018). Exposure to opposing views on social media can increase political
   polarization. *PNAS*, 115(37), 9216-9221. <https://doi.org/10.1073/pnas.1804840115>

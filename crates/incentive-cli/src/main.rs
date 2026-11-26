@@ -106,8 +106,9 @@ fn dispatch(cli: Cli) -> Result<(), CliError> {
             population,
             days,
             set,
+            fact,
             out,
-        } => facts_cmd::run_facts(seeds, population, days, &set, out)?,
+        } => facts_cmd::run_facts(seeds, population, days, &set, &fact, out)?,
     }
     Ok(())
 }

@@ -115,7 +115,8 @@ fn retrain_classifier(world: &mut World, ctx: &DayCtx) {
 
 /// Phase 5: each surviving Attack written today reaches its target unless a
 /// block stops it; the target may report it (7.1, with the target's bonus)
-/// and block the author.
+/// and block the author. Targets on a deactivation experiment's break
+/// (docs/model.md, 13.2) are off the platform and receive nothing.
 pub(crate) fn deliver_harassment(world: &mut World, ctx: &DayCtx, first_new: u32) {
     let attacks: Vec<(u32, u64, u32, u32, f32)> = world
         .posts
@@ -129,6 +130,9 @@ pub(crate) fn deliver_harassment(world: &mut World, ctx: &DayCtx, first_new: u32
     let assume = &ctx.config.world;
     for (id, key, author, target, toxicity) in attacks {
         let mut rng = ctx.rng(key, Stream::Harassment);
+        if world.truth.on_break(target as usize) {
+            continue;
+        }
         let person = &mut world.people[target as usize];
         if !person.state.is_user {
             continue;

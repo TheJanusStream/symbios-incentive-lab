@@ -108,7 +108,11 @@ fn every_metric_is_labelled_and_measured() {
         // design pays no creators.
         let missing_allowed = matches!(
             id,
-            MetricId::SurveySatisfaction | MetricId::Retention30 | MetricId::HarmfulPayoutShare
+            MetricId::SurveySatisfaction
+                | MetricId::Retention30
+                | MetricId::HarmfulPayoutShare
+                | MetricId::DeactivationEffect
+                | MetricId::BreakChange
         );
         assert!(
             missing_allowed || day.get_opt(id).is_some(),

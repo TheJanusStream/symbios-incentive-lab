@@ -313,6 +313,7 @@ fn metric_picker(ui: &mut Ui, visibility: Visibility, picks: &mut Vec<MetricId>)
                     let infos: Vec<_> = metric_infos()
                         .iter()
                         .filter(|i| i.visibility == visibility && i.family == family)
+                        .filter(|i| !i.id.needs_experiment())
                         .collect();
                     if infos.is_empty() {
                         continue;

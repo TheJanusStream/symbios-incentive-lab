@@ -41,6 +41,9 @@ pub(crate) enum Stream {
     Archetype = 23,
     /// Reports and see-less marks of brigading bots, per bot account.
     Brigade = 24,
+    /// Assignment to a deactivation experiment's break group, per person, on
+    /// the experiment's first day.
+    Experiment = 25,
 }
 
 /// SplitMix64 finaliser: a cheap bijective mixer with good avalanche.

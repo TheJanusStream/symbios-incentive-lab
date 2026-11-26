@@ -6,6 +6,7 @@ use crate::config::{Config, DesignLevers};
 use crate::content::Post;
 use crate::economy;
 use crate::error::ConfigError;
+use crate::experiment;
 use crate::init;
 use crate::inspector::{self, AgentDay, AgentView, FeedExplanation, Inspector};
 use crate::learning;
@@ -93,6 +94,7 @@ impl Simulation {
         };
         let world = &mut self.world;
         start_day(world);
+        experiment::begin_day(world, &ctx);
         bots::replace_banned(world, &ctx);
         lifecycle::joining(world, &ctx);
         assign_user_controls(world, &ctx);
@@ -119,6 +121,12 @@ impl Simulation {
         self.history.push(metrics.clone());
         self.day += 1;
         Some(metrics)
+    }
+
+    /// The world, for tests that look inside.
+    #[cfg(test)]
+    pub(crate) fn world(&self) -> &World {
+        &self.world
     }
 
     /// Simulates every remaining day and returns the run summary.
@@ -258,7 +266,12 @@ impl Simulation {
             served: false,
             kind,
             session_limit: limit,
-            items: inspector::explained_items(&self.world, &scratch.candidates, None),
+            items: inspector::explained_items(
+                &self.world,
+                &scratch.candidates,
+                None,
+                self.config.world.time_cost,
+            ),
         })
     }
 }

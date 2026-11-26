@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use crate::bots::Bot;
 use crate::config::Config;
 use crate::content::STYLE_COUNT;
+use crate::experiment::Experiment;
 use crate::network::Accounts;
 use crate::person::Person;
 use crate::posts::PostStore;
@@ -96,8 +97,9 @@ pub(crate) struct PlatformState {
 
 /// Truth-side state kept across days, which the platform cannot observe:
 /// the toxicity people experienced, behind the platform's reputation, the
-/// day-0 polarisation the indices measure against, and the hidden impulsivity
-/// order in which people adopt user controls.
+/// day-0 polarisation the indices measure against, the hidden impulsivity
+/// order in which people adopt user controls, and a researcher's
+/// deactivation experiment.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TruthState {
     /// Each individual's position when sorted by ascending impulsivity, a
@@ -107,6 +109,9 @@ pub(crate) struct TruthState {
     pub toxic_history: VecDeque<f32>,
     /// Society-wide affective polarisation before day 0.
     pub polarisation_day0: f32,
+    /// The deactivation experiment, from its first day on (docs/model.md,
+    /// 13.2).
+    pub experiment: Option<Experiment>,
 }
 
 impl TruthState {
@@ -117,6 +122,11 @@ impl TruthState {
         } else {
             self.toxic_history.iter().sum::<f32>() / self.toxic_history.len() as f32
         }
+    }
+
+    /// Whether individual `i` is on a deactivation experiment's break.
+    pub(crate) fn on_break(&self, i: usize) -> bool {
+        self.experiment.as_ref().is_some_and(|e| e.on_break(i))
     }
 
     /// Records today's toxic impression share.
@@ -160,6 +170,9 @@ pub(crate) struct DayTally {
     pub misinformation_impressions: u32,
     pub regret_items: u32,
     pub reflective_sum: f32,
+    /// Dwell on impressions worth less than their time, `R < time_cost * D`
+    /// (docs/model.md, 9.2).
+    pub low_value_dwell: f32,
     pub cross_group_likes: u32,
     pub revenue: f32,
     pub payouts: f32,

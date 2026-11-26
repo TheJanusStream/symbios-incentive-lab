@@ -165,8 +165,13 @@ pub struct AgentView {
 pub struct TrueResponse {
     /// Impulsive appeal.
     pub appeal: f32,
-    /// Reflective value: what the viewer would endorse on reflection.
+    /// Reflective value `R`: what the viewer would endorse on reflection,
+    /// before the time cost (docs/model.md, 7.1).
     pub reflective: f32,
+    /// The time cost of seeing the item, `time_cost * D` (docs/model.md,
+    /// 7.2): the viewer's wellbeing reads `reflective` minus this, and the
+    /// item is worth its time when `reflective` exceeds it.
+    pub time_cost: f32,
     /// True like probability.
     pub p_like: f32,
     /// True reply probability.
@@ -245,11 +250,13 @@ pub struct FeedExplanation {
 
 /// The explained items of a built feed, in order, with every post as it is
 /// now. `actions` is the starting record of each item: `None` for a preview,
-/// nothing done yet for a feed about to be served.
+/// nothing done yet for a feed about to be served. `time_cost` is the world
+/// assumption that prices each item's dwell.
 pub(crate) fn explained_items(
     world: &World,
     candidates: &[Candidate],
     actions: Option<ItemActions>,
+    time_cost: f32,
 ) -> Vec<ExplainedItem> {
     candidates
         .iter()
@@ -268,6 +275,7 @@ pub(crate) fn explained_items(
                 truth: TrueResponse {
                     appeal: s.appeal,
                     reflective: s.reflective,
+                    time_cost: crate::session::time_cost(s.dwell, time_cost),
                     p_like: s.p_like,
                     p_reply: s.p_reply,
                     p_share: s.p_share,

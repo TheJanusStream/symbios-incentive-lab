@@ -51,6 +51,57 @@ pub struct RunSettings {
     pub summary_window: f32,
     /// Individuals the inspector tracks from day 0, spread over the archetypes.
     pub tracked_agents: u32,
+    /// A deactivation experiment at the end of the run, a researcher's
+    /// intervention (docs/model.md, 13.2); `None`, the default, runs none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deactivation: Option<Deactivation>,
+}
+
+/// Days of a deactivation experiment's break by default.
+pub const DEACTIVATION_DAYS: u32 = 35;
+/// Share of the eligible users a deactivation experiment sends on the break
+/// by default.
+pub const DEACTIVATION_SHARE: f32 = 0.1;
+
+/// A deactivation experiment (docs/model.md, 13.2, and fact 6 of section
+/// 15): over the last `days` days of the run, a random `share` of the regular
+/// users stays off the platform, as the paid participants of a field
+/// experiment do. Its effect within one run is the truth metric
+/// `deactivation_effect`; the truth metric `break_change` is the break
+/// group's own change, compared across a real run and its placebo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Deactivation {
+    /// Days the break lasts; it ends with the run, so it starts this many
+    /// days before the end. At least 1 and less than the run's days.
+    pub days: u32,
+    /// Chance that each eligible user joins the break group, in `(0, 1]`.
+    pub share: f32,
+    /// A placebo run: the participants are found and the break group drawn
+    /// exactly as in a real run, but nobody goes on the break. A real run
+    /// and its placebo on the same seed are identical up to the first day
+    /// and assign the same people, so the paired difference of their
+    /// `break_change` is the break's effect on those people (docs/model.md,
+    /// 13.2). Left out of JSON when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub placebo: bool,
+}
+
+impl Default for Deactivation {
+    fn default() -> Self {
+        Self {
+            days: DEACTIVATION_DAYS,
+            share: DEACTIVATION_SHARE,
+            placebo: false,
+        }
+    }
+}
+
+impl Deactivation {
+    /// The first day of the break in a run of `run_days` days.
+    pub fn first_day(&self, run_days: u32) -> u32 {
+        run_days.saturating_sub(self.days)
+    }
 }
 
 impl Default for RunSettings {
@@ -66,6 +117,7 @@ impl Default for RunSettings {
             initial_follows: 30,
             summary_window: 0.3,
             tracked_agents: 10,
+            deactivation: None,
         }
     }
 }
@@ -163,6 +215,15 @@ impl Config {
         check_int("run.initial_follows", r.initial_follows, 0, 1_000)?;
         check_float("run.summary_window", r.summary_window, 0.01, 1.0)?;
         check_int("run.tracked_agents", r.tracked_agents, 0, 1_000)?;
+        if let Some(d) = &r.deactivation {
+            check_int("run.deactivation.days", d.days, 1, r.days.saturating_sub(1))?;
+            if !(d.share > 0.0 && d.share <= 1.0) {
+                return Err(ConfigError::Invalid(format!(
+                    "run.deactivation.share must lie above 0 and at most 1, not {}",
+                    d.share
+                )));
+            }
+        }
         let p = &self.population;
         check_int("population.bot_boosts", p.bot_boosts, 0, 200)?;
         check_int("population.bot_posts_per_day", p.bot_posts_per_day, 0, 20)?;
@@ -242,6 +303,45 @@ mod tests {
             config.validate(),
             Err(ConfigError::OutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn the_deactivation_experiment_is_optional_and_validated() {
+        // Absent by default, and absent from the JSON, so existing files and
+        // their round trips are unchanged.
+        let config = Config::default();
+        assert!(config.run.deactivation.is_none());
+        assert!(!config.to_json_pretty().contains("deactivation"));
+        let parsed = Config::from_json(r#"{"run": {"days": 100, "deactivation": {}}}"#);
+        let d = parsed.ok().and_then(|c| c.run.deactivation);
+        assert_eq!(d, Some(Deactivation::default()));
+        assert_eq!(Deactivation::default().first_day(100), 65);
+        let with = |days: u32, share: f32| {
+            let mut c = Config::default();
+            c.run.days = 100;
+            c.run.deactivation = Some(Deactivation {
+                days,
+                share,
+                placebo: false,
+            });
+            c.validate().is_ok()
+        };
+        assert!(with(1, 0.1) && with(99, 1.0));
+        assert!(!with(0, 0.1), "no break");
+        assert!(!with(100, 0.1), "a break as long as the run");
+        assert!(!with(35, 0.0) && !with(35, 1.5) && !with(35, f32::NAN));
+        let mut c = Config::default();
+        c.run.days = 100;
+        c.run.deactivation = Some(Deactivation::default());
+        assert!(!c.to_json_pretty().contains("placebo"), "false is left out");
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c.clone()));
+        // A placebo run is written out and read back.
+        c.run.deactivation = Some(Deactivation {
+            placebo: true,
+            ..Deactivation::default()
+        });
+        assert!(c.to_json_pretty().contains("\"placebo\": true"));
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c));
     }
 
     #[test]

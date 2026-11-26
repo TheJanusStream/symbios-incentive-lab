@@ -3,13 +3,20 @@
 
 use incentive_core::{FactRun, facts};
 
+/// Individuals per run at the test size.
+const TEST_POPULATION: u32 = 600;
+
 /// Departures accumulate slowly, so the harassment fact runs longer than the
 /// others to hold with a reliable margin.
 fn check(id: &str, days: u32) {
+    check_sized(id, TEST_POPULATION, days);
+}
+
+fn check_sized(id: &str, population: u32, days: u32) {
     let fact = facts().iter().find(|f| f.id == id).expect("known fact");
     let run = FactRun {
         seeds: (1..=4).collect(),
-        population: 600,
+        population,
         days,
     };
     let results = fact.run_sequential(&run).expect("valid configurations");
@@ -51,4 +58,17 @@ fn forwarding_limits_slow_viral_spread() {
 #[test]
 fn harassment_drives_targets_away() {
     check("harassment-exit", 240);
+}
+
+/// The deactivation fact needs the whole year: its effect builds up over
+/// the year. With the paired design
+/// (docs/model.md, 13.2) at the defaults, seeds 1 to 8, it is -0.087 SD after
+/// 120 days and 0.001 after 240 at `N = 2,000`, and 0.054 after 365; at
+/// `N = 1,500` and 365 days it is 0.055, with the mean of seeds 1 to 4 at
+/// 0.075 (0.060 and 0.086 at `time_cost` 0.11 and 0.12), as large a margin
+/// as at full size (0.069). At `N = 1,000` the mean of seeds 1 to 4 is 0.018
+/// and at `N = 1,500` after 240 days 0.036, too close to the bound of 0.02.
+#[test]
+fn leaving_the_platform_raises_wellbeing() {
+    check_sized("deactivation", 1_500, 365);
 }

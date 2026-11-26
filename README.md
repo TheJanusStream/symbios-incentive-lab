@@ -124,13 +124,13 @@ $ target/release/incentive compare --a engagement-maximiser --b quality-bridging
     --metrics engagement_index,harm_index,benefit_index,toxic_share,survey_satisfaction
 A = engagement-maximiser, B = quality-bridging: 8 paired seeds, N = 2000, 365 days
 
-metric                              view       A       B    B - A  95% low  95% high
-----------------------------  ----------  ------  ------  -------  -------  --------  -
-Engagement index                   index  0.2625  0.1677  -0.0948  -0.0985   -0.0910  *
-Harm index                         index  0.4992  0.0932  -0.4060  -0.4309   -0.3811  *
-Benefit index                      index  0.4158  0.4525   0.0367   0.0315    0.0419  *
-Toxic impressions                  truth  0.1621  0.0008  -0.1613  -0.1753   -0.1473  *
-Survey satisfaction           observable  0.7050  0.8057   0.1007   0.0907    0.1107  *
+metric                     view        A       B    B - A  95% low  95% high
+-------------------  ----------  -------  ------  -------  -------  --------  -
+Engagement index          index   0.1832  0.1581  -0.0251  -0.0314   -0.0187  *
+Harm index                index  0.4113~  0.0857  -0.3256  -0.3613   -0.2900  *
+Benefit index             index   0.4122  0.4384   0.0263   0.0193    0.0332  *
+Toxic impressions         truth   0.1741  0.0028  -0.1713  -0.1992   -0.1435  *
+Survey satisfaction  observable   0.5414  0.5438   0.0023  -0.0025    0.0072
 ```
 
 A trailing `~` marks a metric that is still moving inside its summary window: its least-squares change across the
@@ -157,10 +157,11 @@ same seeds, and every goal is judged on the paired seeds. `--solution` runs the 
 ```text
 $ target/release/incentive scenario engagement-trap --set design.w_reply=0 --set design.w_see_less=5 \
     --seeds 1..4 --population 600 --days 120
-goal                                                     you  baseline  threshold   margin  95% low  95% high
-----------------------------------------------------  ------  --------  ---------  -------  -------  --------  ---------
-Keep at least 85% of the baseline's engagement index  0.2124    0.2192     0.1863  +0.0261  +0.0171   +0.0351       PASS
-At most half the baseline's toxic impression share    0.1014    0.2168     0.1084  +0.0070  -0.0421   +0.0561  UNDECIDED
+goal                                                             you  baseline  threshold   margin  95% low  95% high
+------------------------------------------------------------  ------  --------  ---------  -------  -------  --------  ---------
+Keep at least 85% of the baseline's engagement index          0.1941    0.2005     0.1705  +0.0237  +0.0070   +0.0404       PASS
+At most half the baseline's toxic impression share            0.0991    0.1744     0.0872  -0.0119  -0.0480   +0.0242  UNDECIDED
+At most twice the baseline's wrongful removals and demotions   0.896     1.062      2.125  +1.2292  +0.7765   +1.6818       PASS
 
 Scenario not passed: 0 goal(s) failed, 1 undecided (more seeds may decide them).
 ```
@@ -171,10 +172,12 @@ failing side, and is undecided otherwise; a scenario passes only when every goal
 [docs/model.md](docs/model.md)). More seeds narrow the intervals.
 
 Check the stylized facts of the model at full size, with effect sizes, the 95% interval of each per-seed effect and
-a verdict on it:
+a verdict on it. `--seeds` is the number of paired seeds, `--fact` checks single facts by id (here fact 6, the
+deactivation experiment, on 16 seeds) and `--set path=value` checks them in another world:
 
 ```text
 target/release/incentive facts --seeds 8
+target/release/incentive facts --fact deactivation --seeds 16
 ```
 
 Regenerate the calibration tables of section 13 of [docs/model.md](docs/model.md) as `report.md`, Markdown ready to
@@ -195,8 +198,8 @@ toxic share and wrongful sanctions, then for engagement, harm and benefit each l
 interactions and each lever's Shapley share of the difference, all in the direction from A to B with 95% intervals:
 
 ```text
-target/release/incentive factorial --a engagement-maximiser --b front-36.json --days 365 --population 2000 \
-    --levers notification_intensity,report_trust,review_capacity,recommended_share,predictor_quality,payout_share
+target/release/incentive factorial --a engagement-maximiser --b front-32.json --days 365 --population 2000 \
+    --levers notification_intensity,w_dwell,w_bridging,w_in_network,payout_share,ads_share
 ```
 
 A main effect is the mean change when one lever goes from A's value to B's, over every setting of the others; an
@@ -211,7 +214,7 @@ by its generation number or `last`. The file keeps the search's base configurati
 `--days 365 --population 2000` to `compare` or `factorial` to run it at full size:
 
 ```text
-target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 36 > front-36.json
+target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 32 > front-32.json
 ```
 
 ### Exploring the design space
@@ -239,8 +242,8 @@ search's, as `confirmed` for each design and `confirm_seeds` in its settings (fi
 printed tables show them side by side in the `c.` columns.
 
 The Atlas tab embeds four files in `crates/incentive-app/assets/atlas/`. They were made with these commands, one at a
-time, which regenerate them byte for byte: about 21 minutes on 8 CPUs in all, the confirmation on seeds 9 to 16
-included (3 minutes for each Goodhart search, 8 for the map and 8 for the Pareto front). Raise `--generations`,
+time, which regenerate them byte for byte: about 20 minutes on 8 CPUs in all, the confirmation on seeds 9 to 16
+included (2.5 to 3 minutes for each Goodhart search, 7 for the map and 8 for the Pareto front). Raise `--generations`,
 `--batch`, `--seeds`, `--population` or `--days` to regenerate them at a larger scale (the app needs a rebuild to embed
 new files):
 

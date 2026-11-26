@@ -12,7 +12,7 @@
 
 use serde::Serialize;
 
-use crate::config::Config;
+use crate::config::{Config, Deactivation};
 use crate::error::ConfigError;
 use crate::metrics::{DailyMetrics, MetricId, nan_mean};
 use crate::scenarios::Verdict;
@@ -36,6 +36,8 @@ enum Measure {
     Rise(MetricId),
     /// Mean over days `[from, to)`, clipped to the run.
     Days(MetricId, u32, u32),
+    /// The value on the run's last day.
+    Last(MetricId),
 }
 
 impl Measure {
@@ -57,6 +59,7 @@ impl Measure {
                 mean(id, n - fifth, n) - mean(id, 0, fifth)
             }
             Self::Days(id, from, to) => mean(id, from as usize, to as usize),
+            Self::Last(id) => history.last().map_or(f32::NAN, |d| d.get(id)),
         }
     }
 }
@@ -372,6 +375,24 @@ const INTEGRITY: Variant = Variant {
     label: "engagement ranking with integrity",
     apply: |c| crate::presets::integrity_ranking(&mut c.design),
 };
+/// The integrity preset with a deactivation experiment that sends every
+/// regular user on the break, or none of them in its placebo.
+fn integrity_deactivation(c: &mut Config, placebo: bool) {
+    crate::presets::integrity_ranking(&mut c.design);
+    c.run.deactivation = Some(Deactivation {
+        share: 1.0,
+        placebo,
+        ..Deactivation::default()
+    });
+}
+const INTEGRITY_DEACTIVATION: Variant = Variant {
+    label: "engagement ranking with integrity, every regular user on a break",
+    apply: |c| integrity_deactivation(c, false),
+};
+const INTEGRITY_PLACEBO: Variant = Variant {
+    label: "engagement ranking with integrity, the same break as a placebo",
+    apply: |c| integrity_deactivation(c, true),
+};
 
 /// A check that has to hold.
 const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
@@ -383,7 +404,7 @@ const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
     }
 }
 
-const FACTS: [Fact; 5] = [
+const FACTS: [Fact; 6] = [
     Fact {
         id: "amplification",
         title: "Engagement ranking amplifies divisive content that users do not value",
@@ -531,6 +552,26 @@ const FACTS: [Fact; 5] = [
                 effect: Effect::Difference { a: 1, b: 0 },
                 low: 0.03,
                 high: 0.3,
+            },
+        )],
+    },
+    // A paired design only a simulation can run: the same people with and
+    // without the break, on the same seed, so which people happen to be in
+    // the break group no longer adds noise (docs/model.md, 13.2). The
+    // integrity preset is the model's realistic ranked feed, as in fact 3
+    // (docs/model.md, 14.1).
+    Fact {
+        id: "deactivation",
+        title: "Leaving the platform raises wellbeing",
+        reference: "Allcott, Gentzkow, Wittenbrink et al. (2025); Allcott et al. (2020)",
+        variants: &[INTEGRITY_DEACTIVATION, INTEGRITY_PLACEBO],
+        checks: &[check(
+            "break group's wellbeing change, break minus placebo, in SDs, under integrity",
+            Measure::Last(MetricId::BreakChange),
+            Judge::Band {
+                effect: Effect::Difference { a: 0, b: 1 },
+                low: 0.02,
+                high: 0.25,
             },
         )],
     },

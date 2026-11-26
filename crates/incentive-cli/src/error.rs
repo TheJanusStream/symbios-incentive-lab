@@ -21,6 +21,8 @@ pub enum CliError {
     Seeds(String),
     /// A metric key is unknown.
     UnknownMetric(String),
+    /// A fact id is unknown.
+    UnknownFact(String),
     /// Output could not be serialised.
     Json(String),
     /// Standard output could not be written (for example a closed pipe).
@@ -40,6 +42,10 @@ impl fmt::Display for CliError {
             ),
             Self::UnknownMetric(key) => {
                 write!(f, "unknown metric {key:?}; see the keys in a summary JSON")
+            }
+            Self::UnknownFact(id) => {
+                let ids: Vec<&str> = incentive_core::facts().iter().map(|f| f.id).collect();
+                write!(f, "unknown fact {id:?}; the facts are {}", ids.join(", "))
             }
             Self::Json(message) => write!(f, "could not write JSON: {message}"),
             Self::Stdout(e) => write!(f, "could not write to standard output: {e}"),

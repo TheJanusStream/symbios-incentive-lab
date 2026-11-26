@@ -43,11 +43,26 @@ pub(crate) fn contact_change(
     change
 }
 
+/// The reflective value of the time an item with dwell `dwell` takes,
+/// `time_cost * D` (docs/model.md, 7.2).
+pub(crate) fn time_cost(dwell: f32, time_cost: f32) -> f32 {
+    time_cost * dwell
+}
+
+/// Whether an item is worth less on reflection than the time it takes,
+/// `R < time_cost * D`: the time the metric `low_value_time` counts
+/// (docs/model.md, 9.2). At `time_cost` 0 it is an item with negative `R`.
+pub(crate) fn is_low_value(reflective: f32, dwell: f32, cost: f32) -> bool {
+    reflective < time_cost(dwell, cost)
+}
+
 /// Decides who opens the app today. Posting and sessions both use it.
+/// People on a deactivation experiment's break (docs/model.md, 13.2) do not
+/// open it and draw nothing.
 pub(crate) fn decide_openers(world: &mut World, ctx: &DayCtx) {
     let ni = ctx.config.design.notification_intensity;
     for (i, person) in world.people.iter_mut().enumerate() {
-        if !person.state.is_user {
+        if !person.state.is_user || world.truth.on_break(i) {
             continue;
         }
         let mut rng = ctx.rng(i as u64, Stream::Activity);
@@ -151,6 +166,7 @@ fn served_feed(
             feed_ctx.world,
             &scratch.candidates,
             Some(ItemActions::default()),
+            ctx.config.world.time_cost,
         ),
     }
 }
@@ -251,6 +267,10 @@ fn record_impression(
     }
     state.today.e_imp += s.appeal * if liked { 1.0 } else { 0.5 };
     state.today.e_ref += s.reflective - assume.ad_annoyance * design.ads_share;
+    state.today.time_cost += time_cost(s.dwell, assume.time_cost);
+    if is_low_value(s.reflective, s.dwell, assume.time_cost) {
+        tally.low_value_dwell += s.dwell;
+    }
 
     if rng::chance(rng, s.p_reply) {
         actions.replied = true;
@@ -352,6 +372,61 @@ fn record_impression(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::Simulation;
+
+    /// The world after one simulated day with the given time cost.
+    fn first_day(time_cost: f32) -> World {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        config.world.time_cost = time_cost;
+        let mut sim = Simulation::new(config).expect("valid");
+        sim.step();
+        sim.world().clone()
+    }
+
+    #[test]
+    fn each_impression_costs_its_dwell_at_the_time_cost() {
+        assert_eq!(time_cost(1.5, 0.2), 0.2 * 1.5);
+        let (free, charged) = (first_day(0.0), first_day(0.2));
+        assert!(free.tally.impressions > 100);
+        assert_eq!(free.tally.impressions, charged.tally.impressions);
+        assert_eq!(free.tally.dwell, charged.tally.dwell);
+        let mut charged_total = 0.0f64;
+        for (a, b) in free.people.iter().zip(&charged.people) {
+            let (a, b) = (&a.state.today, &b.state.today);
+            // The time cost leaves the gross reflective utility alone, which
+            // subscriptions read, and lowers the net that wellbeing reads.
+            assert_eq!(a.e_ref, b.e_ref);
+            assert_eq!(a.time_cost, 0.0);
+            assert_eq!(b.net_reflective(), b.e_ref - b.time_cost);
+            assert!(b.time_cost > 0.0 || b.items == 0);
+            charged_total += f64::from(b.time_cost);
+        }
+        let expected = 0.2 * f64::from(charged.tally.dwell);
+        assert!(
+            (charged_total - expected).abs() < 1e-4 * expected,
+            "{charged_total} against {expected}"
+        );
+        // Subscription windows are filled from the gross value.
+        for (a, b) in free.people.iter().zip(&charged.people) {
+            assert_eq!(a.state.eref_window, b.state.eref_window);
+        }
+    }
+
+    #[test]
+    fn low_value_time_counts_items_worth_less_than_their_time() {
+        assert!(is_low_value(0.1, 1.5, 0.1), "0.1 < 0.15");
+        assert!(!is_low_value(0.1, 1.5, 0.0));
+        assert!(
+            is_low_value(-0.01, 1.0, 0.0),
+            "at zero cost, negative value"
+        );
+        assert!(!is_low_value(0.0, 1.0, 0.0));
+        let (free, dear) = (first_day(0.0), first_day(0.4));
+        assert!(free.tally.low_value_dwell > 0.0);
+        assert!(dear.tally.low_value_dwell > free.tally.low_value_dwell);
+        assert!(dear.tally.low_value_dwell <= dear.tally.dwell);
+    }
 
     #[test]
     fn backfire_hardens_strong_partisans_only_when_positive() {

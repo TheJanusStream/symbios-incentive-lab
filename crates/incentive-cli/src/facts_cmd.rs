@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use incentive_core::{CheckResult, Config, FactRun, Verdict, facts};
+use incentive_core::{CheckResult, Config, Fact, FactRun, Verdict, facts};
 use serde_json::json;
 
 use crate::error::CliError;
@@ -12,14 +12,17 @@ use crate::runs;
 /// Runs every fact's variants on paired seeds and prints the effect sizes,
 /// each with the 95% interval of its per-seed effect and the verdict on it.
 /// `set` changes the configuration every arm starts from, before the arm's
-/// own change: a world in which to check the facts.
+/// own change: a world in which to check the facts. `only` limits the run to
+/// the facts with these ids; empty means every fact.
 pub fn run_facts(
     seeds: u64,
     population: u32,
     days: u32,
     set: &[String],
+    only: &[String],
     out: Option<PathBuf>,
 ) -> Result<(), CliError> {
+    let selected = select_facts(only)?;
     let run = FactRun {
         seeds: (1..=seeds.max(1)).collect(),
         population,
@@ -42,7 +45,7 @@ pub fn run_facts(
     let mut rows = Vec::new();
     let mut doc = Vec::new();
     let mut all_results = Vec::new();
-    for fact in facts() {
+    for fact in selected {
         let jobs: Vec<(Config, u64)> = run
             .seeds
             .iter()
@@ -106,10 +109,25 @@ pub fn run_facts(
     report::ensure_dir(&dir)?;
     report::write_json(
         &dir.join("facts.json"),
-        &json!({"run": {"seeds": run.seeds, "population": population, "days": days, "set": set}, "facts": doc}),
+        &json!({"run": {"seeds": run.seeds, "population": population, "days": days, "set": set, "only": only}, "facts": doc}),
     )?;
     outln!("wrote {}", dir.display());
     Ok(())
+}
+
+/// The facts with the given ids, in catalogue order; every fact when none
+/// is given.
+fn select_facts(only: &[String]) -> Result<Vec<&'static Fact>, CliError> {
+    if let Some(unknown) = only
+        .iter()
+        .find(|id| !facts().iter().any(|f| f.id == id.trim()))
+    {
+        return Err(CliError::UnknownFact(unknown.clone()));
+    }
+    Ok(facts()
+        .iter()
+        .filter(|f| only.is_empty() || only.iter().any(|id| id.trim() == f.id))
+        .collect())
 }
 
 /// A check's interval verdict as text: `PASS`, `FAIL` or `UNDECIDED`, with a

@@ -289,10 +289,11 @@ pub fn high_score_cut(feed: &FeedExplanation) -> f32 {
     scores[top - 1]
 }
 
-/// The Goodhart gap in one item: the platform scored it high, yet the viewer
-/// would not endorse having seen it.
+/// The Goodhart gap in one item: the platform scored it high, yet it was not
+/// worth the viewer's time, its reflective value below its time cost
+/// (docs/model.md, 7.2).
 pub fn is_goodhart_gap(item: &ExplainedItem, cut: f32) -> bool {
-    item.score >= cut && item.truth.reflective < 0.0
+    item.score >= cut && item.truth.reflective < item.truth.time_cost
 }
 
 #[cfg(test)]
@@ -380,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn the_goodhart_gap_needs_a_high_score_and_negative_value() {
+    fn the_goodhart_gap_needs_a_high_score_and_a_value_below_its_time() {
         let mut config = Config::default();
         config.run.population_size = 200;
         config.run.days = 6;
@@ -395,10 +396,24 @@ mod tests {
         let high = feed.items.iter().filter(|i| i.score >= cut).count();
         assert!(high >= 1 && high <= feed.items.len().div_ceil(4) + 1);
         for item in &feed.items {
+            assert!(item.truth.time_cost > 0.0, "the default world prices time");
             let gap = is_goodhart_gap(item, cut);
-            assert_eq!(gap, item.score >= cut && item.truth.reflective < 0.0);
-            let p = predicted_engagement(item);
-            assert!(p.is_finite());
+            assert_eq!(
+                gap,
+                item.score >= cut && item.truth.reflective < item.truth.time_cost
+            );
+            assert!(predicted_engagement(item).is_finite());
         }
+        // A positive value below the item's time cost is still a gap; a value
+        // above it is not, and neither is a low score.
+        let mut top = feed.items[0].clone();
+        top.score = cut;
+        top.truth.reflective = 0.5 * top.truth.time_cost;
+        assert!(is_goodhart_gap(&top, cut));
+        top.truth.reflective = top.truth.time_cost + 0.01;
+        assert!(!is_goodhart_gap(&top, cut));
+        top.truth.reflective = -1.0;
+        top.score = cut - 0.01;
+        assert!(!is_goodhart_gap(&top, cut));
     }
 }

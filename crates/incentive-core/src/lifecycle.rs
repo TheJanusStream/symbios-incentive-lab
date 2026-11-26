@@ -114,6 +114,8 @@ fn reenter(world: &mut World, ctx: &DayCtx, i: usize) {
 }
 
 /// Phase 12: author feedback, wellbeing, habit, stay utility and churn.
+/// Wellbeing and stay utility read the day's reflective utility net of the
+/// time cost; the subscription window gathers it before the time cost.
 pub(crate) fn daily_updates(world: &mut World, ctx: &DayCtx) {
     let assume = &ctx.config.world;
     let ni = ctx.config.design.notification_intensity;
@@ -137,9 +139,11 @@ pub(crate) fn daily_updates(world: &mut World, ctx: &DayCtx) {
         t.e_ref += 0.02 * likes + (0.1 * t.mutual_replies as f32).min(1.0)
             - 0.05 * (0.5 + traits.vulnerability) * t.angry_received as f32
             + traits.money_weight * t.income / assume.living_income;
+        // Wellbeing and stay utility read the day's reflective utility after
+        // the time cost; subscriptions read it before (`eref_window` below).
         let (imp, refl) = (
             (t.e_imp / IMPULSIVE_SCALE).tanh(),
-            (t.e_ref / REFLECTIVE_SCALE).tanh(),
+            (t.net_reflective() / REFLECTIVE_SCALE).tanh(),
         );
         let experienced = opened || t.harassment > 0;
         let recovery = 0.02 * (traits.wellbeing_baseline - state.wellbeing);
@@ -166,8 +170,11 @@ pub(crate) fn daily_updates(world: &mut World, ctx: &DayCtx) {
         state.eref_window += state.today.e_ref;
         let leave = assume.churn_base * sig(8.0 * (assume.leave_threshold - state.stay_ema))
             + assume.harassment_exit * state.today.harassment as f32 * traits.vulnerability;
+        // People on a deactivation experiment's break are paid participants
+        // and stay (docs/model.md, 13.2).
+        let on_break = world.truth.on_break(i);
         let mut rng = ctx.rng(i as u64, Stream::Churn);
-        if rng::chance(&mut rng, leave) {
+        if !on_break && rng::chance(&mut rng, leave) {
             state.is_user = false;
             state.subscriber = false;
             state.left_day = Some(ctx.day);
@@ -212,6 +219,47 @@ mod tests {
             total += world.tally.new_accounts;
         }
         total
+    }
+
+    #[test]
+    fn wellbeing_reads_the_time_cost_and_subscriptions_do_not() {
+        let mut config = Config::default();
+        config.run.population_size = 200;
+        let mut world = init::build_world(&config);
+        let i = world
+            .people
+            .iter()
+            .position(|p| p.state.is_user)
+            .expect("a user");
+        let ctx = DayCtx {
+            config: &config,
+            day: 5,
+        };
+        // The same day twice: reflective utility 2.0 with a time cost of
+        // 0.5, and 1.5 with none.
+        let mut charged = world.clone();
+        let mut gross = world.clone();
+        let t = &mut gross.people[i].state.today;
+        t.opened = true;
+        t.e_ref = 2.0;
+        let t = &mut charged.people[i].state.today;
+        t.opened = true;
+        t.e_ref = 2.0;
+        t.time_cost = 0.5;
+        assert_eq!(t.net_reflective(), 1.5);
+        let t = &mut world.people[i].state.today;
+        t.opened = true;
+        t.e_ref = 1.5;
+        daily_updates(&mut charged, &ctx);
+        daily_updates(&mut world, &ctx);
+        daily_updates(&mut gross, &ctx);
+        let (a, b) = (&charged.people[i].state, &world.people[i].state);
+        assert_eq!(a.wellbeing, b.wellbeing);
+        assert_eq!(a.stay_ema, b.stay_ema);
+        // Without the time cost the same day would have felt better.
+        assert!(gross.people[i].state.wellbeing > a.wellbeing);
+        // The subscription window gathers the value before the time cost.
+        assert_eq!(a.eref_window - b.eref_window, 0.5);
     }
 
     #[test]

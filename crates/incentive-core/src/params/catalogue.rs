@@ -115,7 +115,7 @@ const BOT_STRATEGIES: &[ChoiceInfo] = &[
 use ParamGroup as G;
 
 #[rustfmt::skip]
-pub(super) const PARAMS: [ParamInfo; 90] = [
+pub(super) const PARAMS: [ParamInfo; 91] = [
     design("design.w_like", "Like weight", G::Ranking, range(0.0, 3.0, 0.1),
         "How much the feed favours posts it predicts you will like, the core signal of engagement-ranked feeds."),
     design("design.w_reply", "Reply weight", G::Ranking, range(0.0, 3.0, 0.1),
@@ -200,6 +200,8 @@ pub(super) const PARAMS: [ParamInfo; 90] = [
         "How much seeing peers' popular posts hurts, the social comparison effect reported for image-centred apps."),
     world("world.regret_cost", "Regret cost", G::Harm, range(0.0, 0.2, 0.01),
         "How much each item beyond the time a person would endorse spending feels like time wasted."),
+    world("world.time_cost", "Value of time", G::Harm, range(0.0, 0.4, 0.005),
+        "What a unit of time on the platform could have given people if spent on something else, such as sleep, friends or work; every item seen costs its reading time at this rate."),
     world("world.wrongful_sanction_cost", "Wrongful sanction cost", G::Harm, range(0.0, 2.0, 0.05),
         "How much it hurts to have a harmless post removed or pushed down by mistake, felt like harassment and more by vulnerable people."),
     world("world.learning_rate", "Learning rate", G::Learning, range(0.0, 0.5, 0.01),

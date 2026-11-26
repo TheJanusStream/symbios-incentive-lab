@@ -91,7 +91,12 @@ pub(crate) struct DayAccumulators {
     pub posts: u32,
     pub items: u32,
     pub e_imp: f32,
+    /// Reflective utility before the time cost (docs/model.md, 7.2):
+    /// subscriptions read it.
     pub e_ref: f32,
+    /// The time cost of today's impressions, `time_cost * D` summed
+    /// (docs/model.md, 7.2), kept apart from `e_ref`.
+    pub time_cost: f32,
     pub harassment: u32,
     pub likes_received: u32,
     pub mutual_replies: u32,
@@ -106,6 +111,12 @@ pub(crate) struct DayAccumulators {
 }
 
 impl DayAccumulators {
+    /// Reflective utility after the time cost, what wellbeing and stay
+    /// utility read (docs/model.md, 7.3).
+    pub(crate) fn net_reflective(&self) -> f32 {
+        self.e_ref - self.time_cost
+    }
+
     pub(crate) fn clear(&mut self) {
         let mut shares = std::mem::take(&mut self.misinformation_shares);
         let mut credits = std::mem::take(&mut self.fan_credits);

@@ -183,6 +183,20 @@ const BOT_GAMING: &[MetricId] = &[
     MetricId::ToxicShare,
     MetricId::BotEngagementShare,
 ];
+/// What the time cost (7.2) moves: time, wellbeing, the indices and the
+/// share of time not worth it.
+const TIME_EFFECTS: &[MetricId] = &[
+    MetricId::EngagementIndex,
+    MetricId::TimeSpent,
+    MetricId::WellbeingUsers,
+    MetricId::WellbeingEverUsers,
+    MetricId::BenefitIndex,
+    MetricId::HarmIndex,
+    MetricId::UserShare,
+    MetricId::LowValueTime,
+];
+const FULL_NOTIFICATIONS: &[&str] = &["design.notification_intensity=1"];
+const NO_TIME_COST: &[&str] = &["world.time_cost=0"];
 
 /// The named comparisons of the report, in order. Edit this table to add or
 /// change one; every number of section 13.3 comes from a row here or from the
@@ -525,6 +539,66 @@ const COMPARISONS: &[Named] = &[
         both: &[],
         window: Window::Summary,
         metrics: CHRONO_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "Notifications at full strength (`notification_intensity` 1 against 0.6)",
+        a: PLAIN_ER,
+        b: Side {
+            preset: ER,
+            set: FULL_NOTIFICATIONS,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: TIME_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "Notifications at full strength under Q&B (`notification_intensity` 1 against 0.6)",
+        a: PLAIN_QB,
+        b: Side {
+            preset: QB,
+            set: FULL_NOTIFICATIONS,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: TIME_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "No time cost (`time_cost` 0 against the default)",
+        a: PLAIN_ER,
+        b: Side {
+            preset: ER,
+            set: NO_TIME_COST,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: TIME_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "No time cost under Q&B (`time_cost` 0 against the default)",
+        a: PLAIN_QB,
+        b: Side {
+            preset: QB,
+            set: NO_TIME_COST,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: TIME_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "A daily time limit for everyone (`time_limit_share` 1 against 0)",
+        a: PLAIN_ER,
+        b: Side {
+            preset: ER,
+            set: &["design.time_limit_share=1"],
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: TIME_EFFECTS,
         ratio: true,
     },
 ];

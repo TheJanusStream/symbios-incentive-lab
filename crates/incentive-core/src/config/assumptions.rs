@@ -36,6 +36,10 @@ pub struct WorldAssumptions {
     pub comparison_cost: f32,
     /// Cost of each item beyond the time a person would endorse.
     pub regret_cost: f32,
+    /// Reflective value of what a unit of time on the platform displaces:
+    /// each impression costs `time_cost` times its dwell (docs/model.md,
+    /// 7.2).
+    pub time_cost: f32,
     /// Reflective hurt of having a harmless post removed or demoted, felt
     /// like harassment (more for vulnerable authors).
     pub wrongful_sanction_cost: f32,
@@ -140,6 +144,7 @@ impl Default for WorldAssumptions {
             harassment_harm: 3.0,
             comparison_cost: 0.1,
             regret_cost: 0.05,
+            time_cost: 0.115,
             wrongful_sanction_cost: 0.5,
             learning_rate: 0.1,
             imitation_rate: 0.02,

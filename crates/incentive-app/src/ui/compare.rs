@@ -84,7 +84,7 @@ fn overlay_charts(ui: &mut Ui, lab: &mut Lab) {
                 .max_height(420.0)
                 .id_salt("compare-picker")
                 .show(ui, |ui| {
-                    for info in metric_infos() {
+                    for info in metric_infos().iter().filter(|i| !i.id.needs_experiment()) {
                         let mut on = compare.metrics.contains(&info.id);
                         if ui
                             .checkbox(&mut on, info.name)

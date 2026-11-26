@@ -369,8 +369,9 @@ fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
         ui.label(RichText::new("Highlighted:").small().strong());
         ui.label(
             RichText::new(
-                "the platform scored it high, yet the viewer would rather not have seen it \
-                 (negative reflective value). That is Goodhart's law in one line.",
+                "the platform scored it high, yet it was not worth the viewer's time (its \
+                 reflective value fell short of the time it took). That is Goodhart's law in one \
+                 line.",
             )
             .small(),
         );
@@ -423,8 +424,10 @@ fn feed_header(ui: &mut Ui) {
             "Truth: how much the viewer is drawn to it on impulse",
         ),
         (
-            "Reflective",
-            "Truth: how much the viewer would endorse having seen it",
+            "Worth it",
+            "Truth: how much the viewer would endorse having seen it, less the time it took \
+             (reflective value minus time cost; hover a value for both). Below zero it was not \
+             worth the time",
         ),
         ("Quality", "Truth: the post's hidden craft and substance"),
         ("Toxicity", "Truth: the post's hidden harm"),
@@ -475,15 +478,19 @@ fn feed_row(ui: &mut Ui, item: &ExplainedItem) {
         .show(ui, |ui| score_components(ui, item));
     ui.label(text(format!("{:.2}", predicted_engagement(item))));
     ui.label(text(format!("{:.2}", item.truth.appeal)));
-    let reflective = item.truth.reflective;
-    let reflective_text = RichText::new(format!("{reflective:+.2}"));
+    let (reflective, time_cost) = (item.truth.reflective, item.truth.time_cost);
+    let worth = reflective - time_cost;
+    let worth_text = RichText::new(format!("{worth:+.2}"));
     ui.label(if !seen {
-        reflective_text.color(weak)
-    } else if reflective < 0.0 {
-        reflective_text.color(palette::VERMILLION)
+        worth_text.color(weak)
+    } else if worth < 0.0 {
+        worth_text.color(palette::VERMILLION)
     } else {
-        reflective_text
-    });
+        worth_text
+    })
+    .on_hover_text(format!(
+        "Reflective value {reflective:+.2}, time it took {time_cost:.2}"
+    ));
     ui.label(text(format!("{:.2}", post.quality)));
     ui.label(text(format!("{:.2}", post.toxicity)));
     ui.label(text(format!("{:.2}", post.truth)));

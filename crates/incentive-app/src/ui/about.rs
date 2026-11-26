@@ -9,9 +9,9 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 /// The model specification inside the repository.
 pub const MODEL_DOC: &str = "docs/model.md";
 
-/// The five stylized facts the model is checked against, with sources
+/// The six stylized facts the model is checked against, with sources
 /// (docs/model.md, section 15).
-pub const FACTS: [(&str, &str); 5] = [
+pub const FACTS: [(&str, &str); 6] = [
     (
         "Engagement ranking amplifies divisive content that people do not value. Against a \
          chronological feed, the engagement ranking shows more outrage, and what it shows is \
@@ -38,11 +38,17 @@ pub const FACTS: [(&str, &str); 5] = [
         "Harassment drives its targets away: more trolls, more vulnerable people leave.",
         "Pew Research Center (2017), Online Harassment 2017",
     ),
+    (
+        "Leaving the platform makes people slightly happier. People who stay off a realistic \
+         ranked feed for five weeks end up a little happier than those who stay on. The value \
+         the model puts on time was set so that it reproduces the size of this effect.",
+        "Allcott et al. (2025), quitting Facebook and Instagram before the 2020 US election, NBER",
+    ),
 ];
 
 /// Findings that came out of the model's calibration rather than into it
 /// (docs/model.md, 13.3), offered as things to discover.
-pub const DISCOVERIES: [(&str, &str); 6] = [
+pub const DISCOVERIES: [(&str, &str); 7] = [
     (
         "Should the feed listen when people ask to see less?",
         "Ranking down authors whom many people ask to see less of sounds like letting users steer. \
@@ -54,47 +60,60 @@ pub const DISCOVERIES: [(&str, &str); 6] = [
     (
         "What does a calmer feed cost?",
         "Ranking for quality and cross-group approval cuts harm by about four fifths for about a \
-         fifth of the engagement. Authors learn to polish posts so they look better to the \
+         seventh of the engagement. Authors learn to polish posts so they look better to the \
          quality classifier than they are, and the more polish fools it (world assumptions), the \
-         less harm the calm feed saves: at the strongest setting, under three fifths. Find the \
+         less harm the calm feed saves: at the strongest setting, less than half. Find the \
          designs in between.",
     ),
     (
+        "Do notifications do people any good?",
+        "They always bring engagement: at full strength, about half again as much, and they keep \
+         more people on the platform. Under the engagement ranking they bring no wellbeing at \
+         all. On the quality and bridging feed, where most of the time spent is worth it, the \
+         same notifications make people a little happier. Now that time has a price (world \
+         assumptions: value of time), more time on a feed helps only if the feed is worth it.",
+    ),
+    (
         "Does the engagement ranking's lead last?",
-        "In the default world its lead grows as habits form. Make habits weaker, reputation \
-         matter more and harassment drive people away faster (world assumptions: habit gain \
-         0.01, reputation sensitivity 5, harassment exit 0.15), and the lead reverses: by the end \
-         of the year the calmer design draws more engagement.",
+        "In the default world its lead holds over the year, but on fewer people: in the last \
+         three months about 47% of society use it, against 61% for quality and bridging. Make \
+         habits weaker, reputation matter more and harassment drive people away faster (world \
+         assumptions: habit gain 0.01, reputation sensitivity 5, harassment exit 0.15), and the \
+         lead reverses: by the end of the year the calmer design draws more engagement.",
     ),
     (
         "Does stricter moderation work?",
         "Against toxicity, yes: at a threshold of 0.3 toxic impressions fall by about nineteen \
          twentieths, and authors' evasion barely dents that. But the classifier also removes \
-         about thirteen times as many innocent posts, fifty a day, and the harm index counts \
-         those: it falls by only a quarter.",
+         about fourteen times as many innocent posts, about forty-seven a day, and the harm \
+         index counts those: it falls by only a quarter.",
     ),
     (
         "Can you trust the reports?",
-        "Bot farms file about a quarter of all reports and see-less marks under the engagement \
-         ranking, and most of them under quality and bridging. Weighing each report by how often \
-         its reporter's earlier reports were upheld does not stop the filing but takes away its \
-         effect: under quality and bridging, harassment falls by more than two thirds.",
+        "Bot farms file about three tenths of all reports and see-less marks under the \
+         engagement ranking, and most of them under quality and bridging. Weighing each report \
+         by how often its reporter's earlier reports were upheld does not stop the filing but \
+         takes away its effect: under quality and bridging, harassment falls by more than two \
+         thirds.",
     ),
     (
         "Does the survey tell the platform how people are doing?",
-        "Not reliably: answers mix wellbeing with recent pleasure and habit. Over a year the \
-         survey ranks the engagement ranking above the chronological feed, calm by design, quality \
-         and bridging and the subscription, while the truth ranks it below all four on the \
-         wellbeing of everyone who ever used the platform.",
+        "Not reliably: answers mix wellbeing with recent pleasure and habit. After three months \
+         the survey ranks the engagement ranking above the chronological feed, calm by design, \
+         quality and bridging and the subscription; after a year, still above the first two, \
+         level with quality and bridging and below the subscription. The truth ranks it below \
+         all four at both points, on the wellbeing of everyone who ever used the platform.",
     ),
 ];
 
 /// What the model grants for free: designs that lean on these look better
 /// than they could on a real platform (docs/model.md, section 16).
 pub const FREEBIES: [&str; 5] = [
-    "Time: an extra session on a good feed only adds wellbeing. Nothing it crowds out is \
-     counted, and people regret about a tenth as much of their time as surveys of real users \
-     find, so notifications look harmless.",
+    "Time: it now costs what it could have been spent on, but at one value for everyone, set \
+     so that leaving a realistic ranked feed for five weeks makes people slightly happier, as a \
+     field experiment found. A notification costs only the time it brings, not the \
+     interruption, and people regret about a twelfth as much of their time as surveys of real \
+     users find.",
     "Money: revenue is not calibrated, and creator payouts cost nothing in any score but net \
      revenue, while creators earning a living count toward the benefit index.",
     "Review and notes: human reviewers never err, and community notes are written only on \
@@ -221,7 +240,7 @@ pub fn show(ui: &mut Ui) {
             heading(ui, "What the model is checked against");
             paragraph(
                 ui,
-                "Five findings from research. The model was tuned until it reproduces their \
+                "Six findings from research. The model was tuned until it reproduces their \
                  direction, and each is an automated test, so they show that it is consistent \
                  with these studies, not that it predicts them:",
             );

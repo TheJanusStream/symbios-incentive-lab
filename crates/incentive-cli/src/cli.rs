@@ -165,6 +165,10 @@ pub enum Command {
         /// which to check the facts.
         #[arg(long = "set", value_name = "PATH=VALUE")]
         set: Vec<String>,
+        /// Check only these facts, by id, comma-separated (default: all),
+        /// for example `deactivation`.
+        #[arg(long, value_delimiter = ',')]
+        fact: Vec<String>,
         /// Output directory (default: the repository's exports/facts).
         #[arg(long)]
         out: Option<PathBuf>,
