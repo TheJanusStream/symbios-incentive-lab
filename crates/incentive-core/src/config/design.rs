@@ -51,7 +51,7 @@ pub enum AltFeed {
 }
 
 /// The player's platform (docs/model.md, section 10). The default is the
-/// Engagement maximiser.
+/// Engagement ranking.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DesignLevers {
@@ -99,6 +99,9 @@ pub struct DesignLevers {
     pub moderation_action: ModerationAction,
     /// Human reviews per 1,000 users per day.
     pub review_capacity: f32,
+    /// How much a report's weight in the review queue follows its reporter's
+    /// record of upheld reports, in `[0, 1]` (docs/model.md, 6.7).
+    pub report_trust: f32,
     /// How strikes escalate.
     pub sanctions: Sanctions,
     /// Whether community notes run.
@@ -123,6 +126,9 @@ pub struct DesignLevers {
     pub account_cost: f32,
     /// Share of the business funded by ads; the rest by subscriptions.
     pub ads_share: f32,
+    /// Share of survey answers collected right after a session, when
+    /// momentary pleasure weighs twice as much in the answer.
+    pub survey_after_session: f32,
 }
 
 impl Default for DesignLevers {
@@ -150,6 +156,7 @@ impl Default for DesignLevers {
             classifier_threshold: 0.7,
             moderation_action: ModerationAction::Remove,
             review_capacity: 1.0,
+            report_trust: 0.0,
             sanctions: Sanctions::Graduated,
             community_notes: false,
             payout_share: 0.0,
@@ -162,6 +169,7 @@ impl Default for DesignLevers {
             alt_feed: AltFeed::Chronological,
             account_cost: 0.2,
             ads_share: 1.0,
+            survey_after_session: 0.0,
         }
     }
 }

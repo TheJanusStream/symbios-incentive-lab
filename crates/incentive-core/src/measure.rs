@@ -11,6 +11,8 @@ use crate::world::{DayCtx, World};
 /// Survey: every 7th day a 5% sample of users is asked.
 const SURVEY_PERIOD: u32 = 7;
 const SURVEY_SAMPLE: f32 = 0.05;
+/// Everyone answers the survey a little high.
+const SURVEY_BIAS: f32 = 0.1;
 /// Meaningful interactions per user and day that score full marks in the
 /// benefit index. The text says 2; the best presets reach about 0.06, so 2
 /// would flatten that component to zero (docs/model.md, section 13).
@@ -53,6 +55,7 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::Notes, t.notes as f32);
     m.set(M::Revenue, t.revenue);
     m.set(M::Payouts, t.payouts);
+    m.set(M::NetRevenue, t.revenue - t.payouts);
     m.set(M::Retention30, retention(world, ctx.day));
     m.set(M::SurveySatisfaction, survey(world, ctx));
     m.set(M::LargestCascade, t.largest_cascade as f32);
@@ -81,6 +84,13 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
         ratio((t.bot_likes + t.bot_shares) as f32, engagement),
     );
     m.set(
+        M::BotFlagShare,
+        ratio(
+            (t.bot_reports + t.bot_see_less) as f32,
+            (t.reports + t.see_less) as f32,
+        ),
+    );
+    m.set(
         M::ReflectivePerImpression,
         ratio(t.reflective_sum, impressions),
     );
@@ -105,7 +115,13 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
         }
     };
     m.set(M::HarmfulPayoutShare, payout_share(harmful));
+    // The content mix counts human posts only; bots' posts are counted apart.
     let posts: u32 = t.posts_by_style.iter().sum();
+    m.set(
+        M::PolishedShare,
+        ratio(t.polished_posts as f32, posts as f32),
+    );
+    m.set(M::BotPosts, t.bot_posts as f32);
     for style in Style::ALL {
         m.set(
             M::post_share(style),
@@ -145,12 +161,16 @@ fn retention(world: &World, day: u32) -> f32 {
     }
 }
 
-/// The weekly survey: happier users answer more often and everyone answers a
-/// little high; people who left are never asked.
+/// The weekly survey (docs/model.md, 9.1): happier users answer more often,
+/// everyone answers a little high, and people who left are never asked. An
+/// answer mixes wellbeing with recent impulsive pleasure and habit; answers
+/// collected right after a session weigh pleasure twice.
 fn survey(world: &World, ctx: &DayCtx) -> f32 {
     if ctx.day % SURVEY_PERIOD != SURVEY_PERIOD - 1 {
         return f32::NAN;
     }
+    let assume = &ctx.config.world;
+    let after_share = ctx.config.design.survey_after_session;
     let mut answers = Vec::new();
     for (i, p) in world.people.iter().enumerate() {
         if !p.state.is_user {
@@ -159,10 +179,41 @@ fn survey(world: &World, ctx: &DayCtx) -> f32 {
         let mut rng = ctx.rng(i as u64, Stream::Survey);
         let wb = p.state.wellbeing;
         if rng::chance(&mut rng, SURVEY_SAMPLE) && rng::chance(&mut rng, 0.3 * (0.5 + wb)) {
-            answers.push((wb + 0.1 + rng::normal(&mut rng, 0.1)).clamp(0.0, 1.0));
+            let after_session = rng::chance(&mut rng, after_share);
+            let noise = rng::normal(&mut rng, 0.1);
+            let felt = survey_answer(
+                wb,
+                p.state.pleasure,
+                p.state.habit,
+                assume.survey_impulsive_weight,
+                assume.survey_habit_weight,
+                after_session,
+            );
+            answers.push((felt + noise).clamp(0.0, 1.0));
         }
     }
     nan_mean(answers.into_iter())
+}
+
+/// A survey answer before noise and clipping:
+/// `(1 - a - b) * wellbeing + a * pleasure + b * habit + 0.1`, where the
+/// pleasure weight `a` doubles right after a session, at most to `1 - b`.
+fn survey_answer(
+    wellbeing: f32,
+    pleasure: f32,
+    habit: f32,
+    impulsive_weight: f32,
+    habit_weight: f32,
+    after_session: bool,
+) -> f32 {
+    let b = habit_weight.clamp(0.0, 1.0);
+    let a = if after_session {
+        2.0 * impulsive_weight
+    } else {
+        impulsive_weight
+    }
+    .clamp(0.0, 1.0 - b);
+    (1.0 - a - b) * wellbeing + a * pleasure + b * habit + SURVEY_BIAS
 }
 
 fn people_metrics(world: &World, m: &mut DailyMetrics) {
@@ -266,14 +317,20 @@ fn indices(world: &World, config: &Config, m: &mut DailyMetrics) {
         (m.get(M::Impressions) / benchmark).min(1.0),
     );
     let polarisation_growth =
-        ((m.get(M::PolarisationSociety) - world.platform.polarisation_day0) / 0.2).clamp(0.0, 1.0);
-    let harm = [
-        (m.get(M::ToxicShare) / 0.2).min(1.0),
-        (m.get(M::HarassmentPer1000) / 20.0).min(1.0),
-        (m.get(M::MisinformationShare) / 0.3).min(1.0),
+        ((m.get(M::PolarisationSociety) - world.truth.polarisation_day0) / 0.2).clamp(0.0, 1.0);
+    let wrongful = ratio(1000.0 * m.get(M::FalsePositives), world.user_count() as f32);
+    let harm = harm_components(
+        m.get(M::ToxicShare),
+        m.get(M::HarassmentPer1000),
+        m.get(M::MisinformationShare),
         polarisation_growth,
-    ];
-    m.set(M::HarmIndex, harm.iter().sum::<f32>() / harm.len() as f32);
+        wrongful,
+    );
+    m.set(M::HarmIndex, mean_of(&harm));
+    m.set(
+        M::HarmIndexExPolarisation,
+        mean_without(&harm, HARM_POLARISATION),
+    );
     let discourse = [
         1.0 - m.get(M::TopToxicShare),
         m.get(M::TopTruthfulShare),
@@ -289,10 +346,70 @@ fn indices(world: &World, config: &Config, m: &mut DailyMetrics) {
         m.get(M::CreatorsLiving),
         discourse_quality,
     ];
+    m.set(M::BenefitIndex, mean_of(&benefit));
     m.set(
-        M::BenefitIndex,
-        benefit.iter().sum::<f32>() / benefit.len() as f32,
+        M::BenefitIndexExCreators,
+        mean_without(&benefit, BENEFIT_CREATORS),
     );
+}
+
+/// Position of the polarisation component in [`harm_components`].
+const HARM_POLARISATION: usize = 3;
+/// Position of the creators-living component in the benefit index.
+const BENEFIT_CREATORS: usize = 3;
+
+/// The plain mean of an index's components.
+fn mean_of(components: &[f32]) -> f32 {
+    components.iter().sum::<f32>() / components.len() as f32
+}
+
+/// The mean of an index's components without the one at `skip`.
+fn mean_without(components: &[f32], skip: usize) -> f32 {
+    let kept: f32 = components
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != skip)
+        .map(|(_, v)| v)
+        .sum();
+    kept / (components.len() - 1) as f32
+}
+
+/// The five capped components of the harm index (docs/model.md, 9.3), the
+/// polarisation component at [`HARM_POLARISATION`]. Wrongful sanctions are
+/// removals and demotions of harmless posts per 1,000 users, scaled like
+/// harassment.
+fn harm_components(
+    toxic_share: f32,
+    harassment_per_1000: f32,
+    misinformation_share: f32,
+    polarisation_growth: f32,
+    wrongful_per_1000: f32,
+) -> [f32; 5] {
+    [
+        (toxic_share / 0.2).min(1.0),
+        (harassment_per_1000 / 20.0).min(1.0),
+        (misinformation_share / 0.3).min(1.0),
+        polarisation_growth,
+        (wrongful_per_1000 / 20.0).min(1.0),
+    ]
+}
+
+/// The harm index: the mean of its five components.
+#[cfg(test)]
+fn harm_index(
+    toxic_share: f32,
+    harassment_per_1000: f32,
+    misinformation_share: f32,
+    polarisation_growth: f32,
+    wrongful_per_1000: f32,
+) -> f32 {
+    mean_of(&harm_components(
+        toxic_share,
+        harassment_per_1000,
+        misinformation_share,
+        polarisation_growth,
+        wrongful_per_1000,
+    ))
 }
 
 #[cfg(test)]
@@ -300,8 +417,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wrongful_sanctions_raise_the_harm_index() {
+        let base = harm_index(0.05, 2.0, 0.1, 0.1, 0.0);
+        let wrongful = harm_index(0.05, 2.0, 0.1, 0.1, 10.0);
+        assert!((wrongful - base - 0.1).abs() < 1e-6, "{base} {wrongful}");
+        assert!((harm_index(0.0, 0.0, 0.0, 0.0, 100.0) - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_indices_without_one_component_drop_it_from_the_mean() {
+        let harm = harm_components(0.1, 10.0, 0.15, 0.4, 0.0);
+        // Components 0.5, 0.5, 0.5, 0.4, 0: the full mean and the mean of four.
+        assert!((mean_of(&harm) - 0.38).abs() < 1e-6);
+        assert!((mean_without(&harm, HARM_POLARISATION) - 0.375).abs() < 1e-6);
+        let benefit = [0.6, 0.5, 0.2, 0.4, 0.9];
+        assert!((mean_without(&benefit, BENEFIT_CREATORS) - 0.55).abs() < 1e-6);
+    }
+
+    #[test]
     fn gini_of_equal_and_concentrated_incomes() {
         assert!(gini(&[1.0, 1.0, 1.0, 1.0]).abs() < 1e-6);
         assert!((gini(&[0.0, 0.0, 0.0, 4.0]) - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_survey_answer_mixes_wellbeing_pleasure_and_habit() {
+        let plain = survey_answer(0.6, 0.9, 0.5, 0.3, 0.1, false);
+        assert!((plain - (0.6 * 0.6 + 0.3 * 0.9 + 0.1 * 0.5 + 0.1)).abs() < 1e-6);
+        let after = survey_answer(0.6, 0.9, 0.5, 0.3, 0.1, true);
+        assert!((after - (0.3 * 0.6 + 0.6 * 0.9 + 0.1 * 0.5 + 0.1)).abs() < 1e-6);
+        // The doubled weight never pushes the weights past 1.
+        let capped = survey_answer(0.6, 0.9, 0.5, 0.5, 0.3, true);
+        assert!((capped - (0.7 * 0.9 + 0.3 * 0.5 + 0.1)).abs() < 1e-6);
+        assert!((survey_answer(0.6, 0.9, 0.5, 0.0, 0.0, true) - 0.7).abs() < 1e-6);
     }
 }

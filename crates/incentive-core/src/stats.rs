@@ -69,6 +69,47 @@ pub fn t_critical(df: usize) -> f32 {
     (z + (z3 + z) / (4.0 * n) + (5.0 * z5 + 16.0 * z3 + 3.0 * z) / (96.0 * n * n)) as f32
 }
 
+/// The mean of per-seed values with its 95% confidence interval (Student's
+/// t), skipping NaN: the one-sample interval behind scenario verdicts and
+/// the runner's effects.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct MeanInterval {
+    /// Mean of the values.
+    pub mean: f32,
+    /// Lower end of the 95% confidence interval (NaN with fewer than two
+    /// values).
+    pub low: f32,
+    /// Upper end of the 95% confidence interval.
+    pub high: f32,
+    /// Values that are not NaN.
+    pub n: usize,
+}
+
+impl MeanInterval {
+    /// The mean and 95% interval of the values that are not NaN.
+    pub fn of(values: impl Iterator<Item = f32>) -> Self {
+        let values: Vec<f32> = values.filter(|v| !v.is_nan()).collect();
+        let s = Stats::of(values.iter().copied());
+        let n = values.len();
+        let half = if n > 1 {
+            t_critical(n - 1) * s.sd / (n as f32).sqrt()
+        } else {
+            f32::NAN
+        };
+        Self {
+            mean: s.mean,
+            low: s.mean - half,
+            high: s.mean + half,
+            n,
+        }
+    }
+
+    /// Half the width of the interval.
+    pub fn half_width(&self) -> f32 {
+        (self.high - self.low) / 2.0
+    }
+}
+
 /// Two designs compared seed by seed: their means, the mean of the paired
 /// differences B - A, and its 95% confidence interval.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -140,6 +181,15 @@ mod tests {
             assert!((t_critical(df) - exact).abs() < 1e-3, "df {df}");
         }
         assert!(t_critical(100_000) > 1.9599 && t_critical(100_000) < 1.961);
+    }
+
+    #[test]
+    fn mean_intervals_use_the_t_distribution() {
+        let m = MeanInterval::of([0.5, 0.4, 0.6, 0.5, f32::NAN].into_iter());
+        assert_eq!(m.n, 4);
+        assert!((m.mean - 0.5).abs() < 1e-6);
+        assert!((m.half_width() - 3.182 * 0.081_649_66 / 2.0).abs() < 1e-4);
+        assert!(MeanInterval::of([1.0].into_iter()).low.is_nan());
     }
 
     #[test]

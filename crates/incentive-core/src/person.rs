@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::content::STYLE_COUNT;
+use crate::content::{NEUTRAL_INTENSITY, STYLE_COUNT};
 use crate::population::Traits;
 use crate::society::INFORMEDNESS_BASELINE;
 
@@ -35,8 +35,18 @@ pub struct PersonState {
     pub informedness: f32,
     /// Learned value of writing each style.
     pub style_value: [f32; STYLE_COUNT],
+    /// Learned advantage of a plain post (index 0) and of a polished post
+    /// (index 1) over the style's value (docs/model.md, 7.5).
+    pub polish_value: [f32; 2],
+    /// Posts written over the run; the next post's ordinal.
+    pub posts_written: u32,
+    /// Recent impulsive pleasure in `[0, 1]`: a smoothed, squashed daily
+    /// impulsive experience (docs/model.md, 7.3).
+    pub pleasure: f32,
     /// Skill at writing toxicity classifiers miss.
     pub evasion: f32,
+    /// Learned intensity of hostile posts in `[0, 1]`; 0.5 adds nothing.
+    pub intensity: f32,
     /// Accounts followed, sorted ascending.
     pub follows: Vec<u32>,
     /// Accounts blocked, oldest first.
@@ -132,7 +142,11 @@ impl Person {
             affective_polarisation: traits.polarisation_baseline,
             informedness: INFORMEDNESS_BASELINE,
             style_value: traits.intrinsic,
+            polish_value: [0.0; 2],
+            posts_written: 0,
+            pleasure: 0.0,
             evasion: 0.0,
+            intensity: NEUTRAL_INTENSITY,
             follows: Vec::new(),
             blocked: Vec::new(),
             strikes: 0,
@@ -208,7 +222,41 @@ impl Person {
     pub fn style_mix(&self, temperature: f32) -> [f32; STYLE_COUNT] {
         softmax(&self.state.style_value, temperature)
     }
+
+    /// The probability of polishing a post (docs/model.md, 7.5): a logistic
+    /// choice between the learned values of polished and plain posts at the
+    /// polish temperature, kept at least `POLISH_EXPLORATION` away from 0
+    /// and 1 so authors keep finding out whether polish pays.
+    pub fn polish_probability(&self, choice_temperature: f32) -> f32 {
+        let [plain, polished] = self.state.polish_value;
+        let t = polish_temperature(choice_temperature);
+        let p = 1.0 / (1.0 + (-(polished - plain) / t).exp());
+        POLISH_EXPLORATION + (1.0 - 2.0 * POLISH_EXPLORATION) * p
+    }
 }
+
+/// The temperature of the polish choice as a share of the style-choice
+/// temperature (docs/model.md, 7.5). Polish changes a post's reward by a few
+/// hundredths, against tenths between styles, so a choice as loose as the
+/// style choice would never tell polish that pays from polish that does not.
+pub const POLISH_TEMPERATURE_SHARE: f32 = 0.1;
+
+/// The learning rate of the polish values as a share of `learning_rate`
+/// (docs/model.md, 7.5): what polish adds to a reward is small against the
+/// spread of rewards between posts, so authors judge it over many posts.
+pub const POLISH_LEARNING_SHARE: f32 = 0.15;
+
+/// The temperature of the polish choice.
+pub fn polish_temperature(choice_temperature: f32) -> f32 {
+    (POLISH_TEMPERATURE_SHARE * choice_temperature).max(1e-3)
+}
+
+/// How far, in polish temperatures, the learned value of a polished post
+/// starts below that of a plain one (docs/model.md, 7.5).
+pub const POLISH_PRIOR_TEMPERATURES: f32 = 3.0;
+
+/// Least chance of either polishing or not polishing a post.
+pub const POLISH_EXPLORATION: f32 = 0.05;
 
 /// Softmax with a temperature, stable against large values.
 pub(crate) fn softmax(values: &[f32; STYLE_COUNT], temperature: f32) -> [f32; STYLE_COUNT] {

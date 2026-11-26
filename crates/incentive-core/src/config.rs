@@ -9,10 +9,10 @@ use crate::params;
 mod assumptions;
 mod design;
 
-pub use assumptions::WorldAssumptions;
+pub use assumptions::{BotStrategy, WorldAssumptions};
 pub use design::{AltFeed, DesignLevers, ModerationAction, PayoutScheme, Sanctions};
 
-/// A complete run configuration. The default is the Engagement maximiser on
+/// A complete run configuration. The default is the Engagement ranking on
 /// the default world.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -132,7 +132,7 @@ impl Default for PopulationSettings {
         Self {
             archetype_shares: ArchetypeShares::default(),
             bot_share: 0.05,
-            bot_boosts: 20,
+            bot_boosts: 8,
             bot_clickbait_share: 0.5,
             bot_posts_per_day: 1,
         }
@@ -242,5 +242,37 @@ mod tests {
             config.validate(),
             Err(ConfigError::OutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn no_predictor_reads_minds() {
+        let mut config = Config::default();
+        assert!(config.set_path("design.predictor_quality", 0.95).is_ok());
+        assert!(matches!(
+            config.set_path("design.predictor_quality", 1.0),
+            Err(ConfigError::OutOfRange { .. })
+        ));
+        assert!((config.design.predictor_quality - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_bot_strategy_is_a_choice() {
+        let mut config = Config::default();
+        assert_eq!(config.world.bot_strategy, BotStrategy::Adaptive);
+        assert!(config.set_assignment("world.bot_strategy=own-side").is_ok());
+        assert_eq!(config.world.bot_strategy, BotStrategy::OwnSide);
+        assert!(
+            config
+                .set_assignment("world.bot_strategy=shared-pool")
+                .is_ok()
+        );
+        assert_eq!(config.world.bot_strategy, BotStrategy::SharedPool);
+        assert!(config.set_assignment("world.bot_strategy=sneaky").is_err());
+        assert!(config.set_assignment("world.bot_brigading=6").is_err());
+        assert!(
+            config
+                .set_assignment("world.polarisation_backfire=0.5")
+                .is_ok()
+        );
     }
 }

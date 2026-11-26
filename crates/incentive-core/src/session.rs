@@ -2,7 +2,7 @@
 //! and 7.6).
 
 use crate::behaviour::{sig, weighted_quality};
-use crate::config::Config;
+use crate::config::{Config, WorldAssumptions};
 use crate::content::{Group, Style};
 use crate::inspector::{self, FeedExplanation, Inspector, ItemActions};
 use crate::network::{self, Reshare};
@@ -18,6 +18,30 @@ pub(crate) const MISBELIEF_LOSS: f32 = 0.008;
 const INFORMATION_GAIN: f32 = 0.0004;
 /// Highest chance of opening the app on a day.
 const MAX_OPEN_CHANCE: f32 = 0.98;
+
+/// Partisanship above which a viewer hardens on seeing a calm out-group post
+/// (docs/model.md, 8.1).
+pub(crate) const BACKFIRE_PARTISANSHIP: f32 = 0.7;
+
+/// The polarisation change from one impression of a calm (not hostile)
+/// out-group post (docs/model.md, 8.1): liking it depolarises by
+/// `contact_rate * quality` (contact); a strongly partisan viewer also gains
+/// `polarisation_backfire * contact_rate` from seeing it at all (backfire).
+pub(crate) fn contact_change(
+    partisanship: f32,
+    liked: bool,
+    quality: f32,
+    assume: &WorldAssumptions,
+) -> f32 {
+    let mut change = 0.0;
+    if liked {
+        change -= assume.contact_rate * quality;
+    }
+    if partisanship > BACKFIRE_PARTISANSHIP {
+        change += assume.polarisation_backfire * assume.contact_rate;
+    }
+    change
+}
 
 /// Decides who opens the app today. Posting and sessions both use it.
 pub(crate) fn decide_openers(world: &mut World, ctx: &DayCtx) {
@@ -198,6 +222,7 @@ fn record_impression(
     state.today.items += 1;
     post.impressions += 1;
     post.impressions_today += 1;
+    post.dwell += s.dwell;
     accounts.impressions_today[author] += 1;
     tally.impressions += 1;
     tally.dwell += s.dwell;
@@ -265,9 +290,9 @@ fn record_impression(
                 .push((post.truth, post.noted));
         }
     }
-    if rng::chance(rng, s.p_report) {
+    // The draw comes first, so a repeat report changes no later draw.
+    if rng::chance(rng, s.p_report) && post.add_report(v as u32) {
         actions.reported = true;
-        post.reports += 1;
         tally.reports += 1;
     }
     if rng::chance(rng, s.p_see_less) {
@@ -300,8 +325,8 @@ fn record_impression(
         .clamp(0.0, 1.0);
     }
     let mut polarisation = assume.polarisation_rate * (s.hostility + 0.5 * s.provocation);
-    if liked && !s.same_group && !post.style.is_hostile() {
-        polarisation -= assume.contact_rate * post.quality;
+    if !s.same_group && !post.style.is_hostile() {
+        polarisation += contact_change(traits.partisanship, liked, post.quality, assume);
     }
     state.affective_polarisation = (state.affective_polarisation + polarisation).clamp(0.0, 1.0);
     if s.reflective > 0.0 {
@@ -322,4 +347,31 @@ fn record_impression(
         return (FollowChange::Unfollow(post.author), actions);
     }
     (FollowChange::None, actions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backfire_hardens_strong_partisans_only_when_positive() {
+        let mut assume = WorldAssumptions::default();
+        let contact = assume.contact_rate;
+        // At the default 0, seeing a calm out-group post changes nothing and
+        // liking it depolarises through contact.
+        assert_eq!(contact_change(0.9, false, 0.6, &assume), 0.0);
+        assert!((contact_change(0.9, true, 0.6, &assume) + contact * 0.6).abs() < 1e-9);
+        assume.polarisation_backfire = 0.5;
+        assert!((contact_change(0.9, false, 0.6, &assume) - 0.5 * contact).abs() < 1e-9);
+        // Below the partisanship threshold there is no backfire.
+        assert_eq!(
+            contact_change(BACKFIRE_PARTISANSHIP, false, 0.6, &assume),
+            0.0
+        );
+        assert_eq!(contact_change(0.3, false, 0.6, &assume), 0.0);
+        // A strong partisan who likes the post still gains from contact.
+        let liked = contact_change(0.9, true, 0.8, &assume);
+        assert!((liked - (0.5 * contact - 0.8 * contact)).abs() < 1e-9);
+        assert!(liked < 0.0);
+    }
 }

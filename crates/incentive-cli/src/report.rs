@@ -10,17 +10,20 @@ use crate::error::CliError;
 
 /// The headline metrics of summary tables: the indices, then the platform's
 /// view, then the truth.
-pub const HEADLINE: [MetricId; 25] = [
+pub const HEADLINE: [MetricId; 28] = [
     MetricId::EngagementIndex,
     MetricId::HarmIndex,
+    MetricId::HarmIndexExPolarisation,
     MetricId::DiscourseQuality,
     MetricId::BenefitIndex,
+    MetricId::BenefitIndexExCreators,
     MetricId::ReportedDailyActives,
     MetricId::Impressions,
     MetricId::TimePerActive,
     MetricId::LikesPerActive,
     MetricId::SharesPerActive,
     MetricId::Revenue,
+    MetricId::NetRevenue,
     MetricId::Retention30,
     MetricId::SurveySatisfaction,
     MetricId::HumanDailyActives,
@@ -46,6 +49,20 @@ pub fn table_metrics(keys: &[String]) -> Result<Vec<MetricId>, CliError> {
     keys.iter()
         .map(|k| MetricId::from_key(k.trim()).ok_or_else(|| CliError::UnknownMetric(k.clone())))
         .collect()
+}
+
+/// The mark of a metric that moves within its summary window.
+pub const MOVING_MARK: &str = "~";
+
+/// The note under a table that marks moving metrics.
+pub const MOVING_NOTE: &str = "~ moving: the metric changed by more than 10% of its mean across the summary \
+    window and by more than two standard errors (mean over seeds, its standard error across them, or the \
+    regression's own for one seed; \"slope\" and \"slope_se\" in the JSON), so the window averages a series \
+    that is still changing";
+
+/// [`MOVING_MARK`] when `moving`, else nothing.
+pub fn moving_mark(moving: bool) -> &'static str {
+    if moving { MOVING_MARK } else { "" }
 }
 
 /// "index", "observable" or "truth": the column label of a metric's view.

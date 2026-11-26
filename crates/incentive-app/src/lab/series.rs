@@ -209,6 +209,33 @@ pub const KEY_METRICS: [MetricId; 16] = [
     MetricId::CreatorsLiving,
 ];
 
+/// The extra rows of the multi-seed check behind "Show components", in
+/// display order: the benefit index's five components (docs/model.md, 9.3),
+/// the two indices without their most contested part, and what the platform
+/// keeps of its revenue.
+pub const COMPONENT_METRICS: [MetricId; 8] = [
+    MetricId::WellbeingEverUsers,
+    MetricId::InformednessSociety,
+    MetricId::MeaningfulPerUser,
+    MetricId::CreatorsLiving,
+    MetricId::DiscourseQuality,
+    MetricId::BenefitIndexExCreators,
+    MetricId::HarmIndexExPolarisation,
+    MetricId::NetRevenue,
+];
+
+/// Every metric the multi-seed check reports: [`KEY_METRICS`], then the
+/// [`COMPONENT_METRICS`] not among them.
+pub fn check_metrics() -> Vec<MetricId> {
+    let mut metrics = KEY_METRICS.to_vec();
+    for m in COMPONENT_METRICS {
+        if !metrics.contains(&m) {
+            metrics.push(m);
+        }
+    }
+    metrics
+}
+
 /// The platform's metrics charted before the player picks others.
 pub const DEFAULT_OBSERVABLE: [MetricId; 7] = [
     MetricId::ReportedDailyActives,
@@ -326,6 +353,18 @@ mod tests {
         assert_eq!(axis_label(Format::Score, 0.25, 0.05), "0.25");
         assert_eq!(axis_label(Format::Decimal, 20.0, 5.0), "20");
         assert_eq!(axis_label(Format::Score, -1e-12, 0.1), "0.0");
+    }
+
+    #[test]
+    fn the_check_covers_the_key_metrics_and_every_component_once() {
+        let metrics = check_metrics();
+        assert_eq!(&metrics[..KEY_METRICS.len()], &KEY_METRICS);
+        for m in COMPONENT_METRICS {
+            assert_eq!(metrics.iter().filter(|x| **x == m).count(), 1, "{m:?}");
+        }
+        assert!(metrics.contains(&MetricId::NetRevenue));
+        assert!(metrics.contains(&MetricId::BenefitIndexExCreators));
+        assert!(metrics.contains(&MetricId::HarmIndexExPolarisation));
     }
 
     #[test]

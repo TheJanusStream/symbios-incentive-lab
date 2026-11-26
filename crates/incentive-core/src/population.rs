@@ -149,17 +149,26 @@ pub struct Traits {
     pub polarisation_baseline: f32,
 }
 
-/// Draws an archetype from (unnormalised) shares.
+/// Draws an archetype from (unnormalised) shares by an exponential race
+/// (docs/model.md, 3.1): the individual holds one `Exp(1)` value per
+/// archetype from its own stream and takes the archetype that minimises
+/// `value / share`. Each archetype wins with probability proportional to its
+/// share, and raising one share only moves individuals into that archetype,
+/// so paired runs that differ in one share differ in as few individuals as
+/// possible. Archetypes with share 0 never win.
 pub(crate) fn draw_archetype(rng: &mut StreamRng, shares: [f32; ARCHETYPE_COUNT]) -> Archetype {
-    let total: f32 = shares.iter().sum();
-    let mut target = rng::uniform(rng) * total;
-    for (archetype, share) in Archetype::ALL.iter().zip(shares) {
-        if target < share {
-            return *archetype;
+    let race: [f32; ARCHETYPE_COUNT] = std::array::from_fn(|_| rng::exponential(rng));
+    let mut best: Option<(f32, Archetype)> = None;
+    for ((archetype, share), value) in Archetype::ALL.iter().zip(shares).zip(race) {
+        if share <= 0.0 {
+            continue;
         }
-        target -= share;
+        let time = value / share;
+        if best.is_none_or(|(t, _)| time < t) {
+            best = Some((time, *archetype));
+        }
     }
-    Archetype::Casual
+    best.map_or(Archetype::Casual, |(_, a)| a)
 }
 
 /// Draws the traits of one individual of the given archetype.
@@ -330,5 +339,35 @@ mod tests {
         let mean = total as f32 / ties.len() as f32;
         assert!((share - 0.7).abs() < 0.04, "share {share}");
         assert!((mean - 8.0).abs() < 0.5, "mean {mean}");
+    }
+
+    #[test]
+    fn raising_one_share_moves_people_only_into_that_archetype() {
+        let shares = [0.5, 0.1, 0.2, 0.03, 0.17];
+        let mut more_trolls = shares;
+        more_trolls[3] = 0.12;
+        let n = 5_000;
+        let (mut moved, mut trolls) = (0, 0);
+        for i in 0..n {
+            let mut a = rng::stream_rng(4, 0, i, Stream::Archetype);
+            let mut b = rng::stream_rng(4, 0, i, Stream::Archetype);
+            let before = draw_archetype(&mut a, shares);
+            let after = draw_archetype(&mut b, more_trolls);
+            if before != after {
+                moved += 1;
+                assert_eq!(after, Archetype::Troll);
+            }
+            trolls += u32::from(after == Archetype::Troll);
+        }
+        // About 0.12 / 1.09 - 0.03 / 1.0 = 8% of people move, no more.
+        let share_moved = moved as f32 / n as f32;
+        assert!((share_moved - 0.08).abs() < 0.015, "{share_moved}");
+        let troll_share = trolls as f32 / n as f32;
+        assert!((troll_share - 0.12 / 1.09).abs() < 0.015, "{troll_share}");
+        let mut rng = rng::stream_rng(4, 0, 0, Stream::Archetype);
+        assert_eq!(
+            draw_archetype(&mut rng, [0.0, 0.0, 0.0, 1.0, 0.0]),
+            Archetype::Troll
+        );
     }
 }

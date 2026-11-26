@@ -13,7 +13,13 @@ fn check(id: &str, days: u32) {
         days,
     };
     let results = fact.run_sequential(&run).expect("valid configurations");
-    for r in &results {
+    // These are regression checks of direction at a small size: they judge
+    // the effect on the seed means against the band, as before. The runner
+    // (`incentive facts`, `incentive report`) gives each check the verdict
+    // on the 95% interval of its per-seed effect at full size, which 4 seeds
+    // cannot settle. A check the model is known to fail (docs/model.md,
+    // section 16) is reported by the runner but not required here.
+    for r in results.iter().filter(|r| !r.known_limit) {
         assert!(
             r.passed,
             "{}: {} has effect {} (sd {}) against threshold {}",

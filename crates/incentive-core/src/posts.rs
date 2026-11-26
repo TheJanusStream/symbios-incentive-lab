@@ -82,15 +82,7 @@ mod tests {
     #[test]
     fn ids_stay_addressable_after_pruning() {
         let mut rng = rng::stream_rng(1, 0, 0, Stream::Posting);
-        let author = AuthorProfile {
-            account: 0,
-            is_bot: false,
-            is_creator: false,
-            group: Group::A,
-            skill: 0.5,
-            temperament: 0.2,
-            evasion: 0.0,
-        };
+        let author = AuthorProfile::plain(Group::A, 0.5, 0.2);
         let mut store = PostStore::default();
         for day in 0..4 {
             let id = store.next_id();
@@ -101,6 +93,7 @@ mod tests {
                 &author,
                 Style::Personal,
                 &[1.0 / 6.0; 6],
+                &crate::config::WorldAssumptions::default(),
             ));
         }
         store.prune_front(|p| p.day < 2);

@@ -2,11 +2,13 @@
 //! against a fixed baseline on the same seed and world.
 
 use egui::{Id, RichText, Ui};
-use incentive_core::{Comparison, GoalResult, Scenario, Summary, scenarios};
+use incentive_core::{Comparison, GoalResult, GoalVerdict, Scenario, Summary, Verdict, scenarios};
 
 use super::charts::{self, Chart, Reference, Series};
+use super::compare::{MOVING_MARK, MOVING_NOTE, moving_mark, seed_range};
 use super::{levers, palette, visibility_tag};
-use crate::lab::series::{fmt_metric, metric_points};
+use crate::lab::batch::Confirmed;
+use crate::lab::series::{fmt_diff, fmt_metric, metric_points};
 use crate::lab::{CONFIRM_SEEDS, Lab, ScenarioPlay};
 
 /// Draws the scenarios tab.
@@ -105,10 +107,12 @@ fn briefing(ui: &mut Ui, lab: &mut Lab) {
     ui.add_space(4.0);
     ui.label(format!(
         "{} days, {} people, seed {}. Goals are judged on the mean of the last 30% of days. The \
-         world assumptions are the scenario's and stay locked.",
+         world assumptions are the scenario's and stay locked. One seed is one run; confirm on \
+         {} seeds to see whether the result holds.",
         days_of(sc),
         lab.run.population,
-        lab.run.seed
+        lab.run.seed,
+        CONFIRM_SEEDS.len()
     ));
     ui.add_space(6.0);
     if ui
@@ -139,13 +143,14 @@ fn playing(ui: &mut Ui, lab: &mut Lab) {
     ui.add_space(4.0);
     let finished = play.results.is_some();
     let results = play.live_results();
+    let seed = play.runner.lane(0).sim.config().run.seed;
     ui.label(
         RichText::new(if finished {
-            "The verdict on this seed".to_string()
+            format!("The verdict on this one run (seed {seed})")
         } else {
             format!(
-                "So far (day {} of {}): judged on the last {} days run, as the verdict at the \
-                 end will be",
+                "So far, on this one run (seed {seed}, day {} of {}): judged on the last {} days \
+                 run, as the verdict at the end will be",
                 play.runner.day(),
                 play.runner.days(),
                 (play.runner.day() as usize).min(play.runner.lane(0).sim.summary_days())
@@ -157,9 +162,9 @@ fn playing(ui: &mut Ui, lab: &mut Lab) {
     if finished {
         let passed = results.iter().all(|r| r.passed);
         let (text, color) = if passed {
-            ("Every goal met on this seed.", palette::PASS)
+            ("Every goal met in this one run.", palette::PASS)
         } else {
-            ("Not every goal is met on this seed.", palette::FAIL)
+            ("Not every goal is met in this one run.", palette::FAIL)
         };
         ui.label(RichText::new(text).strong().color(color));
         if lab.verdict_is_stale() {
@@ -171,7 +176,7 @@ fn playing(ui: &mut Ui, lab: &mut Lab) {
         }
         ui.label(
             RichText::new(
-                "One seed is one possible history: confirm on several seeds before calling it.",
+                "One run is one possible history: confirm on several seeds before calling it.",
             )
             .small(),
         );
@@ -278,15 +283,18 @@ fn goal_charts(ui: &mut Ui, play: &ScenarioPlay, smooth: bool) {
     });
 }
 
-/// "Confirm on 4 seeds": the current design and the baseline on seeds 1 to
-/// 4, judged on the mean summaries.
+/// "Confirm on 8 seeds": the current design and the baseline on seeds 1 to
+/// 8, each goal judged on its per-seed margins with a 95% interval.
 fn confirm(ui: &mut Ui, lab: &mut Lab) {
-    ui.label(RichText::new(format!("Confirm on {} seeds", CONFIRM_SEEDS.len())).strong());
+    let n = CONFIRM_SEEDS.len();
+    ui.label(RichText::new(format!("Confirm on {n} seeds")).strong());
     ui.label(
         RichText::new(format!(
-            "Runs your current design and the baseline from day 0 on seeds 1 to {}, then judges \
-             the goals on the mean of each side's summaries, as `incentive scenario` does.",
-            CONFIRM_SEEDS.len()
+            "Runs your current design and the baseline from day 0 on seeds {}, then judges each \
+             goal seed by seed, your run against the baseline's on the same seed, as `incentive \
+             scenario` does. A goal passes only when it is met clearly enough that the \
+             differences between seeds cannot explain it.",
+            seed_range(&CONFIRM_SEEDS)
         ))
         .small(),
     );
@@ -302,7 +310,7 @@ fn confirm(ui: &mut Ui, lab: &mut Lab) {
         start = ui
             .add_enabled(
                 !running && !waiting,
-                egui::Button::new("Confirm on 4 seeds"),
+                egui::Button::new(format!("Confirm on {n} seeds")),
             )
             .on_hover_text("Runs in the background, a little every frame")
             .on_disabled_hover_text(if waiting {
@@ -316,12 +324,13 @@ fn confirm(ui: &mut Ui, lab: &mut Lab) {
     if let Some(c) = &play.confirm {
         if let Some(e) = c.batch.error() {
             ui.colored_label(palette::FAIL, format!("The confirmation stopped: {e}"));
-        } else if let Some(results) = &c.results {
+        } else if let Some(confirmed) = &c.results {
             if let Some(ran) = &play.confirm_config {
                 ui.label(
                     RichText::new(format!(
-                        "{} seeds, {} people, {} days.",
+                        "{} seeds ({}), {} people, {} days.",
                         c.seeds.len(),
+                        seed_range(&c.seeds),
                         ran.run.population_size,
                         ran.run.days
                     ))
@@ -335,17 +344,21 @@ fn confirm(ui: &mut Ui, lab: &mut Lab) {
                     "Your design or the population changed since: confirm again to test them.",
                 );
             }
-            goal_table(ui, "scenario-confirm", results);
-            let passed = results.iter().all(|r| r.passed);
-            let (text, color) = if passed {
-                (
-                    "Confirmed: every goal is met on the mean of 4 seeds.",
-                    palette::PASS,
-                )
-            } else {
-                ("Not confirmed on the mean of 4 seeds.", palette::FAIL)
-            };
+            verdict_table(ui, confirmed);
+            let (text, color) = overall_text(confirmed.verdict.verdict, c.seeds.len());
             ui.label(RichText::new(text).strong().color(color));
+            ui.label(
+                RichText::new(
+                    "Margin: how far your design lies on the passing side of the goal, seed by \
+                     seed against the baseline on the same seed (above zero meets it). The range \
+                     is its 95% confidence interval: pass when the whole range meets the goal, \
+                     fail when the whole range misses it, undecided when it straddles the line.",
+                )
+                .small(),
+            );
+            if verdict_has_moving(confirmed) {
+                ui.label(RichText::new(format!("{MOVING_MARK} {MOVING_NOTE}")).small());
+            }
         } else {
             let (done, total) = c.batch.counts();
             ui.add(
@@ -362,6 +375,124 @@ fn confirm(ui: &mut Ui, lab: &mut Lab) {
         p.confirm = None;
         p.confirm_config = None;
     }
+}
+
+/// The overall verdict of a confirmation in plain words, with its colour.
+pub fn overall_text(verdict: Verdict, seeds: usize) -> (String, egui::Color32) {
+    match verdict {
+        Verdict::Pass => (
+            format!(
+                "Pass: every goal is met on {seeds} seeds, by more than the differences between \
+                 seeds could explain."
+            ),
+            palette::PASS,
+        ),
+        Verdict::Fail => (
+            format!(
+                "Fail: at least one goal is missed on {seeds} seeds, by more than the differences \
+                 between seeds could explain."
+            ),
+            palette::FAIL,
+        ),
+        Verdict::Undecided => (
+            format!(
+                "Undecided: the result could go either way on these {seeds} seeds. A design with \
+                 a clearer margin would settle it."
+            ),
+            palette::UNDECIDED,
+        ),
+    }
+}
+
+/// A goal's verdict as a short word, its colour and what it means.
+pub fn verdict_word(verdict: Verdict) -> (&'static str, egui::Color32, &'static str) {
+    match verdict {
+        Verdict::Pass => (
+            "pass",
+            palette::PASS,
+            "The whole 95% interval of the margin meets the goal.",
+        ),
+        Verdict::Fail => (
+            "fail",
+            palette::FAIL,
+            "The whole 95% interval of the margin misses the goal.",
+        ),
+        Verdict::Undecided => (
+            "undecided",
+            palette::UNDECIDED,
+            "The 95% interval of the margin straddles the goal: it could go either way.",
+        ),
+    }
+}
+
+/// Whether any goal metric of a confirmation was still moving.
+fn verdict_has_moving(c: &Confirmed) -> bool {
+    c.verdict
+        .goals
+        .iter()
+        .any(|g| c.player.is_moving(g.metric) || c.baseline.is_moving(g.metric))
+}
+
+/// The confirmation's goals: the means, the margin with its interval and
+/// the verdict.
+fn verdict_table(ui: &mut Ui, c: &Confirmed) {
+    egui::Grid::new("scenario-confirm")
+        .num_columns(5)
+        .striped(true)
+        .spacing([14.0, 3.0])
+        .show(ui, |ui| {
+            ui.label(RichText::new("Goal").strong());
+            ui.label(RichText::new("You").strong().color(palette::SIDE_A))
+                .on_hover_text("Your mean over the seeds");
+            ui.label(
+                RichText::new("Baseline")
+                    .strong()
+                    .color(palette::BASELINE_MUTED),
+            )
+            .on_hover_text("The baseline's mean over the seeds");
+            ui.label(RichText::new("Margin (95% interval)").strong())
+                .on_hover_text(
+                    "How far you are on the passing side of the goal, seed by seed: above zero \
+                     meets it",
+                );
+            ui.label(RichText::new("Verdict").strong());
+            ui.end_row();
+            for g in &c.verdict.goals {
+                goal_verdict_row(ui, g, c);
+            }
+        });
+}
+
+fn goal_verdict_row(ui: &mut Ui, g: &GoalVerdict, c: &Confirmed) {
+    ui.label(g.description);
+    for (value, summary) in [(g.player, &c.player), (g.baseline, &c.baseline)] {
+        ui.horizontal(|ui| {
+            ui.label(fmt_metric(g.metric, value));
+            if summary.is_moving(g.metric) {
+                moving_mark(ui, summary.slope(g.metric), summary.days);
+            }
+        });
+    }
+    let m = g.margin;
+    let interval = if m.low.is_finite() && m.high.is_finite() {
+        format!(
+            "{} ({} to {})",
+            fmt_diff(g.metric, m.mean),
+            fmt_diff(g.metric, m.low),
+            fmt_diff(g.metric, m.high)
+        )
+    } else {
+        format!("{} (no interval)", fmt_diff(g.metric, m.mean))
+    };
+    ui.label(interval).on_hover_text(format!(
+        "Threshold at the baseline's mean: {}. Seeds judged: {}.",
+        fmt_metric(g.metric, g.threshold),
+        m.n
+    ));
+    let (word, color, meaning) = verdict_word(g.verdict);
+    ui.label(RichText::new(word).strong().color(color))
+        .on_hover_text(meaning);
+    ui.end_row();
 }
 
 /// "Show a known solution", behind a spoiler question.
@@ -411,5 +542,25 @@ fn known_solution(ui: &mut Ui, lab: &mut Lab) {
     if load {
         lab.load_known_solution();
         lab.playing = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verdicts_read_in_plain_words() {
+        let (text, color) = overall_text(Verdict::Undecided, 8);
+        assert!(text.starts_with("Undecided") && text.contains("either way"));
+        assert_eq!(color, palette::UNDECIDED);
+        assert!(overall_text(Verdict::Pass, 8).0.contains("8 seeds"));
+        assert_eq!(overall_text(Verdict::Fail, 8).1, palette::FAIL);
+        for v in [Verdict::Pass, Verdict::Fail, Verdict::Undecided] {
+            let (word, _, meaning) = verdict_word(v);
+            assert_eq!(word, v.label().to_lowercase());
+            assert!(meaning.contains("95% interval"));
+            assert!(!meaning.contains('\u{2014}') && !overall_text(v, 8).0.contains('\u{2014}'));
+        }
     }
 }

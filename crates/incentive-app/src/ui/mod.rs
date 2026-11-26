@@ -63,6 +63,8 @@ pub mod palette {
     pub const PASS: Color32 = GREEN;
     /// A failed goal.
     pub const FAIL: Color32 = VERMILLION;
+    /// An undecided verdict: the evidence cannot tell.
+    pub const UNDECIDED: Color32 = ORANGE;
 }
 
 /// Draws the whole lab into the context's full viewport.

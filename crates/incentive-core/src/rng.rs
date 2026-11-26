@@ -35,6 +35,12 @@ pub(crate) enum Stream {
     Spillover = 19,
     Survey = 20,
     Explain = 21,
+    /// Per-post draws, keyed on the author and the author's own post ordinal.
+    PostDraw = 22,
+    /// The archetype race of each individual.
+    Archetype = 23,
+    /// Reports and see-less marks of brigading bots, per bot account.
+    Brigade = 24,
 }
 
 /// SplitMix64 finaliser: a cheap bijective mixer with good avalanche.
@@ -52,6 +58,25 @@ pub(crate) fn stream_rng(seed: u64, day: u32, entity: u64, stream: Stream) -> St
     let hi = splitmix64(b ^ entity);
     let lo = splitmix64(hi ^ 0xD1B5_4A32_D192_ED03);
     Pcg64Mcg::new((u128::from(hi) << 64) | u128::from(lo))
+}
+
+/// The entity of a post's own draws: the author's account in the high half
+/// and the author's own post ordinal in the low half, so that a lever that
+/// changes how many posts someone writes never reshuffles anyone else's draws.
+pub(crate) fn post_key(author: u32, ordinal: u32) -> u64 {
+    (u64::from(author) << 32) | u64::from(ordinal)
+}
+
+/// The generator of a post's own draws (style, polish, topic, content noise
+/// and Attack target). The ordinal counts the author's posts over the whole
+/// run, so the day is not needed to keep keys apart.
+pub(crate) fn post_rng(seed: u64, author: u32, ordinal: u32) -> StreamRng {
+    stream_rng(seed, 0, post_key(author, ordinal), Stream::PostDraw)
+}
+
+/// An `Exp(1)` draw by inversion.
+pub(crate) fn exponential(rng: &mut StreamRng) -> f32 {
+    -(1.0 - uniform(rng)).ln()
 }
 
 /// A uniform draw in `[0, 1)`.

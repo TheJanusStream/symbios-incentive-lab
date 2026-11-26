@@ -1,13 +1,18 @@
 //! Each scenario's baseline fails and its recorded known solution passes
-//! (docs/model.md, 14.2), on runs of reduced population.
+//! (docs/model.md, 14.2), on runs of reduced population. Goals are judged on
+//! paired per-seed margins with a 95% interval (`Scenario::judge`), so a
+//! known solution must pass beyond the noise of these seeds.
 
-use incentive_core::{Config, Simulation, Summary, scenario};
+use incentive_core::{Config, Simulation, Summary, Verdict, scenario};
 
-const SEEDS: [u64; 3] = [1, 2, 3];
+/// Six seeds: with three, the 95% interval (Student's t with two degrees of
+/// freedom) of the trap's toxicity margin straddled zero although its mean
+/// passed by a third of the threshold.
+const SEEDS: [u64; 6] = [1, 2, 3, 4, 5, 6];
 const POPULATION: u32 = 600;
 
-fn mean_summary(config: &Config) -> Summary {
-    let summaries: Vec<Summary> = SEEDS
+fn summaries(config: &Config) -> Vec<Summary> {
+    SEEDS
         .iter()
         .map(|&seed| {
             let mut config = config.clone();
@@ -18,25 +23,30 @@ fn mean_summary(config: &Config) -> Summary {
                 .expect("valid configuration")
                 .run_to_end()
         })
-        .collect();
-    Summary::mean(&summaries).expect("at least one seed")
+        .collect()
 }
 
 fn check(id: &str) {
     let sc = scenario(id).expect("known scenario");
-    let baseline = mean_summary(&sc.config());
-    let baseline_results = sc.evaluate(&baseline, &baseline);
-    assert!(
-        baseline_results.iter().any(|r| !r.passed),
+    let baseline = summaries(&sc.config());
+    assert_ne!(
+        sc.judge(&baseline, &baseline).verdict,
+        Verdict::Pass,
         "{id}: the baseline passes"
     );
     let design = sc.known_solution().expect("valid solution");
-    let player = mean_summary(&sc.player_config(&design));
-    for r in sc.evaluate(&player, &baseline) {
-        assert!(
-            r.passed,
-            "{id}: {} ({} against threshold {})",
-            r.description, r.player, r.threshold
+    let player = summaries(&sc.player_config(&design));
+    for g in sc.judge(&player, &baseline).goals {
+        assert_eq!(
+            g.verdict,
+            Verdict::Pass,
+            "{id}: {} ({} against threshold {}, margin {} with 95% interval {} to {})",
+            g.description,
+            g.player,
+            g.threshold,
+            g.margin.mean,
+            g.margin.low,
+            g.margin.high
         );
     }
 }

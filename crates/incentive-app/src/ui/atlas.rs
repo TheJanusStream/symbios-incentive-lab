@@ -12,7 +12,9 @@ use incentive_core::{
 use super::charts;
 use super::{palette, visibility_tag};
 use crate::lab::Lab;
-use crate::lab::atlas::{AtlasData, AtlasPanel, AtlasPick, atlas, differences_from_maximiser};
+use crate::lab::atlas::{
+    AtlasData, AtlasPanel, AtlasPick, atlas, differences_from_engagement_ranking,
+};
 use crate::lab::series::{axis_label, fmt_metric};
 
 /// Levers listed in a hover.
@@ -84,7 +86,7 @@ fn body(ui: &mut Ui, lab: &mut Lab) {
     };
     match action {
         Some(Action::Sandbox(d)) => lab.open_in_sandbox(d.design, base),
-        Some(Action::Compare(d)) => lab.compare_with_maximiser(d.design, base),
+        Some(Action::Compare(d)) => lab.compare_with_engagement_ranking(d.design, base),
         None => {}
     }
 }
@@ -104,9 +106,11 @@ fn how_to_read(ui: &mut Ui) {
     ui.label(
         RichText::new(
             "It is a map of a toy model, not a forecast: it shows where designs succeed or fail \
-             in this model, and under its default assumptions about people. The model charges \
-             nothing for notifications or for wrongly removed posts, so designs that push either \
-             look better here than they would be: open one and set those levers back to check.",
+             in this model, and under its default assumptions about people. The model still \
+             charges nothing for the time people spend, so notifications look harmless, and \
+             creator payouts cost nothing in any score but net revenue, so designs that push \
+             those levers look better here than they would be: open one and set them back to \
+             check (About lists what the model gets for free).",
         )
         .small()
         .weak(),
@@ -148,7 +152,7 @@ fn settings_box(ui: &mut Ui, s: &ExploreSettings) {
             RichText::new(
                 "Small, short runs on two seeds are noisy and can differ from a full run. Open a \
                  design in the Sandbox to see it at full size, or compare it with the engagement \
-                 maximiser and check it on 8 seeds.",
+                 ranking and check it on 8 fresh seeds.",
             )
             .small(),
         );
@@ -317,7 +321,7 @@ fn map_grid(ui: &mut Ui, lab: &mut Lab, data: &AtlasData) {
                         ))
                         .strong(),
                     );
-                    design_summary(ui, &elite, HOVER_LEVERS);
+                    design_summary(ui, &elite, &map.settings, HOVER_LEVERS);
                     ui.label(RichText::new("Click to pick this design.").small().weak());
                 });
                 if clicked {
@@ -382,34 +386,117 @@ fn legend(
     );
 }
 
-/// A design's key metrics and the levers furthest from the engagement
-/// maximiser.
-fn design_summary(ui: &mut Ui, d: &AtlasDesign, levers: usize) {
+/// The headline metrics, shown with their fresh-seed values when the atlas
+/// has them.
+const HEADLINE: [MetricId; 3] = [
+    MetricId::EngagementIndex,
+    MetricId::HarmIndex,
+    MetricId::BenefitIndex,
+];
+/// The other metrics of a design's card, after the benefit index's parts.
+const OTHERS: [MetricId; 4] = [
+    MetricId::ToxicShare,
+    MetricId::PolarisationSociety,
+    MetricId::UserShare,
+    MetricId::SurveySatisfaction,
+];
+
+/// A design's key metrics (with the fresh seeds' engagement, harm and
+/// benefit when the atlas re-ran it), the five parts of its benefit index,
+/// and the levers furthest from the engagement ranking.
+fn design_summary(ui: &mut Ui, d: &AtlasDesign, settings: &ExploreSettings, levers: usize) {
+    let confirmed = d.confirmed.filter(|_| !settings.confirm_seeds.is_empty());
+    let value = |m: &AtlasMetrics, id: MetricId| fmt_metric(id, m.get(id).unwrap_or(f32::NAN));
+    let columns = if confirmed.is_some() { 4 } else { 3 };
+    let mut missing_parts = false;
     egui::Grid::new(ui.next_auto_id())
-        .num_columns(3)
+        .num_columns(columns)
         .spacing([10.0, 2.0])
         .show(ui, |ui| {
-            for id in AtlasMetrics::IDS {
+            ui.label("");
+            ui.label(RichText::new("Search").small().strong());
+            if confirmed.is_some() {
+                ui.label(RichText::new("Fresh seeds").small().strong());
+            }
+            ui.label("");
+            ui.end_row();
+            let row = |ui: &mut Ui, id: MetricId, indent: bool, fresh: bool| {
                 let info = id.info();
-                ui.label(info.name);
-                ui.label(
-                    RichText::new(fmt_metric(id, d.metrics.get(id).unwrap_or(f32::NAN))).strong(),
-                );
+                ui.horizontal(|ui| {
+                    if indent {
+                        ui.add_space(12.0);
+                    }
+                    ui.label(info.name);
+                });
+                ui.label(RichText::new(value(&d.metrics, id)).strong());
+                if let Some(c) = &confirmed {
+                    if fresh {
+                        ui.label(RichText::new(value(c, id)).strong().color(palette::GREEN));
+                    } else {
+                        ui.label("");
+                    }
+                }
                 visibility_tag(ui, info.visibility);
                 ui.end_row();
+            };
+            for id in HEADLINE {
+                row(ui, id, false, true);
+            }
+            ui.label(
+                RichText::new("Parts of the benefit index")
+                    .small()
+                    .italics(),
+            );
+            ui.end_row();
+            for id in AtlasMetrics::BENEFIT_COMPONENTS {
+                missing_parts |= d.metrics.get(id).is_none_or(f32::is_nan);
+                row(ui, id, true, false);
+            }
+            for id in OTHERS {
+                row(ui, id, false, false);
             }
         });
-    let diffs = differences_from_maximiser(&d.design, levers);
+    if let Some(note) = fresh_note(settings, confirmed.is_some()) {
+        ui.label(RichText::new(note).small().weak());
+    }
+    if missing_parts {
+        ui.label(
+            RichText::new("This atlas was made before every part was recorded: \"-\" marks those.")
+                .small()
+                .weak(),
+        );
+    }
+    let diffs = differences_from_engagement_ranking(&d.design, levers);
     if diffs.is_empty() {
-        ui.label("The same levers as the engagement maximiser.");
+        ui.label("The same levers as the engagement ranking.");
         return;
     }
-    ui.label(RichText::new("Levers that differ most from the engagement maximiser").strong());
+    ui.label(RichText::new("Levers that differ most from the engagement ranking").strong());
     for diff in diffs {
         ui.label(format!(
             "{}: {} -> {}",
-            diff.name, diff.maximiser, diff.design
+            diff.name, diff.baseline, diff.design
         ));
+    }
+}
+
+/// What the two columns of a design's card mean: the search's seeds, and
+/// the fresh seeds it was re-run on, if any.
+pub fn fresh_note(settings: &ExploreSettings, confirmed: bool) -> Option<String> {
+    let search = super::compare::seed_range(&settings.seeds);
+    if confirmed {
+        Some(format!(
+            "Search: the seeds the design was picked on ({search}). Fresh seeds: re-run on seeds \
+             {} that played no part in picking it; trust these more.",
+            super::compare::seed_range(&settings.confirm_seeds)
+        ))
+    } else if settings.seeds.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Search: the seeds the design was picked on ({search}); this atlas has no re-run on \
+             fresh seeds."
+        ))
     }
 }
 
@@ -449,14 +536,18 @@ fn picked_details(ui: &mut Ui, lab: &Lab, data: &AtlasData) -> Option<Action> {
             action = Some(Action::Sandbox(design.clone()));
         }
         if ui
-            .button("Compare with the engagement maximiser")
-            .on_hover_text("Load the engagement maximiser as A and this design as B in Compare")
+            .button("Compare with the engagement ranking")
+            .on_hover_text("Load the engagement ranking as A and this design as B in Compare")
             .clicked()
         {
             action = Some(Action::Compare(design.clone()));
         }
     });
-    design_summary(ui, design, PICKED_LEVERS);
+    let settings = match pick {
+        AtlasPick::Cell { .. } => &data.map.settings,
+        AtlasPick::Front(_) => &data.pareto.settings,
+    };
+    design_summary(ui, design, settings, PICKED_LEVERS);
     action
 }
 
@@ -557,7 +648,7 @@ fn pareto_plot(ui: &mut Ui, lab: &mut Lab, data: &AtlasData) {
         let design = front[i].clone();
         response.response.on_hover_ui_at_pointer(|ui| {
             ui.label(RichText::new(format!("Design {} of {}", i + 1, front.len())).strong());
-            design_summary(ui, &design, HOVER_LEVERS);
+            design_summary(ui, &design, &data.pareto.settings, HOVER_LEVERS);
             ui.label(RichText::new("Click to pick this design.").small().weak());
         });
     }
@@ -570,7 +661,8 @@ fn goodhart_view(ui: &mut Ui, data: &AtlasData) {
         "How to read these: the first chart in each row is the number the search was told to \
          raise, which the platform can measure; the others are true outcomes the search never \
          saw. If they get worse while the first one climbs, chasing the number is doing harm: \
-         Goodhart's law.",
+         Goodhart's law. The survey run is the subtler one: a survey answer mixes the person's \
+         wellbeing with recent pleasure and habit, and the platform chooses when to ask.",
     );
     ui.add_space(4.0);
     for run in &data.goodhart {
@@ -746,6 +838,44 @@ mod tests {
             last = luminance(c);
         }
         assert_eq!(benefit_color(9.0, range), high, "clamped");
+    }
+
+    #[test]
+    fn the_card_says_which_seeds_each_column_used() {
+        let data = atlas().expect("the embedded atlas parses");
+        let mut settings = data.map.settings.clone();
+        settings.seeds = vec![1, 2];
+        settings.confirm_seeds = (9..=16).collect();
+        let note = fresh_note(&settings, true).unwrap_or_default();
+        assert!(
+            note.contains("(1 and 2)") && note.contains("9 to 16"),
+            "{note}"
+        );
+        let note = fresh_note(&settings, false).unwrap_or_default();
+        assert!(note.contains("no re-run"), "{note}");
+        settings.seeds.clear();
+        assert_eq!(fresh_note(&settings, false), None);
+    }
+
+    #[test]
+    fn the_card_draws_with_fresh_seeds_and_missing_parts() {
+        let data = atlas().expect("the embedded atlas parses");
+        let mut settings = data.map.settings.clone();
+        settings.confirm_seeds = (9..=16).collect();
+        let mut design = data.map.cells[0].elite.clone();
+        design.metrics.informedness_society = f32::NAN;
+        design.confirmed = Some(AtlasMetrics {
+            harm_index: design.metrics.harm_index + 0.02,
+            ..design.metrics
+        });
+        let ctx = egui::Context::default();
+        for (d, s) in [(&design, &settings), (&design, &data.map.settings)] {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                design_summary(ui, d, s, HOVER_LEVERS);
+            });
+            assert!(!output.shapes.is_empty());
+            output.drop_without_applying_deltas();
+        }
     }
 
     #[test]

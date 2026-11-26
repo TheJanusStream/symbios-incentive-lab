@@ -14,7 +14,9 @@ use crate::population::{ARCHETYPE_COUNT, Archetype};
 
 mod summary;
 
-pub use summary::Summary;
+pub use summary::{
+    MOVING_STANDARD_ERRORS, MOVING_THRESHOLD, Summary, is_moving_over, is_moving_slope,
+};
 
 /// Whether the platform can measure a metric or only the god's-eye view has it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -99,6 +101,7 @@ metrics! {
     Notes, "notes", "Community notes", Count, Platform, Observable, "Notes attached today.";
     Revenue, "revenue", "Revenue", Money, Platform, Observable, "Ad and subscription revenue today.";
     Payouts, "payouts", "Creator payouts", Money, Creators, Observable, "Money paid to authors today.";
+    NetRevenue, "net_revenue", "Net revenue", Money, Platform, Observable, "Revenue minus creator payouts today.";
     Retention30, "retention_30", "30-day retention", Share, Engagement, Observable, "Share of people active 30 days ago who are active today.";
     SurveySatisfaction, "survey_satisfaction", "Survey satisfaction", Score, Participants, Observable, "Weekly survey of users; biased toward the happy and blind to those who left.";
     LargestCascade, "largest_cascade", "Largest cascade", Count, Content, Truth, "Most human shares of one post among the posts ending today.";
@@ -111,6 +114,7 @@ metrics! {
     HarassmentPer1000, "harassment_per_1000", "Harassment per 1,000 users", Decimal, Harm, Truth, "Harassment events per 1,000 users today.";
     FalsePositives, "false_positives", "False-positive actions", Count, Harm, Truth, "Posts the classifier removed or demoted although they were not toxic.";
     BotEngagementShare, "bot_engagement_share", "Bot engagement", Share, Harm, Truth, "Share of reported engagement that came from bots.";
+    BotFlagShare, "bot_flag_share", "Bot reports and marks", Share, Harm, Truth, "Share of reports and see-less marks that brigading bots filed.";
     ReflectivePerImpression, "reflective_per_impression", "Value per impression", Decimal, Participants, Truth, "Mean reflective value of what people were shown.";
     WellbeingUsers, "wellbeing_users", "Wellbeing of users", Score, Participants, Truth, "Mean wellbeing of current users.";
     WellbeingEverUsers, "wellbeing_ever_users", "Wellbeing of all who used it", Score, Participants, Truth, "Mean wellbeing of current and former users, free of survivorship bias.";
@@ -129,20 +133,37 @@ metrics! {
     CreatorMedianIncome, "creator_median_income", "Median creator income", Money, Creators, Truth, "Median 30-day average daily income of those Creators.";
     CreatorIncomeGini, "creator_income_gini", "Creator income inequality", Score, Creators, Truth, "Gini coefficient of those Creators' incomes.";
     HarmfulPayoutShare, "harmful_payout_share", "Payouts to harmful styles", Share, Creators, Truth, "Share of payouts going to Outrage, Clickbait and Attack posts.";
-    PostShareInformative, "posts_informative", "Informative posts", Share, Content, Truth, "Share of today's posts that are Informative.";
-    PostShareEntertaining, "posts_entertaining", "Entertaining posts", Share, Content, Truth, "Share of today's posts that are Entertaining.";
-    PostSharePersonal, "posts_personal", "Personal posts", Share, Content, Truth, "Share of today's posts that are Personal.";
-    PostShareOutrage, "posts_outrage", "Outrage posts", Share, Content, Truth, "Share of today's posts that are Outrage.";
-    PostShareClickbait, "posts_clickbait", "Clickbait posts", Share, Content, Truth, "Share of today's posts that are Clickbait.";
-    PostShareAttack, "posts_attack", "Attack posts", Share, Content, Truth, "Share of today's posts that are Attacks.";
+    PostShareInformative, "posts_informative", "Informative posts", Share, Content, Truth, "Share of today's human posts that are Informative.";
+    PostShareEntertaining, "posts_entertaining", "Entertaining posts", Share, Content, Truth, "Share of today's human posts that are Entertaining.";
+    PostSharePersonal, "posts_personal", "Personal posts", Share, Content, Truth, "Share of today's human posts that are Personal.";
+    PostShareOutrage, "posts_outrage", "Outrage posts", Share, Content, Truth, "Share of today's human posts that are Outrage.";
+    PostShareClickbait, "posts_clickbait", "Clickbait posts", Share, Content, Truth, "Share of today's human posts that are Clickbait.";
+    PostShareAttack, "posts_attack", "Attack posts", Share, Content, Truth, "Share of today's human posts that are Attacks.";
+    PolishedShare, "polished_share", "Polished posts", Share, Content, Truth, "Share of today's human posts polished to score higher with the quality classifier.";
+    BotPosts, "bot_posts", "Bot posts", Count, Content, Truth, "Posts bots wrote today; the content mix counts human posts only.";
     EngagementIndex, "engagement_index", "Engagement index", Score, Index, Observable, "Human impressions against a full-attention benchmark.";
-    HarmIndex, "harm_index", "Harm index", Score, Index, Truth, "Mean of toxicity, harassment, misinformation and polarisation growth, each scaled to [0, 1].";
+    HarmIndex, "harm_index", "Harm index", Score, Index, Truth, "Mean of toxicity, harassment, misinformation, polarisation growth and wrongful sanctions, each scaled to [0, 1].";
+    HarmIndexExPolarisation, "harm_index_ex_polarisation", "Harm index without polarisation", Score, Index, Truth, "The harm index without its polarisation component: the mean of toxicity, harassment, misinformation and wrongful sanctions.";
     DiscourseQuality, "discourse_quality", "Discourse quality", Score, Index, Truth, "Mean of civil and truthful top posts, cross-group approval and stable polarisation.";
     BenefitIndex, "benefit_index", "Benefit index", Score, Index, Truth, "Mean of wellbeing, informedness, meaningful interactions, creator livelihoods and discourse quality.";
+    BenefitIndexExCreators, "benefit_index_ex_creators", "Benefit index without creators", Score, Index, Truth, "The benefit index without its creators-living component: the mean of wellbeing, informedness, meaningful interactions and discourse quality.";
 }
 
 /// Number of metrics.
 pub const METRIC_COUNT: usize = INFOS.len();
+
+impl Format {
+    /// The smallest scale a metric's change across a window is measured
+    /// against (see [`Summary::slope`]): 1 for counts, 0.01 for everything
+    /// else, so a metric whose mean is near zero is judged by its absolute
+    /// change.
+    pub fn scale_floor(self) -> f32 {
+        match self {
+            Self::Count => 1.0,
+            Self::Share | Self::Score | Self::Decimal | Self::Money => 0.01,
+        }
+    }
+}
 
 /// Metadata of one metric.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

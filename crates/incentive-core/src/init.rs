@@ -3,11 +3,11 @@
 use crate::bots;
 use crate::config::Config;
 use crate::network::{self, Accounts, FollowTarget};
-use crate::person::Person;
+use crate::person::{POLISH_PRIOR_TEMPERATURES, Person, polish_temperature};
 use crate::population::{draw_archetype, draw_ties, draw_traits};
 use crate::posts::PostStore;
 use crate::rng::{self, Stream};
-use crate::world::{DayTally, PlatformState, StyleRates, World};
+use crate::world::{DayTally, PlatformState, StyleRates, TruthState, World};
 
 /// Builds the population, ties, bots, initial users and their follows.
 pub(crate) fn build_world(config: &Config) -> World {
@@ -16,9 +16,12 @@ pub(crate) fn build_world(config: &Config) -> World {
     let shares = config.population.archetype_shares.as_array();
     let people: Vec<Person> = (0..n)
         .map(|i| {
+            let mut race = rng::stream_rng(seed, 0, i as u64, Stream::Archetype);
+            let archetype = draw_archetype(&mut race, shares);
             let mut rng = rng::stream_rng(seed, 0, i as u64, Stream::Population);
-            let archetype = draw_archetype(&mut rng, shares);
-            Person::new(draw_traits(&mut rng, archetype))
+            let mut person = Person::new(draw_traits(&mut rng, archetype));
+            person.state.polish_value = initial_polish_values(config.world.choice_temperature);
+            person
         })
         .collect();
     let groups: Vec<_> = people.iter().map(|p| p.traits.group).collect();
@@ -32,8 +35,11 @@ pub(crate) fn build_world(config: &Config) -> World {
     let accounts = Accounts::new(n + bots.len());
     let platform = PlatformState {
         style_rates: [StyleRates::default(); 6],
-        impulsivity_rank: impulsivity_ranks(&people),
         ..PlatformState::default()
+    };
+    let truth = TruthState {
+        impulsivity_rank: impulsivity_ranks(&people),
+        ..TruthState::default()
     };
     let mut world = World {
         people,
@@ -42,17 +48,28 @@ pub(crate) fn build_world(config: &Config) -> World {
         accounts,
         posts: PostStore::default(),
         platform,
+        truth,
         tally: DayTally::default(),
     };
     seed_users(&mut world, config);
     let n_f = n as f32;
-    world.platform.polarisation_day0 = world
+    world.truth.polarisation_day0 = world
         .people
         .iter()
         .map(|p| p.state.affective_polarisation)
         .sum::<f32>()
         / n_f;
     world
+}
+
+/// The learned values of plain and polished posts on day 0 (docs/model.md,
+/// 7.5): polish starts [`POLISH_PRIOR_TEMPERATURES`] polish temperatures
+/// below plain, so few authors polish until they find that it pays.
+pub(crate) fn initial_polish_values(choice_temperature: f32) -> [f32; 2] {
+    [
+        0.0,
+        -POLISH_PRIOR_TEMPERATURES * polish_temperature(choice_temperature),
+    ]
 }
 
 /// Each individual's position when sorted by ascending impulsivity; user
@@ -96,5 +113,28 @@ fn seed_users(world: &mut World, config: &Config) {
     for &i in &users {
         let mut rng = rng::stream_rng(config.run.seed, 0, i as u64, Stream::Follows);
         network::attach_follows(world, i, target, config.world.homophily, &mut rng);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_impulsivity_order_is_truth_side() {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        let world = build_world(&config);
+        let ranks = &world.truth.impulsivity_rank;
+        assert_eq!(ranks.len(), world.population());
+        let mut by_rank = vec![usize::MAX; ranks.len()];
+        for (i, &r) in ranks.iter().enumerate() {
+            by_rank[r as usize] = i;
+        }
+        assert!(by_rank.iter().all(|&i| i != usize::MAX));
+        for pair in by_rank.windows(2) {
+            let (a, b) = (&world.people[pair[0]].traits, &world.people[pair[1]].traits);
+            assert!(a.impulsivity <= b.impulsivity);
+        }
     }
 }

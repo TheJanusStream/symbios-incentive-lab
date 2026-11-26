@@ -100,7 +100,13 @@ fn the_compare_tab_draws_live_and_during_and_after_the_seed_check() {
         lab.frame(0.0, &mut || true);
     }
     assert!(lab.compare.check.as_ref().is_some_and(|c| c.rows.is_some()));
+    assert_eq!(
+        lab.compare.check.as_ref().map(|c| c.seeds.clone()),
+        Some(symbios_incentive_lab::lab::CHECK_SEEDS.to_vec())
+    );
     frames(&mut lab, 3);
+    lab.compare.show_components = true;
+    frames(&mut lab, 2);
     lab.compare.drafts[0].design.w_like = 0.0;
     assert!(lab.compare.check_is_stale(lab.run));
     frames(&mut lab, 2);
@@ -143,6 +149,20 @@ fn the_scenarios_tab_draws_the_list_a_run_its_verdict_and_the_confirmation() {
         }
         lab.frame(0.0, &mut || true);
     }
+    let confirmed = lab
+        .scenarios
+        .play
+        .as_ref()
+        .and_then(|p| p.confirm.as_ref())
+        .and_then(|c| c.results.as_ref())
+        .map(|c| c.verdict.goals.len());
+    let goals = lab
+        .scenarios
+        .play
+        .as_ref()
+        .map(|p| p.scenario().goals.len());
+    assert!(goals.is_some_and(|g| g >= 2));
+    assert_eq!(confirmed, goals, "every goal has an interval verdict");
     frames(&mut lab, 2);
     if let Some(play) = lab.scenarios.play.as_mut() {
         play.spoiler_open = true;
@@ -187,7 +207,7 @@ fn the_atlas_tab_draws_every_view_with_and_without_a_pick() {
         &data.pareto.settings.base,
     );
     frames(&mut lab, 2);
-    lab.compare_with_maximiser(cell.elite.design.clone(), &data.map.settings.base);
+    lab.compare_with_engagement_ranking(cell.elite.design.clone(), &data.map.settings.base);
     frames(&mut lab, 2);
 }
 

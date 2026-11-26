@@ -30,6 +30,10 @@ pub(crate) struct Accounts {
     pub recent_posts: Vec<Vec<u32>>,
     /// The account's live reshares, oldest first.
     pub reshares: Vec<Vec<Reshare>>,
+    /// The account's reports that human reviewers judged (observable).
+    pub reports_reviewed: Vec<u32>,
+    /// Of those, the ones reviewers upheld: the post was toxic.
+    pub reports_upheld: Vec<u32>,
 }
 
 /// Weight of the see-less marks of the latest day in the moving average.
@@ -46,6 +50,8 @@ impl Accounts {
             impressions_today: vec![0; count],
             recent_posts: vec![Vec::new(); count],
             reshares: vec![Vec::new(); count],
+            reports_reviewed: vec![0; count],
+            reports_upheld: vec![0; count],
         }
     }
 
@@ -58,6 +64,13 @@ impl Accounts {
         for shares in &mut self.reshares {
             shares.retain(|r| r.post >= first_live_id);
         }
+    }
+
+    /// The account's upheld rate, `(upheld + 1) / (reviewed + 2)`: 0.5
+    /// for an account without judged reports (docs/model.md, 6.7).
+    pub(crate) fn upheld_rate(&self, account: u32) -> f32 {
+        let a = account as usize;
+        (self.reports_upheld[a] + 1) as f32 / (self.reports_reviewed[a] + 2) as f32
     }
 
     /// Folds today's see-less marks into the moving average.
@@ -113,6 +126,8 @@ pub(crate) fn reset_account(people: &mut [Person], accounts: &mut Accounts, acco
     accounts.followers[a] = 0;
     accounts.see_less_rate[a] = 0.0;
     accounts.reshares[a].clear();
+    accounts.reports_reviewed[a] = 0;
+    accounts.reports_upheld[a] = 0;
 }
 
 /// How many accounts preferential attachment should bring a person to.

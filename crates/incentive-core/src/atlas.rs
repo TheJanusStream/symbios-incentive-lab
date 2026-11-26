@@ -52,6 +52,11 @@ pub struct ExploreSettings {
     /// population and world assumptions. Its design is not searched from;
     /// every design lever is a gene.
     pub base: Config,
+    /// Fresh simulation seeds every design in the file was re-evaluated on,
+    /// at the same size, after the search (its `confirmed` metrics); empty
+    /// when there was no confirmation, as in files written before it existed.
+    #[serde(default)]
+    pub confirm_seeds: Vec<u64>,
 }
 
 /// The key metrics of an evaluated design: means over its seeds, each over
@@ -85,6 +90,22 @@ pub struct AtlasMetrics {
     /// Weekly survey satisfaction (observable).
     #[serde(deserialize_with = "nan_from_null")]
     pub survey_satisfaction: f32,
+    /// Society-wide informedness (truth), a component of the benefit index;
+    /// NaN in files written before it was kept.
+    #[serde(default = "nan", deserialize_with = "nan_from_null")]
+    pub informedness_society: f32,
+    /// Meaningful interactions per user (truth), a component of the benefit
+    /// index; NaN in files written before it was kept.
+    #[serde(default = "nan", deserialize_with = "nan_from_null")]
+    pub meaningful_per_user: f32,
+    /// Discourse quality (truth), a component of the benefit index; NaN in
+    /// files written before it was kept.
+    #[serde(default = "nan", deserialize_with = "nan_from_null")]
+    pub discourse_quality: f32,
+}
+
+fn nan() -> f32 {
+    f32::NAN
 }
 
 fn nan_from_null<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
@@ -115,6 +136,18 @@ impl AtlasMetrics {
         MetricId::SurveySatisfaction,
     ];
 
+    /// The five components of the benefit index (docs/model.md, 9.3), in the
+    /// order of its formula: the wellbeing of everyone who ever used the
+    /// platform, society-wide informedness, meaningful interactions per user,
+    /// the share of Creators earning a living and discourse quality.
+    pub const BENEFIT_COMPONENTS: [MetricId; 5] = [
+        MetricId::WellbeingEverUsers,
+        MetricId::InformednessSociety,
+        MetricId::MeaningfulPerUser,
+        MetricId::CreatorsLiving,
+        MetricId::DiscourseQuality,
+    ];
+
     /// The key metrics of a (mean) summary, rounded to four decimals.
     pub fn from_summary(summary: &Summary) -> Self {
         let g = |id| round4(summary.get(id));
@@ -128,10 +161,14 @@ impl AtlasMetrics {
             polarisation_society: g(MetricId::PolarisationSociety),
             user_share: g(MetricId::UserShare),
             survey_satisfaction: g(MetricId::SurveySatisfaction),
+            informedness_society: g(MetricId::InformednessSociety),
+            meaningful_per_user: g(MetricId::MeaningfulPerUser),
+            discourse_quality: g(MetricId::DiscourseQuality),
         }
     }
 
-    /// One of the key metrics; `None` for any other metric.
+    /// One of the metrics kept: those of [`AtlasMetrics::IDS`] and
+    /// [`AtlasMetrics::BENEFIT_COMPONENTS`]; `None` for any other metric.
     pub fn get(&self, id: MetricId) -> Option<f32> {
         Some(match id {
             MetricId::EngagementIndex => self.engagement_index,
@@ -143,6 +180,9 @@ impl AtlasMetrics {
             MetricId::PolarisationSociety => self.polarisation_society,
             MetricId::UserShare => self.user_share,
             MetricId::SurveySatisfaction => self.survey_satisfaction,
+            MetricId::InformednessSociety => self.informedness_society,
+            MetricId::MeaningfulPerUser => self.meaningful_per_user,
+            MetricId::DiscourseQuality => self.discourse_quality,
             _ => return None,
         })
     }
@@ -182,8 +222,12 @@ pub fn inert_levers(design: &DesignLevers) -> Vec<&'static str> {
 pub struct AtlasDesign {
     /// Every design lever.
     pub design: DesignLevers,
-    /// Its key metrics at the search's size.
+    /// Its key metrics at the search's size, on the seeds it was selected on.
     pub metrics: AtlasMetrics,
+    /// Its key metrics at the same size on the fresh seeds of
+    /// [`ExploreSettings::confirm_seeds`]; `None` without a confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<AtlasMetrics>,
 }
 
 /// The fixed grid of a map: `resolution` cells across the engagement range
@@ -344,6 +388,54 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_metrics_round_trip_and_old_files_still_load() {
+        let metrics = AtlasMetrics {
+            engagement_index: 0.25,
+            harm_index: 0.3,
+            benefit_index: 0.45,
+            toxic_share: 0.1,
+            wellbeing_ever_users: 0.6,
+            creators_living: 0.0,
+            polarisation_society: 0.44,
+            user_share: 0.7,
+            survey_satisfaction: 0.75,
+            informedness_society: 0.5,
+            meaningful_per_user: 0.8,
+            discourse_quality: 0.55,
+        };
+        let confirmed = AtlasMetrics {
+            harm_index: 0.32,
+            ..metrics
+        };
+        let design = AtlasDesign {
+            design: DesignLevers::default(),
+            metrics,
+            confirmed: Some(confirmed),
+        };
+        let text = serde_json::to_string(&design).unwrap_or_default();
+        assert!(text.contains("\"confirmed\""));
+        let back: Option<AtlasDesign> = serde_json::from_str(&text).ok();
+        assert_eq!(back.as_ref(), Some(&design));
+        // A file written before confirmation: no field, and none written back.
+        let old = AtlasDesign {
+            confirmed: None,
+            ..design
+        };
+        let text = serde_json::to_string(&old).unwrap_or_default();
+        assert!(!text.contains("confirmed"));
+        let back: Option<AtlasDesign> = serde_json::from_str(&text).ok();
+        assert_eq!(back, Some(old));
+        let settings = serde_json::json!({
+            "mode": "map", "seed": 1, "seeds": [1, 2], "population": 600, "days": 180,
+            "generations": 1, "batch": 1, "initial": 1, "mutation_rate": 0.1,
+            "evaluations": 1, "runs": 2, "world": "defaults", "command": "",
+            "base": Config::default(),
+        });
+        let parsed: Result<ExploreSettings, _> = serde_json::from_value(settings);
+        assert!(parsed.is_ok_and(|s| s.confirm_seeds.is_empty()));
+    }
+
+    #[test]
     fn grid_cells_clamp_into_the_edges() {
         let grid = MapGrid {
             resolution: 16,
@@ -372,6 +464,9 @@ mod tests {
             polarisation_society: 0.45,
             user_share: 0.66,
             survey_satisfaction: f32::NAN,
+            informedness_society: 0.5,
+            meaningful_per_user: 1.2,
+            discourse_quality: 0.6,
         };
         assert_eq!(m.engagement_index, 0.2625);
         let text = serde_json::to_string(&m).unwrap_or_default();
@@ -381,8 +476,42 @@ mod tests {
         assert_eq!(back.get(MetricId::HarmIndex), Some(0.5));
         assert_eq!(back.get(MetricId::Impressions), None);
         m.survey_satisfaction = 0.7;
-        for id in AtlasMetrics::IDS {
-            assert!(m.get(id).is_some(), "{id:?}");
+        for id in AtlasMetrics::IDS
+            .iter()
+            .chain(&AtlasMetrics::BENEFIT_COMPONENTS)
+        {
+            assert!(m.get(*id).is_some(), "{id:?}");
         }
+    }
+
+    #[test]
+    fn benefit_components_come_from_the_summary_and_old_files_lack_them() {
+        use crate::metrics::DailyMetrics;
+        let mut day = DailyMetrics::empty(0);
+        day.set(MetricId::InformednessSociety, 0.512_34);
+        day.set(MetricId::MeaningfulPerUser, 1.5);
+        day.set(MetricId::DiscourseQuality, 0.6);
+        day.set(MetricId::EngagementIndex, 0.25);
+        let m = AtlasMetrics::from_summary(&Summary::from_history(&[day], 30));
+        assert_eq!(m.get(MetricId::InformednessSociety), Some(0.5123));
+        assert_eq!(m.meaningful_per_user, 1.5);
+        assert_eq!(m.discourse_quality, 0.6);
+        // A file written before the components were kept still loads, with
+        // the components missing (NaN).
+        let mut value = serde_json::to_value(m).unwrap_or_default();
+        if let Some(map) = value.as_object_mut() {
+            for key in [
+                "informedness_society",
+                "meaningful_per_user",
+                "discourse_quality",
+            ] {
+                assert!(map.remove(key).is_some(), "{key}");
+            }
+        }
+        let old: Option<AtlasMetrics> = serde_json::from_value(value).ok();
+        let old = old.expect("an old file loads");
+        assert!(old.informedness_society.is_nan());
+        assert!(old.meaningful_per_user.is_nan() && old.discourse_quality.is_nan());
+        assert_eq!(old.engagement_index, 0.25);
     }
 }

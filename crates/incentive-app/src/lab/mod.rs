@@ -18,10 +18,13 @@ use atlas::AtlasState;
 use batch::{ScenarioConfirm, SeedCheck};
 use runner::Runner;
 
-/// Seeds of the compare mode's multi-seed check.
-pub const CHECK_SEEDS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-/// Seeds of a scenario's confirmation.
-pub const CONFIRM_SEEDS: [u64; 4] = [1, 2, 3, 4];
+/// Seeds of the compare mode's multi-seed check: 9 to 16, which the
+/// searches behind the Atlas never selected designs on (they search on
+/// seeds 1 and 2), so an atlas design cannot pass the check by the luck of
+/// the seeds it was picked on.
+pub const CHECK_SEEDS: [u64; 8] = [9, 10, 11, 12, 13, 14, 15, 16];
+/// Seeds of a scenario's confirmation, as `incentive scenario` runs it.
+pub const CONFIRM_SEEDS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Days the compare table averages.
 pub const TABLE_DAYS: usize = 30;
 
@@ -182,20 +185,25 @@ impl Suggestion {
 /// The three suggestions of the "Start here" box.
 pub const SUGGESTIONS: [Suggestion; 3] = [
     Suggestion {
-        title: "Stop rewarding angry replies",
-        body: "Set the reply weight to 0 and the see-less penalty to 5. Over a year toxic impressions \
-            fall to less than half while the engagement index holds: the angry-reply bonus is not even \
-            engagement-optimal, because it drives people away.",
+        title: "Stop rewarding angry replies, trust good reporters",
+        body: "Set the reply weight to 0, give the platform ten times the human reviewers, and weigh each \
+            report by how often its reporter's earlier reports were upheld. Over a year the harm index falls \
+            by about two fifths while the engagement index holds, because toxicity drives people away; try \
+            it again with churn, harassment exits and the reputation effect switched off. A strong see-less \
+            penalty would backfire here: bot farms mark the other side's popular posts.",
         apply: |d| {
             d.w_reply = 0.0;
-            d.w_see_less = 5.0;
+            d.review_capacity = 10.0;
+            d.report_trust = 1.0;
         },
     },
     Suggestion {
         title: "Rank for quality and bridging",
         body: "Load the Quality and bridging design. The harm index falls by about four fifths, and the \
-            engagement index by about a third. Watch the survey: the platform's own numbers say people \
-            are happier, and here the truth agrees.",
+            engagement index by about a fifth. Watch the survey: the platform's own numbers say people \
+            are slightly less happy than under the engagement ranking, while the truth says they are better \
+            off. The survey mixes wellbeing with recent pleasure and habit, and the engagement ranking \
+            serves more of both.",
         apply: |d| {
             *d = preset("quality-bridging")
                 .map(|p| p.design())
@@ -204,8 +212,9 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
     },
     Suggestion {
         title: "Make the classifier stricter",
-        body: "Lower the classifier threshold to 0.3. Removals jump, yet toxic impressions barely move \
-            over a year: authors whose posts are removed learn to write toxicity the classifier misses.",
+        body: "Lower the classifier threshold to 0.3. Toxic impressions fall by about nineteen twentieths \
+            over a year, and authors' evasion barely dents that. But wrongful removals rise from about 4 to 50 \
+            a day, and the harm index, which counts them, falls by only a quarter.",
         apply: |d| d.classifier_threshold = 0.3,
     },
 ];
@@ -263,6 +272,8 @@ pub struct Compare {
     pub check_configs: Option<[Config; 2]>,
     /// The metrics the overlaid charts show.
     pub metrics: Vec<MetricId>,
+    /// The check's table also shows what the indices are made of.
+    pub show_components: bool,
     /// The outcome of the last atlas load.
     pub message: Option<String>,
 }
@@ -279,6 +290,7 @@ impl Compare {
             check: None,
             check_configs: None,
             metrics: series::DEFAULT_COMPARE.to_vec(),
+            show_components: false,
             message: None,
         })
     }
@@ -554,7 +566,7 @@ impl Lab {
             }
         }
         if let Some(check) = self.compare.check.as_mut() {
-            check.work(&series::KEY_METRICS, keep_going);
+            check.work(&series::check_metrics(), keep_going);
         }
         if let Some(play) = self.scenarios.play.as_mut() {
             let scenario = play.scenario();
@@ -733,7 +745,13 @@ impl Lab {
     /// assumptions and population settings of `base` (the configuration the
     /// atlas searched from), and restarts at the lab's seed, population and
     /// length, which shows the design at full size.
+    /// A design outside this build's parameter ranges is refused with a
+    /// status message and nothing changes.
     pub fn open_in_sandbox(&mut self, design: DesignLevers, base: &Config) {
+        if let Err(e) = atlas::check_design(&design, base) {
+            self.status = Some(e);
+            return;
+        }
         self.sandbox.draft.design = design;
         self.sandbox.draft.world = base.world.clone();
         self.sandbox.draft.population = base.population.clone();
@@ -752,9 +770,15 @@ impl Lab {
     }
 
     /// Compares a design from the atlas, as B, with the engagement
-    /// maximiser, as A, both with the world assumptions and population
-    /// settings of `base`, and restarts the compare mode.
-    pub fn compare_with_maximiser(&mut self, design: DesignLevers, base: &Config) {
+    /// ranking, as A, both with the world assumptions and population
+    /// settings of `base`, and restarts the compare mode. A design outside
+    /// this build's parameter ranges is refused like in
+    /// [`Lab::open_in_sandbox`].
+    pub fn compare_with_engagement_ranking(&mut self, design: DesignLevers, base: &Config) {
+        if let Err(e) = atlas::check_design(&design, base) {
+            self.status = Some(e);
+            return;
+        }
         for draft in &mut self.compare.drafts {
             draft.world = base.world.clone();
             draft.population = base.population.clone();
@@ -768,7 +792,7 @@ impl Lab {
         self.compare.message = Some(match &self.status {
             Some(s) => s.clone(),
             None => format!(
-                "A is the engagement maximiser and B the atlas design, both with the world \
+                "A is the engagement ranking and B the atlas design, both with the world \
                  assumptions the atlas used; the pair restarted from day 0 on seed {} with {} \
                  people for {} days. Check on 8 seeds before trusting the difference.",
                 self.run.seed, self.run.population, self.run.days
@@ -1103,8 +1127,17 @@ mod tests {
             }
             lab.frame(0.0, &mut || true);
         }
-        let rows = lab.compare.check.as_ref().and_then(|c| c.rows.clone());
-        assert_eq!(rows.map(|r| r.len()), Some(series::KEY_METRICS.len()));
+        let check = lab.compare.check.as_ref().expect("a check");
+        assert_eq!(check.seeds, CHECK_SEEDS);
+        assert_eq!(
+            check.seeds.first(),
+            Some(&9),
+            "seeds the atlas never chose on"
+        );
+        let rows = check.rows.clone().unwrap_or_default();
+        assert_eq!(rows.len(), series::check_metrics().len());
+        assert!(rows.iter().any(|r| r.metric == MetricId::NetRevenue));
+        assert_eq!(rows[0].paired.pairs, CHECK_SEEDS.len());
         assert!(!lab.compare.check_is_stale(lab.run));
         lab.run.seed += 1;
         assert!(
@@ -1133,7 +1166,13 @@ mod tests {
         assert!(lab.status.is_none());
         assert_eq!(lab.active_runner().map(Runner::days), Some(4));
         let live = lab.scenarios.play.as_ref().map(|p| p.live_results().len());
-        assert_eq!(live, Some(2));
+        let goals = lab
+            .scenarios
+            .play
+            .as_ref()
+            .map(|p| p.scenario().goals.len());
+        assert!(goals.is_some_and(|g| g >= 2));
+        assert_eq!(live, goals, "one live result per goal");
         lab.run_days(10);
         let play = lab.scenarios.play.as_ref().expect("playing");
         assert_eq!(
@@ -1154,6 +1193,18 @@ mod tests {
             lab.frame(0.0, &mut || true);
         }
         assert!(!lab.confirm_is_stale() && !lab.verdict_is_stale());
+        let confirm = lab.scenarios.play.as_ref().and_then(|p| p.confirm.as_ref());
+        let confirm = confirm.expect("a confirmation");
+        assert_eq!(confirm.seeds, CONFIRM_SEEDS);
+        let confirmed = confirm.results.as_ref().expect("finished");
+        assert_eq!(confirmed.verdict.goals.len(), goals.unwrap_or_default());
+        assert!(
+            confirmed
+                .verdict
+                .goals
+                .iter()
+                .all(|g| g.margin.n == CONFIRM_SEEDS.len())
+        );
         lab.run.population += 10;
         assert!(lab.confirm_is_stale(), "a population change");
         lab.run.population -= 10;
@@ -1192,8 +1243,28 @@ mod tests {
         lab.restart();
         assert!(lab.status.is_none());
         let data = atlas::atlas().expect("the embedded atlas parses");
-        let design = data.pareto.front[0].design.clone();
         let base = &data.pareto.settings.base;
+        // An out-of-range design is refused, with a message, and runs nothing.
+        let bad = DesignLevers {
+            predictor_quality: 1.0,
+            ..DesignLevers::default()
+        };
+        lab.open_in_sandbox(bad.clone(), base);
+        lab.compare_with_engagement_ranking(bad, base);
+        assert_eq!(lab.tab, Tab::Atlas);
+        assert!(
+            lab.status
+                .as_deref()
+                .is_some_and(|m| m.contains("not loaded"))
+        );
+        lab.status = None;
+        let design = data
+            .pareto
+            .front
+            .iter()
+            .map(|d| d.design.clone())
+            .find(|d| atlas::check_design(d, base).is_ok())
+            .expect("an in-range design on the front");
         lab.step_once();
         // A world the player changed gives way to the atlas's.
         lab.sandbox.draft.world.outrage_appeal = 2.5;
@@ -1209,7 +1280,7 @@ mod tests {
         );
         assert_eq!(lab.sandbox.runner.lane(0).sim.config().world, base.world);
         lab.compare.drafts[0].world.outrage_appeal = 2.5;
-        lab.compare_with_maximiser(design.clone(), base);
+        lab.compare_with_engagement_ranking(design.clone(), base);
         assert_eq!(lab.tab, Tab::Compare);
         let lanes = lab.compare.runner.lanes();
         assert_eq!(lanes[0].sim.config().design, DesignLevers::default());

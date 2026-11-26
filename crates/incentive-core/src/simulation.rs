@@ -92,9 +92,10 @@ impl Simulation {
             day: self.day,
         };
         let world = &mut self.world;
-        start_day(world, &ctx);
+        start_day(world);
         bots::replace_banned(world, &ctx);
         lifecycle::joining(world, &ctx);
+        assign_user_controls(world, &ctx);
         session::decide_openers(world, &ctx);
         let first_new = world.posts.next_id();
         posting::write_posts(world, &ctx);
@@ -110,7 +111,7 @@ impl Simulation {
         society::run(world, &ctx);
         let metrics = measure::measure(world, &ctx);
         world
-            .platform
+            .truth
             .push_toxic_share(metrics.get(MetricId::ToxicShare));
         world.accounts.end_day();
         self.inspector
@@ -262,18 +263,82 @@ impl Simulation {
     }
 }
 
-/// Clears the day's accumulators and applies the user controls of the
-/// current design: the least impulsive individuals adopt them first.
-fn start_day(world: &mut World, ctx: &DayCtx) {
+/// Clears the day's accumulators.
+fn start_day(world: &mut World) {
     world.tally = DayTally::default();
-    let n = world.population() as f32;
-    let design = &ctx.config.design;
-    let alt_cut = (design.alt_feed_share * n).round() as u32;
-    let limit_cut = (design.time_limit_share * n).round() as u32;
-    for (i, person) in world.people.iter_mut().enumerate() {
+    for person in &mut world.people {
         person.state.today.clear();
-        let rank = world.platform.impulsivity_rank[i];
-        person.state.alt_feed_user = rank < alt_cut;
-        person.state.time_limited = rank < limit_cut;
+    }
+}
+
+/// Applies the user controls of the current design to today's users, after
+/// joining: the alternative feed and the time limit go to the least impulsive
+/// `round(share * users)` users, so the realised share among users equals the
+/// lever (docs/model.md, 6.5 and 6.10). Non-users hold neither.
+fn assign_user_controls(world: &mut World, ctx: &DayCtx) {
+    let design = &ctx.config.design;
+    let mut users: Vec<(u32, usize)> = world
+        .people
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.state.is_user)
+        .map(|(i, _)| (world.truth.impulsivity_rank[i], i))
+        .collect();
+    users.sort_unstable();
+    let n = users.len() as f32;
+    let alt_cut = (design.alt_feed_share * n).round() as usize;
+    let limit_cut = (design.time_limit_share * n).round() as usize;
+    for person in &mut world.people {
+        person.state.alt_feed_user = false;
+        person.state.time_limited = false;
+    }
+    for (order, &(_, i)) in users.iter().enumerate() {
+        let state = &mut world.people[i].state;
+        state.alt_feed_user = order < alt_cut;
+        state.time_limited = order < limit_cut;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_controls_reach_their_share_of_users_only() {
+        let mut config = Config::default();
+        config.run.population_size = 500;
+        config.design.alt_feed_share = 0.3;
+        config.design.time_limit_share = 0.5;
+        let mut world = init::build_world(&config);
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        assign_user_controls(&mut world, &ctx);
+        let users: Vec<&Person> = world.people.iter().filter(|p| p.state.is_user).collect();
+        let n = users.len() as f32;
+        let alt = users.iter().filter(|p| p.state.alt_feed_user).count();
+        let limited = users.iter().filter(|p| p.state.time_limited).count();
+        assert_eq!(alt, (0.3 * n).round() as usize);
+        assert_eq!(limited, (0.5 * n).round() as usize);
+        assert!(
+            world
+                .people
+                .iter()
+                .filter(|p| !p.state.is_user)
+                .all(|p| !p.state.alt_feed_user && !p.state.time_limited)
+        );
+        // The least impulsive users adopt first.
+        let max_alt = users
+            .iter()
+            .filter(|p| p.state.alt_feed_user)
+            .map(|p| p.traits.impulsivity)
+            .fold(0.0f32, f32::max);
+        assert!(
+            users
+                .iter()
+                .filter(|p| !p.state.alt_feed_user)
+                .all(|p| p.traits.impulsivity >= max_alt)
+        );
     }
 }

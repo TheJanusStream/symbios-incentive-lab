@@ -3,13 +3,15 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use incentive_core::{Config, MetricId, Summary, scenario};
+use incentive_core::{Config, MetricId, Summary, Verdict, scenario};
 use serde_json::json;
 
 use crate::cli::{RunOptions, Source};
 use crate::error::CliError;
-use crate::report::{self, fmt_value, table, table_metrics, view_label};
-use crate::runs::{self, RunOutput, apply_options, metric_stats, parse_seeds, run_seeds};
+use crate::report::{self, MOVING_NOTE, fmt_value, moving_mark, table, table_metrics, view_label};
+use crate::runs::{
+    self, RunOutput, apply_options, is_moving, mean_slope, metric_stats, parse_seeds, run_seeds,
+};
 
 fn out_dir(options: &RunOptions, name: &str) -> Result<PathBuf, CliError> {
     let dir = options
@@ -45,7 +47,11 @@ pub fn run(source: &Source, options: &RunOptions) -> Result<(), CliError> {
             vec![
                 id.info().name.to_string(),
                 view_label(id).to_string(),
-                fmt_value(id, s.mean),
+                format!(
+                    "{}{}",
+                    fmt_value(id, s.mean),
+                    moving_mark(is_moving(&outputs, id))
+                ),
                 fmt_value(id, s.sd),
                 fmt_value(id, s.min),
                 fmt_value(id, s.max),
@@ -56,6 +62,7 @@ pub fn run(source: &Source, options: &RunOptions) -> Result<(), CliError> {
         "{}",
         table(&["metric", "view", "mean", "sd", "min", "max"], &rows)
     );
+    moving_note(metrics.iter().any(|&id| is_moving(&outputs, id)))?;
     let dir = out_dir(options, &format!("run-{}", report::slug(&label)))?;
     report::remove_daily_csvs(&dir)?;
     for o in &outputs {
@@ -68,12 +75,26 @@ pub fn run(source: &Source, options: &RunOptions) -> Result<(), CliError> {
         .iter()
         .map(|i| (i.key.to_string(), json!(metric_stats(&outputs, i.id))))
         .collect();
+    let slopes: serde_json::Map<String, serde_json::Value> = incentive_core::metric_infos()
+        .iter()
+        .map(|i| {
+            let v = mean_slope(&outputs, i.id);
+            (i.key.to_string(), json!(v.is_finite().then_some(v)))
+        })
+        .collect();
+    let moving: Vec<&str> = incentive_core::metric_infos()
+        .iter()
+        .filter(|i| is_moving(&outputs, i.id))
+        .map(|i| i.key)
+        .collect();
     let per_seed: Vec<_> = outputs
         .iter()
         .map(|o| json!({"seed": o.seed, "summary": o.summary}))
         .collect();
-    let doc =
-        json!({"label": label, "config": config, "seeds": seeds, "stats": stats, "runs": per_seed});
+    let doc = json!({
+        "label": label, "config": config, "seeds": seeds, "stats": stats,
+        "slope": slopes, "moving": moving, "runs": per_seed,
+    });
     report::write_json(&dir.join("summary.json"), &doc)?;
     outln!("\nwrote {}", dir.display());
     Ok(())
@@ -133,6 +154,8 @@ pub fn compare(
             };
             let mut cells = vec![id.info().name.to_string(), view_label(id).to_string()];
             cells.extend(row.iter().map(|&v| fmt_value(id, v)));
+            cells[2].push_str(moving_mark(is_moving(&runs_a, id)));
+            cells[3].push_str(moving_mark(is_moving(&runs_b, id)));
             cells.push(marker.to_string());
             cells
         })
@@ -147,6 +170,12 @@ pub fn compare(
         )
     );
     outln!("\n* the 95% confidence interval of the paired difference excludes zero");
+    if metrics
+        .iter()
+        .any(|&id| is_moving(&runs_a, id) || is_moving(&runs_b, id))
+    {
+        outln!("{MOVING_NOTE}");
+    }
     let dir = out_dir(
         options,
         &format!(
@@ -208,15 +237,19 @@ pub fn sweep(
     }
     csv.push('\n');
     let mut rows = Vec::new();
+    let mut any_moving = false;
     for (value, chunk) in values.iter().zip(outputs.chunks(seeds.len())) {
         let mut row = vec![value.clone()];
         csv.push_str(value);
         for &id in &metrics {
             let s = metric_stats(chunk, id);
+            let moving = is_moving(chunk, id);
+            any_moving |= moving;
             row.push(format!(
-                "{} ±{}",
+                "{} ±{}{}",
                 fmt_value(id, s.mean),
-                fmt_value(id, s.sd)
+                fmt_value(id, s.sd),
+                moving_mark(moving)
             ));
             let _ = write!(csv, ",{},{}", s.mean, s.sd);
         }
@@ -225,6 +258,7 @@ pub fn sweep(
     }
     let header_refs: Vec<&str> = header.iter().map(String::as_str).collect();
     out!("{}", table(&header_refs, &rows));
+    moving_note(any_moving)?;
     let dir = out_dir(
         options,
         &format!("sweep-{}-{}", report::slug(&label), report::slug(lever)),
@@ -275,57 +309,108 @@ pub fn scenario_cmd(
         .flat_map(|&s| [(player.clone(), s), (baseline.clone(), s)])
         .collect();
     let outputs = runs::run_many(&jobs)?;
-    let player_runs: Vec<Summary> = outputs
-        .iter()
-        .step_by(2)
-        .map(|o| o.summary.clone())
-        .collect();
-    let baseline_runs: Vec<Summary> = outputs
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .map(|o| o.summary.clone())
-        .collect();
+    let (player_out, baseline_out): (Vec<_>, Vec<_>) = outputs
+        .into_iter()
+        .enumerate()
+        .partition(|(i, _)| i % 2 == 0);
+    let player_out: Vec<RunOutput> = player_out.into_iter().map(|(_, r)| r).collect();
+    let baseline_out: Vec<RunOutput> = baseline_out.into_iter().map(|(_, r)| r).collect();
+    let player_runs: Vec<Summary> = player_out.iter().map(|o| o.summary.clone()).collect();
+    let baseline_runs: Vec<Summary> = baseline_out.iter().map(|o| o.summary.clone()).collect();
     let (Some(p), Some(b)) = (Summary::mean(&player_runs), Summary::mean(&baseline_runs)) else {
         return Err(CliError::Seeds(options.seeds.clone()));
     };
     outln!(
-        "{}: {} seeds, N = {}, {} days\n{}\n",
+        "{}: {} paired seeds, N = {}, {} days\n{}\n",
         sc.title,
         seeds.len(),
         player.run.population_size,
         player.run.days,
         sc.briefing
     );
-    let results = sc.evaluate(&p, &b);
-    let rows: Vec<Vec<String>> = results
+    let verdict = sc.judge(&player_runs, &baseline_runs);
+    let mut any_moving = false;
+    let rows: Vec<Vec<String>> = verdict
+        .goals
         .iter()
-        .map(|r| {
+        .map(|g| {
+            let (pm, bm) = (
+                is_moving(&player_out, g.metric),
+                is_moving(&baseline_out, g.metric),
+            );
+            any_moving |= pm || bm;
             vec![
-                r.description.to_string(),
-                fmt_value(r.metric, r.player),
-                fmt_value(r.metric, r.baseline),
-                fmt_value(r.metric, r.threshold),
-                if r.passed { "PASS" } else { "FAIL" }.to_string(),
+                g.description.to_string(),
+                format!("{}{}", fmt_value(g.metric, g.player), moving_mark(pm)),
+                format!("{}{}", fmt_value(g.metric, g.baseline), moving_mark(bm)),
+                fmt_value(g.metric, g.threshold),
+                format!("{:+.4}", g.margin.mean),
+                format!("{:+.4}", g.margin.low),
+                format!("{:+.4}", g.margin.high),
+                g.verdict.label().to_string(),
             ]
         })
         .collect();
     out!(
         "{}",
-        table(&["goal", "you", "baseline", "threshold", ""], &rows)
+        table(
+            &[
+                "goal",
+                "you",
+                "baseline",
+                "threshold",
+                "margin",
+                "95% low",
+                "95% high",
+                ""
+            ],
+            &rows
+        )
     );
-    let all = results.iter().all(|r| r.passed);
+    outln!(
+        "\nmargin: how far each seed's run is on the passing side of its own baseline's threshold, mean \
+         over the paired seeds with its 95% interval. A goal passes when the whole interval is on the \
+         passing side, fails when it is wholly on the failing side, and is undecided otherwise."
+    );
+    moving_note(any_moving)?;
+    let failed = verdict
+        .goals
+        .iter()
+        .filter(|g| g.verdict == Verdict::Fail)
+        .count();
+    let undecided = verdict
+        .goals
+        .iter()
+        .filter(|g| g.verdict == Verdict::Undecided)
+        .count();
     outln!(
         "\n{}",
-        if all {
-            "Scenario passed."
-        } else {
-            "Scenario not passed yet."
+        match verdict.verdict {
+            Verdict::Pass => "Scenario passed.".to_string(),
+            _ => format!(
+                "Scenario not passed: {failed} goal(s) failed, {undecided} undecided{}.",
+                if undecided > 0 {
+                    " (more seeds may decide them)"
+                } else {
+                    ""
+                }
+            ),
         }
     );
     let dir = out_dir(options, &format!("scenario-{id}"))?;
-    let doc = json!({"scenario": id, "design": design, "seeds": seeds, "results": results, "player": p, "baseline": b});
+    let doc = json!({
+        "scenario": id, "design": design, "seeds": seeds, "verdict": verdict,
+        "player": p, "baseline": b,
+    });
     report::write_json(&dir.join("scenario.json"), &doc)?;
     outln!("wrote {}", dir.display());
+    Ok(())
+}
+
+/// The note under a table, when any of its metrics is marked moving.
+fn moving_note(any: bool) -> Result<(), CliError> {
+    if any {
+        outln!("{MOVING_NOTE}");
+    }
     Ok(())
 }

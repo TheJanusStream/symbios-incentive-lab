@@ -1,7 +1,9 @@
 //! Time-sliced batch runs: whole runs on several seeds, advanced a day at a
 //! time across frames so the window stays responsive without threads.
 
-use incentive_core::{Config, MetricId, PairedDifference, Scenario, Simulation, Summary};
+use incentive_core::{
+    Config, MetricId, PairedDifference, Scenario, ScenarioVerdict, Simulation, Summary,
+};
 
 /// A queue of whole runs, worked through one simulated day at a time.
 #[derive(Clone, Debug)]
@@ -129,10 +131,29 @@ pub struct CheckRow {
     pub metric: MetricId,
     /// Means of A and B and the paired difference with its 95% interval.
     pub paired: PairedDifference,
+    /// How much the metric moved across the summary window, relative to its
+    /// mean, for A and for B: the seeds' mean of [`Summary::slope`].
+    pub slopes: [f32; 2],
+    /// The standard errors of those slopes ([`Summary::slope_error`] of the
+    /// seeds' mean summary).
+    pub slope_errors: [f32; 2],
+}
+
+impl CheckRow {
+    /// Whether the metric was still moving in A's runs and in B's, as
+    /// [`Summary::is_moving`] judges the seeds' mean summary.
+    pub fn moving(&self) -> [bool; 2] {
+        [0, 1].map(|i| incentive_core::is_moving_slope(self.slopes[i], self.slope_errors[i]))
+    }
 }
 
 /// The rows of a paired check: one per metric, from the per-seed summaries.
 pub fn check_rows(metrics: &[MetricId], a: &[Summary], b: &[Summary]) -> Vec<CheckRow> {
+    let (mean_a, mean_b) = (Summary::mean(a), Summary::mean(b));
+    let slope =
+        |mean: &Option<Summary>, metric| mean.as_ref().map_or(f32::NAN, |s| s.slope(metric));
+    let error =
+        |mean: &Option<Summary>, metric| mean.as_ref().map_or(f32::NAN, |s| s.slope_error(metric));
     metrics
         .iter()
         .map(|&metric| {
@@ -140,6 +161,8 @@ pub fn check_rows(metrics: &[MetricId], a: &[Summary], b: &[Summary]) -> Vec<Che
             CheckRow {
                 metric,
                 paired: PairedDifference::of(&values(a), &values(b)),
+                slopes: [slope(&mean_a, metric), slope(&mean_b, metric)],
+                slope_errors: [error(&mean_a, metric), error(&mean_b, metric)],
             }
         })
         .collect()
@@ -159,6 +182,8 @@ pub struct SeedCheck {
     pub batch: BatchRun,
     /// The statistics, once finished.
     pub rows: Option<Vec<CheckRow>>,
+    /// Days in each run's summary window, once finished.
+    pub window: u32,
 }
 
 impl SeedCheck {
@@ -170,6 +195,7 @@ impl SeedCheck {
             batch: BatchRun::new(paired_jobs(a, b, &seeds)),
             seeds,
             rows: None,
+            window: 0,
         }
     }
 
@@ -181,12 +207,27 @@ impl SeedCheck {
         }
         if self.batch.work(keep_going) && self.batch.error().is_none() {
             let (a, b) = split_pairs(self.batch.results());
+            self.window = a.first().map_or(0, |s| s.days);
             self.rows = Some(check_rows(metrics, &a, &b));
         }
     }
 }
 
-/// A scenario judged on the mean summaries of several seeds.
+/// The outcome of a scenario's confirmation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Confirmed {
+    /// Every goal judged on its per-seed margins with a 95% interval
+    /// ([`Scenario::judge`]), and the scenario's verdict.
+    pub verdict: ScenarioVerdict,
+    /// The mean of the player's summaries over the seeds; its slopes say
+    /// which metrics were still moving.
+    pub player: Summary,
+    /// The mean of the baseline's summaries over the seeds.
+    pub baseline: Summary,
+}
+
+/// A scenario judged on paired seeds: the player's run against the
+/// baseline's on each seed.
 #[derive(Clone, Debug)]
 pub struct ScenarioConfirm {
     /// The seeds.
@@ -194,7 +235,7 @@ pub struct ScenarioConfirm {
     /// The runs: the player's design and the baseline on each seed.
     pub batch: BatchRun,
     /// The verdict, once finished.
-    pub results: Option<Vec<incentive_core::GoalResult>>,
+    pub results: Option<Confirmed>,
 }
 
 impl ScenarioConfirm {
@@ -207,8 +248,8 @@ impl ScenarioConfirm {
         }
     }
 
-    /// Works on the runs; judges the goals on the mean summaries when the
-    /// last run finishes.
+    /// Works on the runs; judges the goals on the paired seeds when the last
+    /// run finishes.
     pub fn work(&mut self, scenario: &Scenario, keep_going: &mut dyn FnMut() -> bool) {
         if self.results.is_some() {
             return;
@@ -216,7 +257,11 @@ impl ScenarioConfirm {
         if self.batch.work(keep_going) && self.batch.error().is_none() {
             let (player, baseline) = split_pairs(self.batch.results());
             if let (Some(p), Some(b)) = (Summary::mean(&player), Summary::mean(&baseline)) {
-                self.results = Some(scenario.evaluate(&p, &b));
+                self.results = Some(Confirmed {
+                    verdict: scenario.judge(&player, &baseline),
+                    player: p,
+                    baseline: b,
+                });
             }
         }
     }
@@ -225,7 +270,7 @@ impl ScenarioConfirm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use incentive_core::{preset, scenario};
+    use incentive_core::{Verdict, preset, scenario};
 
     fn tiny(days: u32) -> Config {
         let mut config = Config::default();
@@ -295,6 +340,7 @@ mod tests {
         let rows = check.rows.as_deref().unwrap_or_default();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].paired.pairs, 2);
+        assert_eq!(check.window, 3, "a short run is summarised whole");
         assert!(rows[0].paired.mean_a > rows[0].paired.mean_b);
     }
 
@@ -311,7 +357,13 @@ mod tests {
             }
             confirm.work(sc, &mut || true);
         }
-        assert_eq!(confirm.results.map(|r| r.len()), Some(sc.goals.len()));
+        let confirmed = confirm.results.expect("the confirmation finishes");
+        assert_eq!(confirmed.verdict.goals.len(), sc.goals.len());
+        assert!(confirmed.verdict.goals.iter().all(|g| g.margin.n == 2));
+        // The baseline against itself cannot halve its own toxicity.
+        assert_ne!(confirmed.verdict.goals[1].verdict, Verdict::Pass);
+        assert_ne!(confirmed.verdict.verdict, Verdict::Pass);
+        assert!(confirmed.player.days > 0 && confirmed.baseline.days > 0);
     }
 
     #[test]
@@ -331,22 +383,23 @@ mod tests {
             confirm.work(sc, &mut || true);
         }
         // The same judgement made by hand, side by side.
-        let mean = |config: &Config| {
-            let runs: Vec<Summary> = seeds
+        let runs = |config: &Config| -> Vec<Summary> {
+            seeds
                 .iter()
                 .map(|&seed| {
                     let mut c = config.clone();
                     c.run.seed = seed;
+                    c.run.tracked_agents = 0;
                     let mut sim = Simulation::new(c).expect("valid configuration");
                     sim.run_to_end()
                 })
-                .collect();
-            Summary::mean(&runs).expect("two summaries")
+                .collect()
         };
-        let expected = sc.evaluate(&mean(&player), &mean(&baseline));
+        let (p, b) = (runs(&player), runs(&baseline));
+        let expected = sc.judge(&p, &b);
         let got = confirm.results.expect("the confirmation finishes");
-        assert_eq!(got.len(), expected.len());
-        for (g, e) in got.iter().zip(&expected) {
+        assert_eq!(got.verdict.goals.len(), expected.goals.len());
+        for (g, e) in got.verdict.goals.iter().zip(&expected.goals) {
             assert_eq!(g.player.to_bits(), e.player.to_bits(), "{}", e.description);
             assert_eq!(
                 g.baseline.to_bits(),
@@ -354,10 +407,43 @@ mod tests {
                 "{}",
                 e.description
             );
+            assert_eq!(g.margin.mean.to_bits(), e.margin.mean.to_bits());
+            assert_eq!(g.verdict, e.verdict);
         }
         assert!(
-            got.iter().any(|g| g.player != g.baseline),
+            got.verdict.goals.iter().any(|g| g.player != g.baseline),
             "the two sides ran different designs"
         );
+        let mean = Summary::mean(&p).expect("two summaries");
+        let id = got.verdict.goals[0].metric;
+        assert_eq!(got.player.slope(id).to_bits(), mean.slope(id).to_bits());
+    }
+
+    #[test]
+    fn check_rows_flag_metrics_still_moving() {
+        let mut a = tiny(40);
+        a.run.tracked_agents = 0;
+        let mut b = a.clone();
+        b.design.chronological = true;
+        let summaries: Vec<Summary> = [a, b]
+            .into_iter()
+            .map(|c| Simulation::new(c).expect("valid").run_to_end())
+            .collect();
+        let metrics = [MetricId::UserShare, MetricId::ToxicShare];
+        let rows = check_rows(&metrics, &summaries[..1], &summaries[1..]);
+        for (row, id) in rows.iter().zip(metrics) {
+            assert_eq!(row.slopes[0].to_bits(), summaries[0].slope(id).to_bits());
+            assert_eq!(row.slopes[1].to_bits(), summaries[1].slope(id).to_bits());
+            assert_eq!(
+                row.moving(),
+                [summaries[0].is_moving(id), summaries[1].is_moving(id)]
+            );
+        }
+        let row = CheckRow {
+            slopes: [0.2, 0.2],
+            slope_errors: [0.05, 0.15],
+            ..rows[0]
+        };
+        assert_eq!(row.moving(), [true, false]);
     }
 }

@@ -14,7 +14,7 @@ pub const MODEL_DOC: &str = "docs/model.md";
 pub const FACTS: [(&str, &str); 5] = [
     (
         "Engagement ranking amplifies divisive content that people do not value. Against a \
-         chronological feed, the engagement maximiser shows more outrage, and what it shows is \
+         chronological feed, the engagement ranking shows more outrage, and what it shows is \
          worth less to people on reflection.",
         "Milli et al. (2025), an audit of Twitter's ranking, PNAS Nexus",
     ),
@@ -24,7 +24,10 @@ pub const FACTS: [(&str, &str); 5] = [
         "Brady et al. (2021), Science Advances",
     ),
     (
-        "A chronological feed cuts time spent, and over three months barely moves polarisation.",
+        "A chronological feed cuts time spent, and over three months barely moves polarisation. \
+         The same study found more content from untrustworthy sources in chronological feeds, \
+         and less incivility by tens of percent; this model gets the first direction wrong and \
+         cuts incivility far more.",
         "Guess et al. (2023), Facebook and Instagram in the 2020 US election, Science",
     ),
     (
@@ -41,37 +44,64 @@ pub const FACTS: [(&str, &str); 5] = [
 /// (docs/model.md, 13.3), offered as things to discover.
 pub const DISCOVERIES: [(&str, &str); 6] = [
     (
-        "Is the angry-reply bonus worth it?",
-        "Ranking up posts people reply to, angry replies included, looks like an engagement win. \
-         Over a year it is not even that: without it engagement holds and toxicity falls by more \
-         than half, because the bile drives people away.",
+        "Should the feed listen when people ask to see less?",
+        "Ranking down authors whom many people ask to see less of sounds like letting users steer. \
+         Here bot farms file those marks too, against the other side's popular posts, so a strong \
+         see-less penalty raises harm instead of lowering it. Switch the farms' brigading off \
+         (world assumptions) and the same penalty lowers harm. A preference anyone can file is a \
+         target.",
     ),
     (
         "What does a calmer feed cost?",
         "Ranking for quality and cross-group approval cuts harm by about four fifths for about a \
-         third of the engagement. Find the designs in between.",
+         fifth of the engagement. Authors learn to polish posts so they look better to the \
+         quality classifier than they are, and the more polish fools it (world assumptions), the \
+         less harm the calm feed saves: at the strongest setting, under three fifths. Find the \
+         designs in between.",
     ),
     (
-        "Does the engagement maximiser's lead last?",
-        "In the default world its lead grows as habits form. Make habits weaker and reputation \
-         matter more (world assumptions), and the lead peaks mid-year and then shrinks.",
+        "Does the engagement ranking's lead last?",
+        "In the default world its lead grows as habits form. Make habits weaker, reputation \
+         matter more and harassment drive people away faster (world assumptions: habit gain \
+         0.01, reputation sensitivity 5, harassment exit 0.15), and the lead reverses: by the end \
+         of the year the calmer design draws more engagement.",
     ),
     (
         "Does stricter moderation work?",
-        "A stricter toxicity classifier barely lowers what people see over a year: authors whose \
-         posts are removed learn to write toxicity the classifier misses.",
+        "Against toxicity, yes: at a threshold of 0.3 toxic impressions fall by about nineteen \
+         twentieths, and authors' evasion barely dents that. But the classifier also removes \
+         about thirteen times as many innocent posts, fifty a day, and the harm index counts \
+         those: it falls by only a quarter.",
     ),
     (
-        "Should toxic posts be ranked down instead of removed?",
-        "Ranking them down hides them from the very people who would report them, so strict \
-         enforcement with heavy down-ranking catches fewer trolls than strict enforcement alone.",
+        "Can you trust the reports?",
+        "Bot farms file about a quarter of all reports and see-less marks under the engagement \
+         ranking, and most of them under quality and bridging. Weighing each report by how often \
+         its reporter's earlier reports were upheld does not stop the filing but takes away its \
+         effect: under quality and bridging, harassment falls by more than two thirds.",
     ),
     (
-        "Can bots game a bridging feed?",
-        "Coordinated bots of both groups boost the same posts, which then look liked across the \
-         divide. Put everyone on the bridging alternative feed and misinformation rises while \
-         toxicity falls. Adding a quality signal resists it.",
+        "Does the survey tell the platform how people are doing?",
+        "Not reliably: answers mix wellbeing with recent pleasure and habit. Over a year the \
+         survey ranks the engagement ranking above the chronological feed, calm by design, quality \
+         and bridging and the subscription, while the truth ranks it below all four on the \
+         wellbeing of everyone who ever used the platform.",
     ),
+];
+
+/// What the model grants for free: designs that lean on these look better
+/// than they could on a real platform (docs/model.md, section 16).
+pub const FREEBIES: [&str; 5] = [
+    "Time: an extra session on a good feed only adds wellbeing. Nothing it crowds out is \
+     counted, and people regret about a tenth as much of their time as surveys of real users \
+     find, so notifications look harmless.",
+    "Money: revenue is not calibrated, and creator payouts cost nothing in any score but net \
+     revenue, while creators earning a living count toward the benefit index.",
+    "Review and notes: human reviewers never err, and community notes are written only on \
+     posts that are false.",
+    "Fans: fans tip by what posts are truly worth to them, more cleanly than any real tip jar.",
+    "Prediction: most of the engagement predictor reads what each viewer truly likes; only the \
+     rest learns from counts that bots can inflate.",
 ];
 
 fn paragraph(ui: &mut Ui, text: &str) {
@@ -116,7 +146,12 @@ pub fn show(ui: &mut Ui) {
                 );
                 ui.label(
                     "marks what the platform can measure: engagement, reports, a weekly survey. \
-                     Its ranking, moderation and payouts can use only these numbers.",
+                     Its ranking, moderation and payouts use these numbers, and also signals the \
+                     model hands it ready-made: an engagement predictor that partly reads what \
+                     each viewer truly likes, a quality classifier that authors can fool with \
+                     polish, a toxicity classifier they learn to evade, human reviewers who never \
+                     err, community notes written only on false posts, and fans who tip by what \
+                     posts are really worth to them.",
                 );
             });
             ui.horizontal_wrapped(|ui| {
@@ -132,8 +167,8 @@ pub fn show(ui: &mut Ui) {
                 "The gap between the two is the point. When a measure becomes a target it stops \
                  being a good measure (Goodhart's law): the platform's numbers can climb while \
                  the truth turns. The survey is a good example. It only reaches current users, \
-                 and happier people answer more often, so it looks better than the wellbeing of \
-                 everyone who ever used the platform.",
+                 happier people answer more often, and answers mix wellbeing with recent \
+                 pleasure and habit, so it can favour a design that leaves people worse off.",
             );
             paragraph(
                 ui,
@@ -160,16 +195,35 @@ pub fn show(ui: &mut Ui) {
             paragraph(
                 ui,
                 "One run is one possible history; a different seed gives a different one. Claims \
-                 need several seeds: use Check on 8 seeds in Compare and Confirm on 4 seeds in \
-                 Scenarios. For confidence intervals on any metric, many seeds and sweeps of a \
-                 lever, use the command-line runner in the repository (`incentive compare`, \
-                 `incentive sweep`).",
+                 need several seeds: use Check on 8 seeds in Compare, which runs seeds 9 to 16 \
+                 that the Atlas searches never picked designs on, and Confirm on 8 seeds in \
+                 Scenarios, which says pass, fail or undecided once the differences between seeds \
+                 are taken into account. A ~ beside a number means it was still moving at the end \
+                 of the run, so a longer or shorter run could change it. For confidence intervals \
+                 on any metric, many seeds and sweeps of a lever, use the command-line runner in \
+                 the repository (`incentive compare`, `incentive sweep`).",
             );
+
+            heading(ui, "What the model gets for free");
+            paragraph(
+                ui,
+                "Some things cost nothing here that would cost something on a real platform. \
+                 Designs that lean on them look better than they could be:",
+            );
+            for (i, item) in FREEBIES.iter().enumerate() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{}.", i + 1)).strong());
+                    ui.label(*item);
+                });
+                ui.add_space(2.0);
+            }
 
             heading(ui, "What the model is checked against");
             paragraph(
                 ui,
-                "Five findings from research, each an automated test of the model:",
+                "Five findings from research. The model was tuned until it reproduces their \
+                 direction, and each is an automated test, so they show that it is consistent \
+                 with these studies, not that it predicts them:",
             );
             for (i, (fact, source)) in FACTS.iter().enumerate() {
                 ui.horizontal_wrapped(|ui| {

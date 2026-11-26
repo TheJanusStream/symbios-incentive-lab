@@ -10,9 +10,17 @@ use crate::report::{fmt_value, table};
 
 /// The settings line every report starts with.
 fn settings_line(s: &ExploreSettings, seconds: f32) -> String {
+    let confirm = match (s.confirm_seeds.first(), s.confirm_seeds.last()) {
+        (Some(first), Some(last)) => format!(
+            "; the designs below were confirmed on {} fresh seeds ({first} to {last}) at the same size, \
+             columns c.*",
+            s.confirm_seeds.len()
+        ),
+        _ => String::new(),
+    };
     format!(
         "{} designs simulated ({} runs: {} seeds each, N = {}, {} days), {} generations of {}, \
-         search seed {}, world: {}; {:.0} s",
+         search seed {}, world: {}; {:.0} s{confirm}",
         s.evaluations,
         s.runs,
         s.seeds.len(),
@@ -24,6 +32,23 @@ fn settings_line(s: &ExploreSettings, seconds: f32) -> String {
         s.world,
         seconds
     )
+}
+
+/// Short labels of the confirmed metrics shown beside the search's.
+const CONFIRMED: [(&str, MetricId); 3] = [
+    ("c.engage", MetricId::EngagementIndex),
+    ("c.harm", MetricId::HarmIndex),
+    ("c.benefit", MetricId::BenefitIndex),
+];
+
+/// The confirmed values of `ids`, `-` where a design has none.
+fn confirmed_cells(d: &AtlasDesign, ids: &[MetricId]) -> Vec<String> {
+    ids.iter()
+        .map(|&id| {
+            let v = d.confirmed.and_then(|m| m.get(id)).unwrap_or(f32::NAN);
+            fmt_value(id, v)
+        })
+        .collect()
 }
 
 /// Short column labels of the key metrics.
@@ -39,17 +64,30 @@ const COLUMNS: [(&str, MetricId); 9] = [
     ("survey", MetricId::SurveySatisfaction),
 ];
 
-fn metric_cells(m: &AtlasMetrics) -> Vec<String> {
-    COLUMNS
+/// The key metrics' cells, with the confirmed engagement, harm and benefit
+/// after the search's when `confirmed`.
+fn metric_cells(d: &AtlasDesign, confirmed: bool) -> Vec<String> {
+    let m: &AtlasMetrics = &d.metrics;
+    let mut cells: Vec<String> = COLUMNS
         .iter()
         .map(|&(_, id)| fmt_value(id, m.get(id).unwrap_or(f32::NAN)))
-        .collect()
+        .collect();
+    if confirmed {
+        let ids: Vec<MetricId> = CONFIRMED.iter().map(|(_, id)| *id).collect();
+        let extra = confirmed_cells(d, &ids);
+        cells.splice(3..3, extra);
+    }
+    cells
 }
 
-fn header<'a>(first: &[&'a str]) -> Vec<&'a str> {
+fn header<'a>(first: &[&'a str], confirmed: bool) -> Vec<&'a str> {
     let mut h = first.to_vec();
-    h.extend(COLUMNS.iter().map(|(label, _)| *label));
-    h.push("levers that differ most from the engagement maximiser");
+    let mut columns: Vec<&str> = COLUMNS.iter().map(|(label, _)| *label).collect();
+    if confirmed {
+        columns.splice(3..3, CONFIRMED.iter().map(|(label, _)| *label));
+    }
+    h.extend(columns);
+    h.push("levers that differ most from the engagement ranking");
     h
 }
 
@@ -97,9 +135,9 @@ pub fn lever_summary(design: &DesignLevers, count: usize) -> String {
         .join(", ")
 }
 
-fn design_row(first: Vec<String>, d: &AtlasDesign) -> Vec<String> {
+fn design_row(first: Vec<String>, d: &AtlasDesign, confirmed: bool) -> Vec<String> {
     let mut row = first;
-    row.extend(metric_cells(&d.metrics));
+    row.extend(metric_cells(d, confirmed));
     row.push(lever_summary(&d.design, 4));
     row
 }
@@ -108,6 +146,7 @@ fn design_row(first: Vec<String>, d: &AtlasDesign) -> Vec<String> {
 /// the best benefit in every engagement column.
 pub fn print_map(atlas: &MapAtlas, seconds: f32) -> Result<(), CliError> {
     let g = atlas.grid;
+    let confirmed = !atlas.settings.confirm_seeds.is_empty();
     outln!(
         "MAP-Elites: engagement index across ({} to {}), harm index up ({} to {}), {} by {} \
          cells; fitness is the benefit index",
@@ -156,10 +195,14 @@ pub fn print_map(atlas: &MapAtlas, seconds: f32) -> Result<(), CliError> {
                 .total_cmp(&b.elite.metrics.benefit_index)
         });
         if let Some(c) = best {
-            rows.push(design_row(vec![format!("{},{}", c.x, c.y)], &c.elite));
+            rows.push(design_row(
+                vec![format!("{},{}", c.x, c.y)],
+                &c.elite,
+                confirmed,
+            ));
         }
     }
-    out!("{}", table(&header(&["cell"]), &rows));
+    out!("{}", table(&header(&["cell"], confirmed), &rows));
     Ok(())
 }
 
@@ -173,13 +216,14 @@ pub fn print_pareto(atlas: &ParetoAtlas, seconds: f32) -> Result<(), CliError> {
         "{} non-dominated designs, by engagement:\n",
         atlas.front.len()
     );
+    let confirmed = !atlas.settings.confirm_seeds.is_empty();
     let rows: Vec<Vec<String>> = atlas
         .front
         .iter()
         .enumerate()
-        .map(|(i, d)| design_row(vec![(i + 1).to_string()], d))
+        .map(|(i, d)| design_row(vec![(i + 1).to_string()], d, confirmed))
         .collect();
-    out!("{}", table(&header(&["#"]), &rows));
+    out!("{}", table(&header(&["#"], confirmed), &rows));
     Ok(())
 }
 
@@ -201,20 +245,48 @@ pub fn print_goodhart(atlas: &GoodhartAtlas, seconds: f32) -> Result<(), CliErro
         MetricId::WellbeingEverUsers,
         MetricId::ToxicShare,
     ];
-    let mut h = vec!["generation", "proxy"];
-    h.extend(["harm", "benefit", "wellbeing", "toxic"]);
-    h.push("levers that differ most from the engagement maximiser");
     let proxy_id = MetricId::from_key(&atlas.proxy).unwrap_or(MetricId::EngagementIndex);
+    let confirmed = !atlas.settings.confirm_seeds.is_empty();
+    // The confirmed proxy (when the atlas keeps it), harm and benefit.
+    let mut confirmed_ids = Vec::new();
+    let mut h = vec!["generation", "proxy"];
+    if confirmed {
+        if AtlasMetrics::IDS.contains(&proxy_id) {
+            confirmed_ids.push(proxy_id);
+            h.push("c.proxy");
+        }
+        confirmed_ids.extend([MetricId::HarmIndex, MetricId::BenefitIndex]);
+        h.extend([
+            "harm",
+            "c.harm",
+            "benefit",
+            "c.benefit",
+            "wellbeing",
+            "toxic",
+        ]);
+    } else {
+        h.extend(["harm", "benefit", "wellbeing", "toxic"]);
+    }
+    h.push("levers that differ most from the engagement ranking");
     let rows: Vec<Vec<String>> = atlas
         .generations
         .iter()
         .map(|g| {
             let mut row = vec![g.generation.to_string(), fmt_value(proxy_id, g.proxy)];
-            row.extend(
-                truth
-                    .iter()
-                    .map(|&id| fmt_value(id, g.best.metrics.get(id).unwrap_or(f32::NAN))),
-            );
+            let value = |id: MetricId| fmt_value(id, g.best.metrics.get(id).unwrap_or(f32::NAN));
+            if confirmed {
+                let c = confirmed_cells(&g.best, &confirmed_ids);
+                let n = c.len();
+                // The confirmed proxy, then harm and benefit each beside its own.
+                row.extend(c[..n - 2].iter().cloned());
+                row.push(value(MetricId::HarmIndex));
+                row.push(c[n - 2].clone());
+                row.push(value(MetricId::BenefitIndex));
+                row.push(c[n - 1].clone());
+                row.extend(truth[2..].iter().map(|&id| value(id)));
+            } else {
+                row.extend(truth.iter().map(|&id| value(id)));
+            }
             row.push(lever_summary(&g.best.design, 4));
             row
         })

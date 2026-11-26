@@ -11,6 +11,11 @@
 //!   on one observable proxy alone, recording the truth of every
 //!   generation's best design.
 //!
+//! After the search every design that ends up in the atlas is re-evaluated
+//! at the same size on the fresh seeds of `--confirm-seeds` (default 9 to
+//! 16), and those confirmed metrics are written beside the search's: a
+//! design selected on two seeds is partly a lucky draw.
+//!
 //! A whole search is deterministic for a given `--seed`: the library draws
 //! every random choice from one seeded generator on the calling thread, each
 //! batch is evaluated in parallel but collected in input order, and runs are
@@ -24,11 +29,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use incentive_core::{
-    AtlasDesign, Config, ExploreSettings, GoodhartAtlas, GoodhartGeneration, MapAtlas, MapCell,
-    MapGrid, MetricId, ParetoAtlas, Visibility, atlas::round4, presets,
+    AtlasDesign, Config, DesignLevers, ExploreSettings, GoodhartAtlas, GoodhartGeneration,
+    MapAtlas, MapCell, MapGrid, MetricId, ParetoAtlas, Visibility, atlas::round4, presets,
 };
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
+use rayon::prelude::*;
 use symbios_genetics::Evolver;
 use symbios_genetics::algorithms::map_elites::MapElites;
 use symbios_genetics::algorithms::nsga2::Nsga2;
@@ -53,6 +59,18 @@ const GOODHART_ELITISM: usize = 2;
 /// Mixed into `--seed` for the initial random designs, so they come from a
 /// stream of their own and not the search's.
 const INITIAL_STREAM: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Presets taken from the atlas itself, left out of the initial designs: a
+/// search seeded with its own result could not regenerate the atlas it came
+/// from (docs/model.md, 13.7 and 14.1).
+const DERIVED_PRESETS: [&str; 1] = ["max-engagement"];
+
+/// The presets a search starts from, in display order.
+fn seed_presets() -> impl Iterator<Item = &'static incentive_core::Preset> {
+    presets()
+        .iter()
+        .filter(|p| !DERIVED_PRESETS.contains(&p.id))
+}
 
 /// Per-mode defaults of the options that differ between modes.
 struct Defaults {
@@ -111,6 +129,11 @@ impl Search {
             ));
         }
         let seeds: Vec<u64> = (1..=options.seeds).collect();
+        let confirm_seeds = if options.confirm_seeds.trim() == "none" {
+            Vec::new()
+        } else {
+            crate::runs::parse_seeds(&options.confirm_seeds)?
+        };
         let generations = options.generations.unwrap_or(defaults.generations);
         let batch = options.batch.unwrap_or(defaults.batch).max(1);
         let mut command = format!(
@@ -121,6 +144,10 @@ impl Search {
         if let Some(path) = &options.config {
             command.push_str(&format!(" --config {}", path.display()));
         }
+        command.push_str(&format!(
+            " --confirm-seeds {}",
+            options.confirm_seeds.trim()
+        ));
         command.push_str(extra_args);
         let settings = ExploreSettings {
             mode: mode.to_string(),
@@ -137,6 +164,7 @@ impl Search {
             world,
             command,
             base: base.clone(),
+            confirm_seeds,
         };
         Ok(Self {
             evaluations: Evaluations::new(Layout::new(), base, seeds),
@@ -145,13 +173,13 @@ impl Search {
         })
     }
 
-    /// The initial designs: the presets (when asked), then uniform random
-    /// genomes up to `count`.
+    /// The initial designs: the presets (when asked, those derived from the
+    /// atlas left out), then uniform random genomes up to `count`.
     fn initial(&self, count: usize, with_presets: bool) -> Result<Vec<Genome>, CliError> {
         let layout = self.evaluations.layout();
         let mut genomes = Vec::with_capacity(count);
         if with_presets {
-            for p in presets().iter().take(count) {
+            for p in seed_presets().take(count) {
                 genomes.push(layout.encode(&p.design())?);
             }
         }
@@ -183,6 +211,46 @@ impl Search {
         Ok((self.settings, self.started.elapsed().as_secs_f32()))
     }
 
+    /// Re-evaluates every design on the confirmation seeds at the search's
+    /// size and records the metrics; nothing without confirmation seeds.
+    fn confirm<'a>(
+        &self,
+        designs: impl Iterator<Item = &'a mut AtlasDesign>,
+    ) -> Result<(), CliError> {
+        let seeds = &self.settings.confirm_seeds;
+        if seeds.is_empty() {
+            return Ok(());
+        }
+        let designs: Vec<&mut AtlasDesign> = designs.collect();
+        let confirm = Evaluations::new(Layout::new(), self.settings.base.clone(), seeds.clone());
+        // Each distinct design once, in parallel; repeats are then lookups.
+        let mut unique: Vec<&DesignLevers> = Vec::new();
+        for d in &designs {
+            if !unique.contains(&&d.design) {
+                unique.push(&d.design);
+            }
+        }
+        unique.par_iter().for_each(|d| {
+            confirm.evaluate_design(d);
+        });
+        for d in designs {
+            let e = confirm.evaluate_design(&d.design).ok_or_else(|| {
+                CliError::Explore(format!(
+                    "a confirmation run failed: {}",
+                    confirm.failure().unwrap_or_default()
+                ))
+            })?;
+            d.confirmed = Some(e.metrics);
+        }
+        eprintln!(
+            "confirmed {} designs on {} fresh seeds, {:.0} s",
+            confirm.count(),
+            seeds.len(),
+            self.started.elapsed().as_secs_f32()
+        );
+        Ok(())
+    }
+
     fn design_of(&self, genome: &Genome) -> Result<AtlasDesign, CliError> {
         let e = self
             .evaluations
@@ -196,6 +264,7 @@ fn atlas_design(e: &Evaluation) -> AtlasDesign {
     AtlasDesign {
         design: e.design.clone(),
         metrics: e.metrics,
+        confirmed: None,
     }
 }
 
@@ -287,6 +356,7 @@ fn map(options: &SearchOptions, resolution: u32, initial: u32) -> Result<(), Cli
             elite: search.design_of(&elite.genotype)?,
         });
     }
+    search.confirm(cells.iter_mut().map(|c| &mut c.elite))?;
     let (settings, seconds) = search.finish()?;
     let atlas = MapAtlas {
         settings,
@@ -342,6 +412,7 @@ fn pareto(options: &SearchOptions) -> Result<(), CliError> {
             .total_cmp(&b.metrics.engagement_index)
             .then(a.metrics.harm_index.total_cmp(&b.metrics.harm_index))
     });
+    search.confirm(front.iter_mut())?;
     let (settings, seconds) = search.finish()?;
     let atlas = ParetoAtlas { settings, front };
     tables::print_pareto(&atlas, seconds)?;
@@ -398,6 +469,7 @@ fn goodhart(options: &SearchOptions, proxy: &str) -> Result<(), CliError> {
         });
         search.progress(g, &format!(", best {proxy} {:.4}", best.1));
     }
+    search.confirm(generations.iter_mut().map(|g| &mut g.best))?;
     let (settings, seconds) = search.finish()?;
     let atlas = GoodhartAtlas {
         settings,
@@ -426,6 +498,7 @@ mod tests {
             generations: Some(2),
             batch: Some(6),
             mutation_rate: 0.15,
+            confirm_seeds: "3".into(),
             out: Some(out.to_path_buf()),
         }
     }
@@ -473,6 +546,8 @@ mod tests {
         }
         let atlas: MapAtlas = serde_json::from_str(&read(&a.join("map.json"))).expect("parses");
         assert!(!atlas.cells.is_empty());
+        assert_eq!(atlas.settings.confirm_seeds, [3]);
+        assert!(atlas.cells.iter().all(|c| c.elite.confirmed.is_some()));
         for cell in &atlas.cells {
             let m = cell.elite.metrics;
             assert_eq!(
@@ -491,6 +566,43 @@ mod tests {
         assert!(run.generations[1].proxy >= run.generations[0].proxy);
         let _ = std::fs::remove_dir_all(&a);
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn presets_derived_from_the_atlas_do_not_seed_a_search() {
+        // Each derived preset exists, and none of them is among the initial
+        // designs, which hold the other presets in display order.
+        for id in DERIVED_PRESETS {
+            assert!(incentive_core::preset(id).is_ok(), "{id} is a preset");
+        }
+        let search = Search::new(
+            &tiny(&scratch("unused")),
+            "map",
+            &Defaults {
+                generations: 1,
+                batch: 1,
+                initial: 40,
+            },
+            "",
+        )
+        .expect("a search");
+        let layout = Layout::new();
+        let kept: Vec<Genome> = presets()
+            .iter()
+            .filter(|p| !DERIVED_PRESETS.contains(&p.id))
+            .map(|p| layout.encode(&p.design()).expect("encodes"))
+            .collect();
+        let start = search.initial(40, true).expect("initial designs");
+        assert_eq!(start[..kept.len()], kept[..]);
+        for id in DERIVED_PRESETS {
+            let design = incentive_core::preset(id).expect("a preset").design();
+            let derived = layout.encode(&design).expect("encodes");
+            assert!(!start.contains(&derived), "{id} seeds the search");
+        }
+        // The random designs that follow are those of a search without the
+        // derived presets: the same count and the same stream.
+        let random = search.initial(40 - kept.len(), false).expect("random");
+        assert_eq!(start[kept.len()..], random[..]);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use incentive_core::{MetricId, metric_infos, presets};
 
 use super::charts::{self, Chart, Series};
 use super::{levers, palette, visibility_tag};
+use crate::lab::batch::CheckRow;
 use crate::lab::series::{KEY_METRICS, fmt_diff, fmt_metric, metric_points, tail_mean};
 use crate::lab::{CHECK_SEEDS, Lab, TABLE_DAYS};
 
@@ -27,7 +28,7 @@ pub fn show(ui: &mut Ui, lab: &mut Lab) {
     });
 }
 
-/// "Engagement maximiser" or "custom design".
+/// "Engagement ranking" or "custom design".
 fn design_name(design: &incentive_core::DesignLevers) -> &'static str {
     levers::preset_index(design).map_or("custom design", |i| presets()[i].name)
 }
@@ -186,30 +187,36 @@ fn recent_table(ui: &mut Ui, lab: &Lab) {
         });
 }
 
-/// "Check on 8 seeds": both designs on seeds 1 to 8, time-sliced, then the
+/// "Check on 8 seeds": both designs on seeds 9 to 16, time-sliced, then the
 /// means and the paired difference with its 95% interval.
 fn seed_check(ui: &mut Ui, lab: &mut Lab) {
+    let seeds = seed_range(&CHECK_SEEDS);
     ui.label(RichText::new(format!("Check on {} seeds", CHECK_SEEDS.len())).strong());
     ui.label(
         RichText::new(format!(
-            "Runs both current designs from day 0 on seeds 1 to {} at {} people for {} days, \
+            "Runs both current designs from day 0 on seeds {seeds} at {} people for {} days, \
              paired by seed, as `incentive compare` does. Each run is summarised over its \
              summary window: the last 30% of its days, and at least 30 days. The design changes \
              you made during the live run are not replayed: the check runs the designs as they \
              are now.",
-            CHECK_SEEDS.len(),
-            lab.run.population,
-            lab.run.days
+            lab.run.population, lab.run.days
         ))
         .small(),
+    );
+    ui.label(
+        RichText::new(format!(
+            "Seeds {seeds} are fresh: the searches behind the Atlas never picked a design on them."
+        ))
+        .small()
+        .strong(),
     );
     let running = lab.compare.check.as_ref().is_some_and(|c| c.rows.is_none());
     let waiting = lab.compare_needs_restart();
     ui.horizontal(|ui| {
         let label = if lab.compare.check.is_some() {
-            "Check again"
+            "Check again".to_string()
         } else {
-            "Check on 8 seeds"
+            format!("Check on {} seeds", CHECK_SEEDS.len())
         };
         if ui
             .add_enabled(!running && !waiting, egui::Button::new(label))
@@ -247,8 +254,9 @@ fn seed_check(ui: &mut Ui, lab: &mut Lab) {
     };
     ui.label(
         RichText::new(format!(
-            "{} paired seeds, {} people, {} days.",
+            "{} paired seeds ({}), {} people, {} days.",
             check.seeds.len(),
+            seed_range(&check.seeds),
             check.population,
             check.days
         ))
@@ -262,6 +270,8 @@ fn seed_check(ui: &mut Ui, lab: &mut Lab) {
              to test the current setup.",
         );
     }
+    let window = check.window;
+    let mut show_components = lab.compare.show_components;
     egui::Grid::new("compare-check")
         .num_columns(7)
         .striped(true)
@@ -282,19 +292,30 @@ fn seed_check(ui: &mut Ui, lab: &mut Lab) {
                 ui.label(RichText::new(h).strong()).on_hover_text(hover);
             }
             ui.end_row();
-            for row in rows {
-                let m: MetricId = row.metric;
-                let d = row.paired;
-                ui.label(m.info().name).on_hover_text(m.info().description);
-                visibility_tag(ui, m.info().visibility);
-                ui.label(RichText::new(fmt_metric(m, d.mean_a)).color(palette::SIDE_A));
-                ui.label(RichText::new(fmt_metric(m, d.mean_b)).color(palette::SIDE_B));
-                ui.label(fmt_diff(m, d.diff));
-                ui.label(format!("{} to {}", fmt_diff(m, d.low), fmt_diff(m, d.high)));
-                ui.label(if d.excludes_zero() { "*" } else { "" });
-                ui.end_row();
+            let row_of = |m: MetricId| rows.iter().find(|r| r.metric == m);
+            for m in KEY_METRICS {
+                if let Some(row) = row_of(m) {
+                    check_row(ui, row, window);
+                }
+            }
+            if show_components {
+                for (title, metrics) in COMPONENT_SECTIONS {
+                    ui.label(RichText::new(title).strong().italics());
+                    ui.end_row();
+                    for &m in metrics {
+                        if let Some(row) = row_of(m) {
+                            check_row(ui, row, window);
+                        }
+                    }
+                }
             }
         });
+    ui.checkbox(&mut show_components, "Show components")
+        .on_hover_text(
+            "Adds the five parts of the benefit index, the harm index without polarisation, \
+             the benefit index without creators, and net revenue",
+        );
+    lab.compare.show_components = show_components;
     ui.label(
         RichText::new(
             "* the 95% confidence interval of the paired difference excludes zero. An interval \
@@ -302,13 +323,116 @@ fn seed_check(ui: &mut Ui, lab: &mut Lab) {
         )
         .small(),
     );
+    ui.label(RichText::new(format!("{MOVING_MARK} {MOVING_NOTE}")).small());
     ui.label(
         RichText::new(
             "For other seeds, sizes or metrics, use the command-line runner: `incentive compare \
-             --a <design> --b <design> --seeds 1..8` (designs as preset ids or Copy configuration \
+             --a <design> --b <design> --seeds 9..16` (designs as preset ids or Copy configuration \
              files).",
         )
         .small()
         .weak(),
     );
+}
+
+/// The sections of rows that "Show components" adds to the check table.
+const COMPONENT_SECTIONS: [(&str, &[MetricId]); 3] = [
+    (
+        "The five parts of the benefit index",
+        &[
+            MetricId::WellbeingEverUsers,
+            MetricId::InformednessSociety,
+            MetricId::MeaningfulPerUser,
+            MetricId::CreatorsLiving,
+            MetricId::DiscourseQuality,
+        ],
+    ),
+    (
+        "The indices without their most debatable part",
+        &[
+            MetricId::HarmIndexExPolarisation,
+            MetricId::BenefitIndexExCreators,
+        ],
+    ),
+    ("Money", &[MetricId::NetRevenue]),
+];
+
+/// One metric's row of the check table.
+fn check_row(ui: &mut Ui, row: &CheckRow, window: u32) {
+    let m = row.metric;
+    let d = row.paired;
+    ui.label(m.info().name).on_hover_text(m.info().description);
+    visibility_tag(ui, m.info().visibility);
+    let moving = row.moving();
+    for (i, (mean, color)) in [(d.mean_a, palette::SIDE_A), (d.mean_b, palette::SIDE_B)]
+        .into_iter()
+        .enumerate()
+    {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(fmt_metric(m, mean)).color(color));
+            if moving[i] {
+                moving_mark(ui, row.slopes[i], window);
+            }
+        });
+    }
+    ui.label(fmt_diff(m, d.diff));
+    ui.label(format!("{} to {}", fmt_diff(m, d.low), fmt_diff(m, d.high)));
+    ui.label(if d.excludes_zero() { "*" } else { "" });
+    ui.end_row();
+}
+
+/// The mark of a metric still moving at the end of its runs.
+pub const MOVING_MARK: &str = "~";
+/// What the moving mark means.
+pub const MOVING_NOTE: &str =
+    "still moving at the end of the run: the result depends on how long it runs.";
+
+/// The moving mark after a value, with a hover saying which way and by how
+/// much it moved across the summary window of `window` days.
+pub fn moving_mark(ui: &mut Ui, slope: f32, window: u32) {
+    let way = if slope >= 0.0 { "rose" } else { "fell" };
+    ui.label(RichText::new(MOVING_MARK).strong().color(palette::ORANGE))
+        .on_hover_text(format!(
+            "Still moving at the end of the run: it {way} by about {:.0}% of its mean over the \
+             last {window} days, so the result depends on how long it runs.",
+            slope.abs() * 100.0
+        ));
+}
+
+/// Seeds as "9 to 16" when more than two run in a row, "1 and 2" for two,
+/// else listed.
+pub fn seed_range(seeds: &[u64]) -> String {
+    match (seeds.first(), seeds.last()) {
+        (Some(a), Some(b)) if seeds.len() == 2 => format!("{a} and {b}"),
+        (Some(a), Some(b)) if seeds.len() > 2 && seeds.windows(2).all(|w| w[1] == w[0] + 1) => {
+            format!("{a} to {b}")
+        }
+        _ => seeds
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_ranges_read_naturally() {
+        assert_eq!(seed_range(&CHECK_SEEDS), "9 to 16");
+        assert_eq!(seed_range(&[1, 5, 9]), "1, 5, 9");
+        assert_eq!(seed_range(&[3]), "3");
+        assert_eq!(seed_range(&[1, 2]), "1 and 2");
+        assert_eq!(seed_range(&[]), "");
+    }
+
+    #[test]
+    fn the_component_sections_list_check_metrics() {
+        let metrics = crate::lab::series::check_metrics();
+        for (_, list) in COMPONENT_SECTIONS {
+            assert!(list.iter().all(|m| metrics.contains(m)));
+        }
+    }
 }

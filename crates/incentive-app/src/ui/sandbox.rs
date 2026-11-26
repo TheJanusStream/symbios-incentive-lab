@@ -214,9 +214,9 @@ fn metric_side(ui: &mut Ui, visibility: Visibility, picks: &mut Vec<MetricId>, f
     let (title, blurb, color) = match visibility {
         Visibility::Observable => (
             "What the platform sees",
-            "Engagement, reports and a weekly survey: the only numbers its ranking, moderation \
-             and payouts can use. The survey reaches only current users, and happy ones answer \
-             more often.",
+            "Engagement, reports and a weekly survey. Its ranking, moderation and payouts also \
+             use a few signals the model hands it ready-made (see About). The survey reaches \
+             only current users, and happy ones answer more often.",
             palette::OBSERVABLE,
         ),
         Visibility::Truth => (

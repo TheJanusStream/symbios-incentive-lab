@@ -2,6 +2,8 @@
 //! of their life get their final accounting and leave the store.
 
 use crate::content::STYLE_COUNT;
+use crate::moderation;
+use crate::person::{POLISH_LEARNING_SHARE, PersonState};
 use crate::rng::{self, Stream};
 use crate::world::{DayCtx, World};
 
@@ -13,6 +15,9 @@ const STYLE_DRIFT: f32 = 0.01;
 const IMITATION_STEP: f32 = 0.2;
 /// Penalty in the reward of a removed or struck post.
 const SANCTION_PENALTY: f32 = 1.0;
+/// Social reward `S` at which an unsanctioned hostile post raises its
+/// author's intensity at half of `intensity_rate` (docs/model.md, 7.5).
+const INTENSITY_HALF_SOCIAL: f32 = 3.0;
 /// Smoothing of `reward_ema` (a 7-post mean) and of `typical_likes`.
 const REWARD_SMOOTHING: f32 = 1.0 / 7.0;
 const TYPICAL_LIKES_SMOOTHING: f32 = 0.2;
@@ -35,6 +40,7 @@ pub(crate) fn run(world: &mut World, ctx: &DayCtx) {
         reward_author(world, ctx, id);
     }
     drift_and_imitate(world, ctx);
+    moderation::fade_evasion(world, ctx);
     world.posts.prune_front(|p| p.day + lifetime <= ctx.day + 1);
     world.accounts.prune(world.posts.first_id());
     world.posts.iter_mut().for_each(|p| p.reset_today());
@@ -77,7 +83,9 @@ fn collect_post_day(world: &mut World, ctx: &DayCtx) {
     update_style_rates(world);
 }
 
-/// The platform's running per-style rates, from observed counts (6.3).
+/// The platform's running per-style rates, from observed counts per human
+/// impression (6.3). Bot likes and shares count like anyone's: the platform
+/// cannot tell them apart.
 fn update_style_rates(world: &mut World) {
     const SMOOTHING: f32 = 0.1;
     let t = &world.tally;
@@ -87,15 +95,19 @@ fn update_style_rates(world: &mut World) {
             continue;
         }
         let n = impressions as f32;
-        rates.like += SMOOTHING * (t.likes_by_style[s] as f32 / n - rates.like);
+        let likes = (t.likes_by_style[s] + t.bot_likes_by_style[s]) as f32;
+        let shares = (t.shares_by_style[s] + t.bot_shares_by_style[s]) as f32;
+        rates.like += SMOOTHING * (likes / n - rates.like);
         rates.reply += SMOOTHING * (t.replies_by_style[s] as f32 / n - rates.reply);
-        rates.share += SMOOTHING * (t.shares_by_style[s] as f32 / n - rates.share);
+        rates.share += SMOOTHING * (shares / n - rates.share);
         rates.dwell += SMOOTHING * (t.dwell_by_style[s] / n - rates.dwell);
     }
 }
 
 /// The reward of a post at the end of its life, with its final counts
-/// (docs/model.md, 7.5; the timing choice is recorded in section 13).
+/// (docs/model.md, 7.5; the timing choice is recorded in section 13). A
+/// banned author still learns from the post that drew the ban, so the ban
+/// deters when the person comes back.
 fn reward_author(world: &mut World, ctx: &DayCtx, id: u32) {
     let Some(post) = world.posts.get(id) else {
         return;
@@ -103,7 +115,7 @@ fn reward_author(world: &mut World, ctx: &DayCtx, id: u32) {
     let Some(person) = world.people.get_mut(post.author as usize) else {
         return;
     };
-    if !person.state.is_user {
+    if !person.state.is_user && post.sanction_severity == 0 {
         return;
     }
     let traits = &person.traits;
@@ -113,20 +125,67 @@ fn reward_author(world: &mut World, ctx: &DayCtx, id: u32) {
             + traits.temperament * (post.angry_replies as f32).ln_1p()
             + 0.5 * (post.followers_gained as f32).ln_1p();
     let money = post.payout / (ctx.config.world.living_income / MONEY_DIVISOR);
-    let sanction = if post.removed || post.struck {
+    let assume = &ctx.config.world;
+    let removal = if post.removed || post.struck {
         SANCTION_PENALTY
     } else {
         0.0
     };
+    let sanction = removal + assume.deterrence * f32::from(post.sanction_severity);
     let s = post.style.index();
+    let polish = if post.polished {
+        assume.polish_cost
+    } else {
+        0.0
+    };
     let reward = traits.intrinsic[s]
         + traits.approval_sensitivity * social / 3.0
         + traits.money_weight * money
-        - sanction;
+        - sanction
+        - polish;
     let state = &mut person.state;
+    let advantage = reward - state.style_value[s];
+    learn_polish(
+        state,
+        post.polished,
+        advantage,
+        POLISH_LEARNING_SHARE * assume.learning_rate,
+    );
+    if post.style.is_hostile() {
+        state.intensity = learn_intensity(
+            state.intensity,
+            post.removed || post.demoted || post.struck,
+            social,
+            assume.intensity_rate,
+        );
+    }
     state.style_value[s] += ctx.config.world.learning_rate * (reward - state.style_value[s]);
     state.reward_ema += REWARD_SMOOTHING * (reward - state.reward_ema);
     state.typical_likes += TYPICAL_LIKES_SMOOTHING * (post.likes() as f32 - state.typical_likes);
+}
+
+/// Polish learning (docs/model.md, 7.5): the value of the chosen option,
+/// plain or polished, moves at `rate` (a share of the style learning rate)
+/// toward the post's advantage, its reward less the style's value before
+/// this post's update. Measuring against the style's value keeps the style
+/// mix out of the comparison, so the gap between the two values estimates
+/// what polish adds to a post's reward, its cost included.
+fn learn_polish(state: &mut PersonState, polished: bool, advantage: f32, rate: f32) {
+    let value = &mut state.polish_value[usize::from(polished)];
+    *value += rate * (advantage - *value);
+}
+
+/// The intensity an author takes from one hostile post: a removal or
+/// demotion lowers it by `rate * intensity`; an unsanctioned post raises it by
+/// `rate * S / (S + 3) * (1 - intensity)`, more the better it did.
+fn learn_intensity(intensity: f32, sanctioned: bool, social: f32, rate: f32) -> f32 {
+    let next = if sanctioned {
+        intensity - rate * intensity
+    } else {
+        let success = social.max(0.0) / (social.max(0.0) + INTENSITY_HALF_SOCIAL);
+        intensity + rate * success * (1.0 - intensity)
+    };
+    next.clamp(0.0, 1.0)
 }
 
 /// Unwritten styles drift back toward intrinsic value; some users copy a more
@@ -162,5 +221,189 @@ fn drift_and_imitate(world: &mut World, ctx: &DayCtx) {
         for (v, t) in values.iter_mut().zip(target) {
             *v += IMITATION_STEP * (t - *v);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::content::{AuthorProfile, Group, Style, generate_post};
+    use crate::init;
+
+    #[test]
+    fn intensity_falls_after_a_sanction_and_rises_otherwise() {
+        let down = learn_intensity(0.5, true, 4.0, 0.1);
+        assert!((down - 0.45).abs() < 1e-6);
+        let small = learn_intensity(0.5, false, 1.0, 0.1);
+        let big = learn_intensity(0.5, false, 6.0, 0.1);
+        assert!(small > 0.5 && big > small, "{small} {big}");
+        assert_eq!(learn_intensity(0.5, false, 0.0, 0.1), 0.5);
+        assert_eq!(learn_intensity(0.5, true, 4.0, 0.0), 0.5);
+    }
+
+    /// The style value of Attack after one struck Attack of the given severity.
+    fn attack_value_after(severity: u8) -> f32 {
+        let mut config = Config::default();
+        config.run.population_size = 200;
+        let mut world = init::build_world(&config);
+        let author = world
+            .people
+            .iter()
+            .position(|p| p.state.is_user)
+            .unwrap_or(0);
+        let mut rng = rng::stream_rng(5, 0, 0, Stream::Posting);
+        let id = world.posts.next_id();
+        let profile = AuthorProfile::plain(Group::A, 0.5, 0.5);
+        let mut post = generate_post(
+            &mut rng,
+            id,
+            0,
+            &profile,
+            Style::Attack,
+            &[1.0 / 6.0; 6],
+            &config.world,
+        );
+        post.author = author as u32;
+        post.removed = true;
+        post.struck = true;
+        post.sanction_severity = severity;
+        world.posts.push(post);
+        // A banned author still learns from the post that drew the ban.
+        world.people[author].state.is_user = severity < 4;
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        reward_author(&mut world, &ctx, id);
+        world.people[author].state.style_value[Style::Attack.index()]
+    }
+
+    #[test]
+    fn a_ban_penalises_more_than_a_strike() {
+        let strike = attack_value_after(1);
+        let ban = attack_value_after(4);
+        let none = attack_value_after(0);
+        let config = Config::default();
+        let step = config.world.learning_rate * config.world.deterrence;
+        assert!((none - strike - step).abs() < 1e-5, "{none} {strike}");
+        assert!((strike - ban - 3.0 * step).abs() < 1e-5, "{strike} {ban}");
+    }
+
+    #[test]
+    fn polish_learning_charges_the_cost_and_moves_the_chosen_value() {
+        let mut config = Config::default();
+        config.run.population_size = 200;
+        config.world.polish_cost = 0.4;
+        let mut world = init::build_world(&config);
+        let author = world
+            .people
+            .iter()
+            .position(|p| p.state.is_user)
+            .unwrap_or(0);
+        let mut ids = Vec::new();
+        for polished in [false, true] {
+            let mut rng = rng::stream_rng(5, 0, 0, Stream::PostDraw);
+            let id = world.posts.next_id();
+            let profile = AuthorProfile {
+                polished,
+                ..AuthorProfile::plain(Group::A, 0.5, 0.5)
+            };
+            let mut post = generate_post(
+                &mut rng,
+                id,
+                0,
+                &profile,
+                Style::Personal,
+                &[1.0 / 6.0; 6],
+                &config.world,
+            );
+            post.author = author as u32;
+            world.posts.push(post);
+            ids.push(id);
+        }
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        let s = Style::Personal.index();
+        let rate = config.world.learning_rate;
+        let polish_rate = POLISH_LEARNING_SHARE * rate;
+        let before = world.people[author].state.clone();
+        reward_author(&mut world, &ctx, ids[0]);
+        let after_plain = world.people[author].state.clone();
+        let plain_reward =
+            before.style_value[s] + (after_plain.style_value[s] - before.style_value[s]) / rate;
+        let moved = |old: f32, advantage: f32| old + polish_rate * (advantage - old);
+        let expected = moved(before.polish_value[0], plain_reward - before.style_value[s]);
+        assert!((after_plain.polish_value[0] - expected).abs() < 1e-5);
+        assert_eq!(after_plain.polish_value[1], before.polish_value[1]);
+        reward_author(&mut world, &ctx, ids[1]);
+        let after = &world.people[author].state;
+        let polished_reward =
+            after_plain.style_value[s] + (after.style_value[s] - after_plain.style_value[s]) / rate;
+        // Same counts, so the rewards differ by the cost alone.
+        assert!(
+            (plain_reward - polished_reward - 0.4).abs() < 1e-4,
+            "{plain_reward} {polished_reward}"
+        );
+        let expected = moved(
+            after_plain.polish_value[1],
+            polished_reward - after_plain.style_value[s],
+        );
+        assert!((after.polish_value[1] - expected).abs() < 1e-5);
+        assert_eq!(after.polish_value[0], after_plain.polish_value[0]);
+    }
+
+    #[test]
+    fn polish_choice_follows_the_values_and_keeps_exploring() {
+        let config = Config::default();
+        let world = init::build_world(&config);
+        let mut person = world.people[0].clone();
+        let t = config.world.choice_temperature;
+        person.state.polish_value = [0.0, 0.0];
+        assert!((person.polish_probability(t) - 0.5).abs() < 1e-6);
+        person.state.polish_value = [0.0, 0.3];
+        let up = person.polish_probability(t);
+        person.state.polish_value = [0.3, 0.0];
+        let down = person.polish_probability(t);
+        assert!(up > 0.7 && down < 0.3 && (up + down - 1.0).abs() < 1e-5);
+        person.state.polish_value = [100.0, 0.0];
+        assert!(person.polish_probability(t) >= crate::person::POLISH_EXPLORATION - 1e-6);
+    }
+
+    #[test]
+    fn polish_is_rare_on_day_zero_at_any_temperature() {
+        for t in [0.05, 0.25, 1.0] {
+            let mut config = Config::default();
+            config.run.population_size = 200;
+            config.world.choice_temperature = t;
+            let world = init::build_world(&config);
+            for person in &world.people {
+                let p = person.polish_probability(t);
+                assert!(p < 0.1, "{t} {p}");
+                assert!(person.state.polish_value[1] < person.state.polish_value[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn style_rates_count_bot_engagement() {
+        let config = Config::default();
+        let mut world = init::build_world(&config);
+        let s = Style::Clickbait.index();
+        let before = world.platform.style_rates[s];
+        world.tally.impressions_by_style[s] = 100;
+        world.tally.likes_by_style[s] = 10;
+        world.tally.shares_by_style[s] = 1;
+        world.tally.bot_likes_by_style[s] = 20;
+        world.tally.bot_shares_by_style[s] = 20;
+        update_style_rates(&mut world);
+        let after = world.platform.style_rates[s];
+        assert!((after.like - (before.like + 0.1 * (0.30 - before.like))).abs() < 1e-6);
+        assert!((after.share - (before.share + 0.1 * (0.21 - before.share))).abs() < 1e-6);
+        // Styles without impressions keep their rates.
+        let other = Style::Informative.index();
+        assert_eq!(world.platform.style_rates[other], before);
     }
 }

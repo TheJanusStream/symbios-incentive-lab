@@ -5,7 +5,7 @@ use serde::Serialize;
 mod post;
 
 pub use post::Post;
-pub(crate) use post::{AuthorProfile, generate_post};
+pub(crate) use post::{AuthorProfile, EVASION_TOXICITY, NEUTRAL_INTENSITY, generate_post};
 
 /// Number of topics.
 pub const TOPIC_COUNT: usize = 6;
@@ -112,6 +112,16 @@ impl Style {
     pub fn profile(self) -> StyleProfile {
         BASE_PROFILES[self.index()]
     }
+
+    /// The style's base quality at a quality gap of `gap` (docs/model.md,
+    /// 4.1): `mean + gap * (base - mean)`, where `mean` is the mean base
+    /// quality of the six styles. Written as `base + (gap - 1) * (base -
+    /// mean)`, so gap 1 returns the profile's value exactly.
+    pub fn base_quality(self, gap: f32) -> f32 {
+        let base = BASE_PROFILES[self.index()].quality;
+        let mean = BASE_PROFILES.iter().map(|p| p.quality).sum::<f32>() / STYLE_COUNT as f32;
+        base + (gap - 1.0) * (base - mean)
+    }
 }
 
 /// Base attributes of a style (docs/model.md, 4.1).
@@ -147,23 +157,17 @@ pub const MISINFORMATION_THRESHOLD: f32 = 0.5;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::WorldAssumptions;
     use crate::rng::{self, Stream};
 
     #[test]
     fn hostile_posts_are_more_toxic_and_mostly_public_affairs() {
         let mut rng = rng::stream_rng(1, 0, 0, Stream::Posting);
-        let author = AuthorProfile {
-            account: 0,
-            is_bot: false,
-            is_creator: false,
-            group: Group::A,
-            skill: 0.5,
-            temperament: 0.8,
-            evasion: 0.0,
-        };
+        let author = AuthorProfile::plain(Group::A, 0.5, 0.8);
         let interests = [1.0 / 6.0; TOPIC_COUNT];
+        let world = WorldAssumptions::default();
         let attacks: Vec<Post> = (0..500)
-            .map(|i| generate_post(&mut rng, i, 0, &author, Style::Attack, &interests))
+            .map(|i| generate_post(&mut rng, i, 0, &author, Style::Attack, &interests, &world))
             .collect();
         let topic0 = attacks.iter().filter(|p| p.topic == 0).count() as f32 / 500.0;
         let toxic = attacks.iter().filter(|p| p.is_toxic()).count() as f32 / 500.0;
@@ -172,21 +176,118 @@ mod tests {
     }
 
     #[test]
+    fn evasion_lowers_appeal_not_toxicity() {
+        let plain = AuthorProfile::plain(Group::A, 0.5, 0.8);
+        let veiled = AuthorProfile {
+            evasion: 0.5,
+            veil: 0.3,
+            ..plain
+        };
+        let interests = [1.0 / 6.0; TOPIC_COUNT];
+        let world = WorldAssumptions::default();
+        for i in 0..50 {
+            let mut a = rng::stream_rng(2, 0, i, Stream::Posting);
+            let mut b = rng::stream_rng(2, 0, i, Stream::Posting);
+            let p = generate_post(&mut a, 0, 0, &plain, Style::Attack, &interests, &world);
+            let q = generate_post(&mut b, 0, 0, &veiled, Style::Attack, &interests, &world);
+            assert_eq!(p.toxicity, q.toxicity);
+            assert!(p.toxicity > 0.3);
+            assert!((q.arousal - 0.7 * p.arousal).abs() < 1e-6);
+            assert!((q.outrage - 0.7 * p.outrage).abs() < 1e-6);
+            assert!(q.detectability < p.detectability);
+        }
+    }
+
+    #[test]
+    fn intensity_moves_hostile_posts_only() {
+        let neutral = AuthorProfile::plain(Group::A, 0.5, 0.3);
+        let harsh = AuthorProfile {
+            intensity: 1.0,
+            ..neutral
+        };
+        let interests = [1.0 / 6.0; TOPIC_COUNT];
+        let world = WorldAssumptions::default();
+        let pair = |style: Style| {
+            let mut a = rng::stream_rng(4, 0, 0, Stream::Posting);
+            let mut b = rng::stream_rng(4, 0, 0, Stream::Posting);
+            (
+                generate_post(&mut a, 0, 0, &neutral, style, &interests, &world),
+                generate_post(&mut b, 0, 0, &harsh, style, &interests, &world),
+            )
+        };
+        let (p, q) = pair(Style::Outrage);
+        assert!(
+            (q.toxicity - p.toxicity - 0.15).abs() < 1e-5,
+            "{} {}",
+            p.toxicity,
+            q.toxicity
+        );
+        assert!(q.outrage > p.outrage);
+        let (p, q) = pair(Style::Personal);
+        assert_eq!(p, q);
+    }
+
+    #[test]
     fn bridging_needs_both_groups() {
         let mut rng = rng::stream_rng(1, 0, 1, Stream::Posting);
-        let author = AuthorProfile {
-            account: 0,
-            is_bot: false,
-            is_creator: false,
-            group: Group::A,
-            skill: 0.5,
-            temperament: 0.2,
-            evasion: 0.0,
-        };
-        let mut post = generate_post(&mut rng, 0, 0, &author, Style::Informative, &[1.0 / 6.0; 6]);
+        let author = AuthorProfile::plain(Group::A, 0.5, 0.2);
+        let mut post = generate_post(
+            &mut rng,
+            0,
+            0,
+            &author,
+            Style::Informative,
+            &[1.0 / 6.0; 6],
+            &WorldAssumptions::default(),
+        );
         post.likes_a = 20;
         let one_sided = post.bridging();
         post.likes_b = 20;
         assert!(post.bridging() > 0.8 && one_sided < 0.01);
+    }
+
+    #[test]
+    fn the_quality_gap_scales_base_quality_around_the_mean() {
+        for style in Style::ALL {
+            assert_eq!(style.base_quality(1.0), style.profile().quality);
+        }
+        let flat: Vec<f32> = Style::ALL.iter().map(|s| s.base_quality(0.0)).collect();
+        assert!(flat.iter().all(|q| (q - flat[0]).abs() < 1e-6), "{flat:?}");
+        let wide = Style::Informative.base_quality(1.5) - Style::Attack.base_quality(1.5);
+        let gap = Style::Informative.base_quality(1.0) - Style::Attack.base_quality(1.0);
+        assert!((wide - 1.5 * gap).abs() < 1e-5);
+    }
+
+    #[test]
+    fn polish_raises_the_quality_signal_not_quality() {
+        let world = WorldAssumptions {
+            quality_signal_noise: 0.0,
+            ..WorldAssumptions::default()
+        };
+        let plain = AuthorProfile::plain(Group::A, 0.5, 0.2);
+        let polished = AuthorProfile {
+            polished: true,
+            ..plain
+        };
+        let interests = [1.0 / 6.0; TOPIC_COUNT];
+        for i in 0..50 {
+            let mut a = rng::stream_rng(6, 0, i, Stream::PostDraw);
+            let mut b = rng::stream_rng(6, 0, i, Stream::PostDraw);
+            let p = generate_post(&mut a, 0, 0, &plain, Style::Clickbait, &interests, &world);
+            let q = generate_post(
+                &mut b,
+                0,
+                0,
+                &polished,
+                Style::Clickbait,
+                &interests,
+                &world,
+            );
+            assert_eq!(p.quality, q.quality);
+            assert_eq!(p.quality_signal, p.quality);
+            assert!(!p.polished && q.polished);
+            let expected = (p.quality + world.polish_gain).min(1.0);
+            assert!((q.quality_signal - expected).abs() < 1e-6);
+        }
     }
 }

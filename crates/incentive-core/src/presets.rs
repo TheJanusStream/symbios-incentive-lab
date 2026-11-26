@@ -1,6 +1,6 @@
 //! Ready-made platform designs (docs/model.md, 14.1).
 
-use crate::config::{Config, DesignLevers, PayoutScheme};
+use crate::config::{Config, DesignLevers, ModerationAction, PayoutScheme, Sanctions};
 use crate::error::ConfigError;
 
 /// A named platform design.
@@ -62,21 +62,66 @@ fn quality_bridging(d: &mut DesignLevers) {
     d.community_notes = true;
 }
 
-const PRESETS: [Preset; 6] = [
+/// The engagement ranking with integrity measures (docs/model.md, 14.1):
+/// demotion of borderline toxicity, a quality signal, see-less feedback and
+/// demoted community notes. The stylized facts compare a chronological feed
+/// with it (section 15).
+pub(crate) fn integrity_ranking(d: &mut DesignLevers) {
+    d.moderation_action = ModerationAction::Demote;
+    d.classifier_threshold = 0.6;
+    d.demote_penalty = 1.5;
+    d.w_quality = 0.5;
+    d.w_see_less = 1.0;
+    d.community_notes = true;
+    d.noted_penalty = 1.0;
+}
+
+/// The most engaging design the searches found (docs/model.md, 13.7 and
+/// 14.1): front design 64 of the Pareto atlas, every lever as found, those
+/// without effect in it included (the classifier's threshold of 1.05 flags
+/// nothing, so the demotion and notes penalties never apply). `incentive
+/// explore` leaves it out of its initial designs, so the atlas it comes from
+/// stays reproducible.
+fn max_engagement(d: &mut DesignLevers) {
+    d.w_like = 2.9;
+    d.w_share = 1.7;
+    d.w_dwell = 3.0;
+    d.w_in_network = 1.0;
+    d.recommended_share = 0.0;
+    d.diversity = 0.2;
+    d.predictor_quality = 0.9;
+    d.demote_penalty = 0.4;
+    d.noted_penalty = 2.4;
+    d.share_friction = 0.35;
+    d.classifier_threshold = 1.05;
+    d.review_capacity = 10.0;
+    d.report_trust = 0.65;
+    d.sanctions = Sanctions::None;
+    d.payout_share = 0.2;
+    d.payout_threshold_followers = 86;
+    d.time_limit_share = 0.1;
+    d.notification_intensity = 1.0;
+    d.account_cost = 0.15;
+    d.ads_share = 0.35;
+    d.survey_after_session = 0.95;
+}
+
+const PRESETS: [Preset; 8] = [
     Preset {
         id: "engagement-maximiser",
-        name: "Engagement maximiser",
+        name: "Engagement ranking",
         description: "The feed shows whatever it predicts people will like, reply to, share and linger on, \
             mixing in trending posts from strangers. An automated filter removes the worst toxicity and human \
-            moderators handle some reports. This is the business-as-usual design of ad-funded social media, and \
-            the yardstick every other design is compared with.",
+            moderators handle some reports. It is the default design and the yardstick every other design is \
+            compared with, but it does not maximise engagement: the searches found a design with about 80% more \
+            (the most engaging design found).",
         apply: |_| {},
     },
     Preset {
         id: "chronological",
         name: "Chronological",
         description: "No ranking at all: people see the posts of the accounts they follow, newest first, and \
-            nothing from strangers. Moderation stays as in the engagement maximiser. Studies of switching \
+            nothing from strangers. Moderation stays as in the engagement ranking. Studies of switching \
             Facebook and Instagram feeds to chronological found people spent less time on them.",
         apply: |d| d.chronological = true,
     },
@@ -121,13 +166,38 @@ const PRESETS: [Preset; 6] = [
     Preset {
         id: "engagement-paid-creators",
         name: "Engagement-paid creators",
-        description: "The engagement maximiser, plus a creator fund: 30% of ad revenue is paid to authors in \
+        description: "The engagement ranking, plus a creator fund: 30% of ad revenue is paid to authors in \
             proportion to the likes, replies and shares their posts collect, angry replies and bot boosts \
             included. Creator programmes on several platforms pay this way.",
         apply: |d| {
             d.payout_share = 0.3;
             d.payout_scheme = PayoutScheme::PerEngagement;
         },
+    },
+    Preset {
+        id: "integrity-ranking",
+        name: "Engagement ranking with integrity",
+        description: "The engagement ranking with the integrity measures large ranked feeds add to it. The \
+            toxicity filter no longer removes posts: it pushes borderline and worse posts down the feed, \
+            starting a little below the line where the plain ranking removes them. A quality classifier \
+            pushes clickbait and shoddy posts down, the feed listens to people who ask to see less of an \
+            author, and community notes add context to misleading posts, which sink in the feed too. It is \
+            the realistic ranked feed to set a chronological feed against.",
+        apply: integrity_ranking,
+    },
+    Preset {
+        id: "max-engagement",
+        name: "Most engaging design found",
+        description: "The design with the highest engagement that the lab's design-space searches found. It weighs \
+            likes and time spent far above the engagement ranking while keeping its reply and share weights, shows \
+            only posts and reshares from accounts people follow, pushes \
+            notifications at full strength, and has no working toxicity filter: ten times the human moderators \
+            act on reports, weighted by each reporter's record, but strikes carry no sanctions. It pays 20% of \
+            revenue to creators and takes most of its revenue from subscriptions. It comes from the searches, \
+            not from any real platform, so it shows what maximising engagement looks like in this model and \
+            what it costs: about 80% more engagement than the engagement ranking, with about 30% more harm, \
+            twice the toxic share, more polarisation and lower wellbeing.",
+        apply: max_engagement,
     },
 ];
 

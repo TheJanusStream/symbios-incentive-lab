@@ -26,8 +26,8 @@ their spread, never from a single run.
 
 - `crates/incentive-core`: the engine-free, deterministic simulation, the statistics over seeds that the runner
   and the app share, and the atlas file types (`atlas`) that the runner writes and the app reads.
-- `crates/incentive-cli`: batch runs, side-by-side comparisons, sweeps, scenarios and explorations of the design
-  space from the command line. Only the runner depends on `symbios-genetics`.
+- `crates/incentive-cli`: batch runs, side-by-side comparisons, sweeps, scenarios, factorials, the calibration
+  report and explorations of the design space from the command line. Only the runner depends on `symbios-genetics`.
 - `crates/incentive-app`: the game app, binary `symbios-incentive-lab` (Bevy and egui, desktop and browser). Its
   library holds the lab's state, logic and views without Bevy; the binary is a thin Bevy layer around it.
   `assets/atlas/` holds the precomputed explorations the Atlas tab embeds.
@@ -74,16 +74,20 @@ A tour of the views:
   truth, and what the viewer did. Items scored high that the viewer would rather not have seen are highlighted: the
   Goodhart gap in one line.
 - **Compare:** two designs on the same seed and world in lockstep, overlaid charts, a table of the last 30 days, and
-  "Check on 8 seeds", which runs both designs on seeds 1 to 8 and reports the means and the paired difference with a
-  95% confidence interval, computed as `incentive compare` does.
-- **Scenarios:** the five challenges. Your design runs against the fixed baseline; at the end every goal is judged,
-  "Confirm on 4 seeds" judges the mean of four seeds, and a known solution waits behind a spoiler question.
+  "Check on 8 seeds", which runs both designs on seeds 9 to 16 (seeds the Atlas searches never selected on) and
+  reports the means and the paired difference with a 95% confidence interval, computed as `incentive compare` does.
+  "Show components" adds the benefit index's five parts, the two indices without polarisation and without creators,
+  and net revenue. A `~` marks a mean that was still moving at the end of its runs (docs/model.md, section 9).
+- **Scenarios:** the five challenges. Your design runs against the fixed baseline; at the end every goal is judged on
+  that one run, "Confirm on 8 seeds" judges each goal on its paired per-seed margins with a 95% interval (pass, fail
+  or undecided, as `Scenario::judge` does), and a known solution waits behind a spoiler question.
 - **Atlas:** precomputed explorations of the design space, embedded in the app so they work in the browser too. A map
   of engagement (across) against harm (up), each square coloured by the benefit index of the best design found there;
   the Pareto front of engagement, harm and benefit as a scatter; and two Goodhart runs, where a search maximised the
-  engagement index or the survey alone while the truth was recorded. Hover a square or point for its metrics and the
-  levers that differ most from the engagement maximiser; pick it to open it in the Sandbox at full size or to compare
-  it with the engagement maximiser. The settings the designs were found at are shown with each view.
+  engagement index or the survey alone while the truth was recorded. Hover a square or point for its metrics (with the
+  engagement, harm and benefit re-run on the fresh seeds 9 to 16, and the benefit index's five parts) and
+  the levers that differ most from the engagement ranking; pick it to open it in the Sandbox at full size or to compare
+  it with the engagement ranking. The settings the designs were found at are shown with each view.
 - **About:** what the lab is, how to read observable against true and levers against assumptions, how much to trust
   it, the stylized facts with their sources, and findings to discover.
 
@@ -99,7 +103,7 @@ names another folder.
 
 ```text
 cargo build --release -p incentive-cli
-target/release/incentive presets              # the six preset designs, explained
+target/release/incentive presets              # the preset designs, explained
 target/release/incentive levers               # every design lever and world assumption with its range
 target/release/incentive scenarios            # the scenarios and their goals
 target/release/incentive config --preset calm-by-design > my-design.json
@@ -129,6 +133,12 @@ Toxic impressions                  truth  0.1621  0.0008  -0.1613  -0.1753   -0.
 Survey satisfaction           observable  0.7050  0.8057   0.1007   0.0907    0.1107  *
 ```
 
+A trailing `~` marks a metric that is still moving inside its summary window: its least-squares change across the
+window, averaged over the seeds, exceeds 10% of its mean and two standard errors (across the seeds, or from the
+regression for one seed; section 9 of [docs/model.md](docs/model.md)), so the window averages a series that has not
+settled. `run`, `compare`, `sweep`, `scenario` and `factorial` mark such metrics, and every summary in the JSON files
+carries each metric's `slope`, its standard error `slope_se` and the list of `moving` metrics.
+
 `--set-a` and `--set-b` change one side only, so one lever can be tested against the same design:
 
 ```text
@@ -142,22 +152,66 @@ target/release/incentive sweep --preset engagement-maximiser --lever design.w_se
 ```
 
 Play a scenario: your design (a preset, a configuration file or `--set` changes) runs against the baseline on the
-same seeds, and every goal is judged. `--solution` runs the recorded known solution:
+same seeds, and every goal is judged on the paired seeds. `--solution` runs the recorded known solution:
 
 ```text
-$ target/release/incentive scenario engagement-trap --set design.w_reply=0 --set design.w_see_less=5 --seeds 1..4
-goal                                                     you  baseline  threshold
-----------------------------------------------------  ------  --------  ---------  ----
-Keep at least 85% of the baseline's engagement index  0.2655    0.2644     0.2247  PASS
-At most half the baseline's toxic impression share    0.0662    0.1616     0.0808  PASS
+$ target/release/incentive scenario engagement-trap --set design.w_reply=0 --set design.w_see_less=5 \
+    --seeds 1..4 --population 600 --days 120
+goal                                                     you  baseline  threshold   margin  95% low  95% high
+----------------------------------------------------  ------  --------  ---------  -------  -------  --------  ---------
+Keep at least 85% of the baseline's engagement index  0.2124    0.2192     0.1863  +0.0261  +0.0171   +0.0351       PASS
+At most half the baseline's toxic impression share    0.1014    0.2168     0.1084  +0.0070  -0.0421   +0.0561  UNDECIDED
 
-Scenario passed.
+Scenario not passed: 0 goal(s) failed, 1 undecided (more seeds may decide them).
 ```
 
-Check the stylized facts of the model at full size, with effect sizes:
+The margin is how far each seed's run lies on the passing side of the threshold set by its own baseline, with a 95%
+interval over the seeds. A goal passes when the whole interval is on the passing side, fails when it is wholly on the
+failing side, and is undecided otherwise; a scenario passes only when every goal passes (section 14.2 of
+[docs/model.md](docs/model.md)). More seeds narrow the intervals.
+
+Check the stylized facts of the model at full size, with effect sizes, the 95% interval of each per-seed effect and
+a verdict on it:
 
 ```text
 target/release/incentive facts --seeds 8
+```
+
+Regenerate the calibration tables of section 13 of [docs/model.md](docs/model.md) as `report.md`, Markdown ready to
+paste: every preset at 365 and at 90 days (mean ± standard deviation, moving metrics marked), a list of named paired
+comparisons with their differences, 95% intervals and ratios (the data table `COMPARISONS` in
+`crates/incentive-cli/src/report_cmd.rs`, easy to extend), the stylized facts and each scenario's known solution with
+its verdict. `--seeds` (default `1..8`), `--population` (default 2,000) and `--days` (the long horizon, default 365;
+given, it also sets the scenarios' days) size it; the file goes to `exports/report/` unless `--out` names another
+folder. Identical runs are shared between the tables, and the whole report is deterministic:
+
+```text
+target/release/incentive report --seeds 1..8
+```
+
+Take a difference between two designs apart with a full factorial: every subset of up to six levers of design B set to
+design A's values, all cells paired by seed (default seeds `9..16`). It prints each cell's engagement, harm, benefit,
+toxic share and wrongful sanctions, then for engagement, harm and benefit each lever's main effect, the two-way
+interactions and each lever's Shapley share of the difference, all in the direction from A to B with 95% intervals:
+
+```text
+target/release/incentive factorial --a engagement-maximiser --b front-36.json --days 365 --population 2000 \
+    --levers notification_intensity,report_trust,review_capacity,recommended_share,predictor_quality,payout_share
+```
+
+A main effect is the mean change when one lever goes from A's value to B's, over every setting of the others; an
+interaction is the change with both at B's values minus the two changes alone, averaged over the others; the Shapley
+values add up to B minus the cell with every listed lever at A's value, which is A itself when the levers are all the
+ways the two designs differ. A and B must share run settings, population and world (`--days` and `--population`
+give both the same size). `--a` and `--b` take preset ids or configuration files, as `compare` does.
+
+A design found by `incentive explore` becomes such a file with `config --from-atlas`: a Pareto front design by its
+number from 1 (as printed and in the app), a map cell by `x,y` (column and row from 0, as printed), a Goodhart design
+by its generation number or `last`. The file keeps the search's base configuration, its reduced size included, so pass
+`--days 365 --population 2000` to `compare` or `factorial` to run it at full size:
+
+```text
+target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 36 > front-36.json
 ```
 
 ### Exploring the design space
@@ -174,12 +228,21 @@ target/release/incentive explore goodhart --proxy survey_satisfaction   # one ob
 ```
 
 `--generations`, `--batch` and `--mutation-rate` tune a search; `map` also takes `--grid` (cells per axis,
-default 16) and `--initial` (designs before the first generation, the presets first). The findings are in section
-13.7 of [docs/model.md](docs/model.md).
+default 16) and `--initial` (designs before the first generation, the presets first). `map` and `pareto` start from
+every preset except `max-engagement`, which comes from the Pareto atlas itself. The findings are in section 13.7 of
+[docs/model.md](docs/model.md).
+
+A search selects designs on few seeds, so its winners are partly lucky draws. After the search every design that ends
+up in the file (the map's elites, the front, every Goodhart generation's best) is re-evaluated at the same size on
+the fresh seeds of `--confirm-seeds` (default `9..16`; `none` skips it). The file stores those metrics beside the
+search's, as `confirmed` for each design and `confirm_seeds` in its settings (files without them still load), and the
+printed tables show them side by side in the `c.` columns.
 
 The Atlas tab embeds four files in `crates/incentive-app/assets/atlas/`. They were made with these commands, one at a
-time, in about 15 minutes on 8 CPUs; raise `--generations`, `--batch`, `--seeds`, `--population` or `--days` to
-regenerate them at a larger scale (the app needs a rebuild to embed new files):
+time, which regenerate them byte for byte: about 21 minutes on 8 CPUs in all, the confirmation on seeds 9 to 16
+included (3 minutes for each Goodhart search, 8 for the map and 8 for the Pareto front). Raise `--generations`,
+`--batch`, `--seeds`, `--population` or `--days` to regenerate them at a larger scale (the app needs a rebuild to embed
+new files):
 
 ```text
 taskset -c 0-7 nice -n 19 target/release/incentive explore goodhart --proxy engagement_index \
@@ -220,10 +283,17 @@ let summary = sim.summary();
   last served: every ranking component of every item, what they truly felt about it and what they did with it),
   `explain_feed` (a preview of anyone's feed, on its own random stream) and `post`. Inspecting never changes the
   run.
-- Statistics over seeds: `Stats` (mean, spread and range of a metric) and `PairedDifference` (two designs paired by
-  seed, with the 95% confidence interval of the difference), shared by the runner and the app.
+- Statistics over seeds: `Stats` (mean, spread and range of a metric), `MeanInterval` (a mean with its 95% t-interval)
+  and `PairedDifference` (two designs paired by seed, with the 95% confidence interval of the difference), shared by
+  the runner and the app. `Summary::slope` and `Summary::is_moving` tell whether a metric still moved inside its
+  summary window.
+- Scenario verdicts: `Scenario::judge` takes the player's and the baseline's summaries paired by seed and returns a
+  `ScenarioVerdict`, each goal with its margin, 95% interval and `Verdict` (pass, fail or undecided).
 - Atlas files: `MapAtlas`, `ParetoAtlas` and `GoodhartAtlas` with their `ExploreSettings`, `AtlasDesign` and
-  `AtlasMetrics`: plain serde types, written by `incentive explore` and read by the app.
+  `AtlasMetrics`: plain serde types, written by `incentive explore` and read by the app. A design's optional
+  `confirmed` metrics come from the fresh seeds of `ExploreSettings::confirm_seeds`. `AtlasMetrics` also keeps the
+  benefit index's five parts (`AtlasMetrics::BENEFIT_COMPONENTS`); files written before three of them were kept load
+  with those as NaN.
 
 ## License
 

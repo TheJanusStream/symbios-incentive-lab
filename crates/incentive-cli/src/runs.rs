@@ -1,6 +1,7 @@
 //! Building configurations and running them on many seeds in parallel. Each
 //! run is single-threaded; rayon spreads runs over the CPUs it may use.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use incentive_core::{Config, DailyMetrics, MetricId, PairedDifference, Stats, Summary, preset};
@@ -125,6 +126,46 @@ pub fn run_many(jobs: &[(Config, u64)]) -> Result<Vec<RunOutput>, CliError> {
 /// Statistics of one metric over the runs' summaries.
 pub fn metric_stats(runs: &[RunOutput], id: MetricId) -> Stats {
     Stats::of(runs.iter().map(|r| r.summary.get(id)))
+}
+
+/// The mean over the runs of a metric's relative change across the summary
+/// window ([`Summary::slope`]).
+pub fn mean_slope(runs: &[RunOutput], id: MetricId) -> f32 {
+    Stats::of(runs.iter().map(|r| r.summary.slope(id))).mean
+}
+
+/// Whether a metric moves in these runs ([`incentive_core::is_moving_over`]):
+/// the mean of its relative changes across the summary window exceeds
+/// [`incentive_core::MOVING_THRESHOLD`] and two standard errors, across the
+/// seeds or, for one seed, from its regression.
+pub fn is_moving(runs: &[RunOutput], id: MetricId) -> bool {
+    incentive_core::is_moving_over(runs.iter().map(|r| &r.summary), id)
+}
+
+/// [`is_moving`] for borrowed runs.
+pub fn moving_refs(runs: &[&RunOutput], id: MetricId) -> bool {
+    incentive_core::is_moving_over(runs.iter().map(|r| &r.summary), id)
+}
+
+/// Runs a batch of `(configuration, seed)` pairs in parallel and returns, for
+/// each job in input order, the index of its output: identical jobs (the same
+/// configuration on the same seed) run once.
+pub fn run_unique(jobs: &[(Config, u64)]) -> Result<(Vec<RunOutput>, Vec<usize>), CliError> {
+    let mut keys: BTreeMap<(String, u64), usize> = BTreeMap::new();
+    let mut unique: Vec<(Config, u64)> = Vec::new();
+    let mut index = Vec::with_capacity(jobs.len());
+    for (config, seed) in jobs {
+        let mut keyed = config.clone();
+        keyed.run.seed = *seed;
+        let key = (keyed.to_json_pretty(), *seed);
+        let next = unique.len();
+        let i = *keys.entry(key).or_insert(next);
+        if i == next {
+            unique.push((config.clone(), *seed));
+        }
+        index.push(i);
+    }
+    Ok((run_many(&unique)?, index))
 }
 
 /// One metric of two designs paired by seed: `a[i]` and `b[i]` ran on the

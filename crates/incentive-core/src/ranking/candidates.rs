@@ -12,6 +12,7 @@ use crate::world::World;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Trending {
     ids: Vec<u32>,
+    weights: Vec<f32>,
     cumulative: Vec<f32>,
 }
 
@@ -21,8 +22,10 @@ impl Trending {
         let mut trending = Self::default();
         let mut total = 0.0;
         for post in world.posts.iter().filter(|p| !p.removed) {
-            total += 1.0 + post.observed_engagement() as f32;
+            let weight = 1.0 + post.observed_engagement() as f32;
+            total += weight;
             trending.ids.push(post.id);
+            trending.weights.push(weight);
             trending.cumulative.push(total);
         }
         trending
@@ -32,6 +35,10 @@ impl Trending {
         rng::pick_cumulative(rng, &self.cumulative).map(|i| self.ids[i])
     }
 }
+
+/// Weighted draws per recommendation slot before the sampler stops
+/// rejecting duplicates and draws the rest exactly from what is left.
+const REJECTION_DRAWS_PER_SLOT: usize = 4;
 
 /// Reusable per-session buffers. `seen` holds, per live post slot, the stamp of
 /// the latest session that took it as a candidate.
@@ -90,27 +97,10 @@ pub(super) fn gather(
             scratch.raw.truncate(in_cap);
             scratch.raw.sort_unstable_by(newest_first);
         }
+        restamp_kept(ctx, scratch);
     }
-    let draws = (recommended * cap as f32).ceil() as usize;
-    let viewer = &ctx.world.people[ctx.viewer];
-    for _ in 0..draws {
-        let Some(id) = trending.sample(rng) else {
-            break;
-        };
-        let Some(post) = ctx.world.posts.get(id) else {
-            continue;
-        };
-        if post.author as usize != ctx.viewer && !viewer.has_blocked(post.author) {
-            let origin = Origin {
-                post: id,
-                in_network: false,
-                via: None,
-                depth: 0,
-                item_day: post.day,
-            };
-            push_origin(ctx, post, origin, scratch);
-        }
-    }
+    let quota = (recommended * cap as f32).ceil() as usize;
+    recommend(ctx, trending, quota, rng, scratch);
     let FeedScratch {
         raw, candidates, ..
     } = scratch;
@@ -118,6 +108,98 @@ pub(super) fn gather(
         raw.iter()
             .filter_map(|o| ctx.world.posts.get(o.post).map(|p| candidate(p, o))),
     );
+}
+
+/// Only the in-network posts the cap kept stay marked as gathered, so the
+/// posts it cut can still be recommended.
+fn restamp_kept(ctx: &FeedCtx, scratch: &mut FeedScratch) {
+    scratch.stamp += 1;
+    let FeedScratch {
+        seen, stamp, raw, ..
+    } = scratch;
+    for origin in raw.iter() {
+        if let Some(slot) = ctx.world.posts.slot(origin.post) {
+            seen[slot] = *stamp;
+        }
+    }
+}
+
+/// Out-of-network recommendations (docs/model.md, 6.2): weighted draws
+/// without replacement until `quota` posts are added or no eligible post is
+/// left. Duplicates and ineligible posts are rejected and drawn again; when
+/// rejections pile up, the rest is drawn exactly from the remaining eligible
+/// posts with weighted random keys (Efraimidis and Spirakis), which samples
+/// the same distribution.
+fn recommend(
+    ctx: &FeedCtx,
+    trending: &Trending,
+    quota: usize,
+    rng: &mut StreamRng,
+    scratch: &mut FeedScratch,
+) {
+    let mut added = 0;
+    let mut draws = 0;
+    while added < quota && draws < REJECTION_DRAWS_PER_SLOT * quota {
+        draws += 1;
+        let Some(id) = trending.sample(rng) else {
+            return;
+        };
+        added += usize::from(try_recommend(ctx, id, scratch));
+    }
+    if added >= quota {
+        return;
+    }
+    let mut keyed: Vec<(f32, u32)> = trending
+        .ids
+        .iter()
+        .zip(&trending.weights)
+        .filter(|&(&id, _)| eligible(ctx, id, scratch))
+        .map(|(&id, &w)| ((1.0 - rng::uniform(rng)).ln() / w, id))
+        .collect();
+    keyed.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (_, id) in keyed {
+        if added >= quota {
+            break;
+        }
+        added += usize::from(try_recommend(ctx, id, scratch));
+    }
+}
+
+/// Whether a post may be recommended to the viewer: live, not removed, not
+/// the viewer's own, not by a blocked account and not gathered already.
+fn eligible(ctx: &FeedCtx, id: u32, scratch: &FeedScratch) -> bool {
+    let viewer = &ctx.world.people[ctx.viewer];
+    let Some(post) = ctx.world.posts.get(id) else {
+        return false;
+    };
+    let gathered = ctx
+        .world
+        .posts
+        .slot(id)
+        .is_none_or(|slot| scratch.seen.get(slot) == Some(&scratch.stamp));
+    !post.removed
+        && !gathered
+        && post.author as usize != ctx.viewer
+        && !viewer.has_blocked(post.author)
+}
+
+/// Adds a recommendation if the post is eligible; true when added.
+fn try_recommend(ctx: &FeedCtx, id: u32, scratch: &mut FeedScratch) -> bool {
+    if !eligible(ctx, id, scratch) {
+        return false;
+    }
+    let Some(post) = ctx.world.posts.get(id) else {
+        return false;
+    };
+    let origin = Origin {
+        post: id,
+        in_network: false,
+        via: None,
+        depth: 0,
+        item_day: post.day,
+    };
+    push_origin(ctx, post, origin, scratch);
+    true
 }
 
 fn gather_in_network(ctx: &FeedCtx, scratch: &mut FeedScratch) {
@@ -229,5 +311,89 @@ fn relation(ctx: &FeedCtx, post: &Post, depth: u8) -> Relation {
             .design
             .reshare_depth_cap
             .is_some_and(|cap| u32::from(depth) >= cap),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::init;
+    use crate::rng::Stream;
+    use crate::world::DayCtx;
+
+    /// A world on day 0 after everyone wrote their posts.
+    fn world_with_posts(config: &Config) -> World {
+        let mut world = init::build_world(config);
+        for p in &mut world.people {
+            p.state.today.opened = p.state.is_user;
+        }
+        let ctx = DayCtx { config, day: 0 };
+        crate::posting::write_posts(&mut world, &ctx);
+        world
+    }
+
+    /// The candidates of the first user's feed, and how many post slots are
+    /// marked as gathered.
+    fn gathered(config: &Config, world: &World) -> (usize, Vec<Candidate>, usize) {
+        let viewer = world
+            .people
+            .iter()
+            .position(|p| p.state.is_user)
+            .unwrap_or(0);
+        let ctx = FeedCtx {
+            world,
+            config,
+            day: 0,
+            viewer,
+        };
+        let trending = Trending::build(world);
+        let mut scratch = FeedScratch::default();
+        scratch.reset(world.posts.len());
+        scratch.stamp += 1;
+        let mut rng = rng::stream_rng(1, 0, viewer as u64, Stream::Feed);
+        gather(&ctx, FeedKind::Ranked, &trending, &mut rng, &mut scratch);
+        let stamped = scratch.seen.iter().filter(|&&s| s == scratch.stamp).count();
+        (viewer, scratch.candidates.clone(), stamped)
+    }
+
+    #[test]
+    fn recommendations_fill_their_quota_without_duplicates() {
+        let mut config = Config::default();
+        config.run.population_size = 400;
+        let world = world_with_posts(&config);
+        let (_, cands, stamped) = gathered(&config, &world);
+        let quota =
+            (config.design.recommended_share * config.run.candidate_cap as f32).ceil() as usize;
+        let recommended = cands.iter().filter(|c| !c.in_network).count();
+        assert!(world.posts.len() > 4 * quota);
+        assert_eq!(recommended, quota);
+        let mut ids: Vec<u32> = cands.iter().map(|c| c.post).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), cands.len());
+        assert_eq!(stamped, cands.len());
+    }
+
+    #[test]
+    fn posts_cut_from_the_network_can_be_recommended_until_the_pool_runs_out() {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        config.run.candidate_cap = 1_000;
+        config.design.recommended_share = 1.0;
+        let world = world_with_posts(&config);
+        let (viewer, cands, stamped) = gathered(&config, &world);
+        let own = world
+            .posts
+            .iter()
+            .filter(|p| p.author as usize == viewer)
+            .count();
+        assert!(world.posts.len() < 1_000);
+        // Every post but the viewer's own is recommended, followed accounts' too.
+        assert_eq!(cands.len(), world.posts.len() - own);
+        assert!(cands.iter().all(|c| !c.in_network));
+        let person = &world.people[viewer];
+        assert!(cands.iter().any(|c| person.follows(c.author)));
+        assert_eq!(stamped, cands.len());
     }
 }

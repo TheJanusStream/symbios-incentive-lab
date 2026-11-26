@@ -14,13 +14,16 @@ macro_rules! outln {
     };
 }
 
+mod atlas_cmd;
 mod cli;
 mod commands;
 mod error;
 mod explore;
+mod factorial;
 mod facts_cmd;
 mod listing;
 mod report;
+mod report_cmd;
 mod runs;
 
 use std::process::ExitCode;
@@ -46,7 +49,14 @@ fn dispatch(cli: Cli) -> Result<(), CliError> {
         Command::Presets => listing::list_presets()?,
         Command::Scenarios => listing::list_scenarios()?,
         Command::Levers => listing::list_levers()?,
-        Command::Config { preset } => listing::print_config(&preset)?,
+        Command::Config {
+            preset,
+            from_atlas,
+            design,
+        } => match (from_atlas, design) {
+            (Some(file), Some(design)) => atlas_cmd::print_atlas_config(&file, &design)?,
+            _ => listing::print_config(&preset)?,
+        },
         Command::Run { source, options } => commands::run(&source, &options)?,
         Command::Compare {
             a,
@@ -68,12 +78,36 @@ fn dispatch(cli: Cli) -> Result<(), CliError> {
             options,
         } => commands::scenario_cmd(&id, &source, solution, &options)?,
         Command::Explore { mode } => explore::explore(&mode)?,
-        Command::Facts {
+        Command::Report {
             seeds,
             population,
             days,
             out,
-        } => facts_cmd::run_facts(seeds, population, days, out)?,
+        } => report_cmd::report(&seeds, population, days, out)?,
+        Command::Factorial {
+            a,
+            b,
+            levers,
+            seeds,
+            days,
+            population,
+            out,
+        } => factorial::factorial(&factorial::FactorialArgs {
+            a,
+            b,
+            levers,
+            seeds,
+            days,
+            population,
+            out,
+        })?,
+        Command::Facts {
+            seeds,
+            population,
+            days,
+            set,
+            out,
+        } => facts_cmd::run_facts(seeds, population, days, &set, out)?,
     }
     Ok(())
 }

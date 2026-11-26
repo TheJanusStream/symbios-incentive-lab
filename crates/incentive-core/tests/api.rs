@@ -23,7 +23,9 @@ fn presets_have_the_documented_ids() {
             "quality-bridging",
             "calm-by-design",
             "subscription",
-            "engagement-paid-creators"
+            "engagement-paid-creators",
+            "integrity-ranking",
+            "max-engagement"
         ]
     );
     assert!(

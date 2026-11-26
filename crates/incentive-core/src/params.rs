@@ -56,6 +56,10 @@ pub enum ParamGroup {
     Economy,
     /// Who lives in the society.
     Population,
+    /// What people value on reflection.
+    Values,
+    /// How the platform measures quality and satisfaction.
+    Measurement,
 }
 
 impl ParamGroup {
@@ -79,6 +83,8 @@ impl ParamGroup {
             Self::Society => "Society",
             Self::Economy => "Economy",
             Self::Population => "Population",
+            Self::Values => "Values",
+            Self::Measurement => "Measurement",
         }
     }
 }

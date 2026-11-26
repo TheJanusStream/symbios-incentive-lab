@@ -22,11 +22,21 @@ pub enum Command {
     Scenarios,
     /// List every design lever and world assumption with its range.
     Levers,
-    /// Print a preset's configuration as JSON, for editing.
+    /// Print a preset's configuration as JSON, for editing, or a design
+    /// from an atlas file with that search's base configuration.
     Config {
         /// Preset id.
         #[arg(long, default_value = "engagement-maximiser")]
         preset: String,
+        /// An atlas file written by `incentive explore` (map, pareto or
+        /// goodhart); needs `--design`.
+        #[arg(long, value_name = "FILE", requires = "design")]
+        from_atlas: Option<PathBuf>,
+        /// Which design of the atlas: a front design's number from 1 (pareto),
+        /// a cell `x,y` as printed (map), or a generation number or `last`
+        /// (goodhart).
+        #[arg(long, requires = "from_atlas")]
+        design: Option<String>,
     },
     /// Run one design on several seeds and summarise it.
     Run {
@@ -92,6 +102,53 @@ pub enum Command {
         #[command(subcommand)]
         mode: ExploreMode,
     },
+    /// Regenerate the calibration tables of docs/model.md as report.md: the
+    /// presets at 365 and 90 days, named paired comparisons, the facts and the
+    /// scenarios' verdicts.
+    Report {
+        /// Seeds: an inclusive range `1..8` or a list `1,5,9`.
+        #[arg(long, default_value = "1..8")]
+        seeds: String,
+        /// Individuals per run (default: the configuration's, 2,000).
+        #[arg(long)]
+        population: Option<u32>,
+        /// The long horizon in days (default 365); the short horizon is 90
+        /// days, or this when it is shorter. Scenarios run this long too
+        /// when it is given.
+        #[arg(long)]
+        days: Option<u32>,
+        /// Output directory (default: the repository's exports/report).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// A full factorial between two designs: design B with every subset of
+    /// the listed levers set to design A's values, paired by seed, with main
+    /// effects, two-way interactions and Shapley shares.
+    Factorial {
+        /// Design A: a preset id or a JSON configuration file.
+        #[arg(long)]
+        a: String,
+        /// Design B: a preset id or a JSON configuration file.
+        #[arg(long)]
+        b: String,
+        /// Comma-separated design levers, at most 6, for example
+        /// `notification_intensity,classifier_threshold` (`design.` may be
+        /// left out).
+        #[arg(long, value_delimiter = ',', required = true)]
+        levers: Vec<String>,
+        /// Seeds: an inclusive range `9..16` or a list `9,10,11`.
+        #[arg(long, default_value = "9..16")]
+        seeds: String,
+        /// Days to simulate (default: the configurations').
+        #[arg(long)]
+        days: Option<u32>,
+        /// Individuals (default: the configurations').
+        #[arg(long)]
+        population: Option<u32>,
+        /// Output directory (default: a folder under the repository's exports/).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Check the stylized facts at full size.
     Facts {
         /// Number of seeds, paired across variants.
@@ -103,6 +160,11 @@ pub enum Command {
         /// Days per run.
         #[arg(long, default_value_t = 365)]
         days: u32,
+        /// Assignments applied to every arm before the arm's own change,
+        /// `path=value`, for example `world.outrage_appeal=0`: a world in
+        /// which to check the facts.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
         /// Output directory (default: the repository's exports/facts).
         #[arg(long)]
         out: Option<PathBuf>,
@@ -156,14 +218,14 @@ pub enum ExploreMode {
         /// Cells per axis of the grid.
         #[arg(long, default_value_t = 16)]
         grid: u32,
-        /// Designs evaluated before the first generation: the six presets,
-        /// then random designs.
+        /// Designs evaluated before the first generation: the presets, then
+        /// random designs.
         #[arg(long, default_value_t = 128)]
         initial: u32,
     },
     /// NSGA-II: the Pareto front of maximising engagement, minimising harm
     /// and maximising benefit. Defaults: 40 generations of 64 (the
-    /// population, which starts with the six presets).
+    /// population, which starts with the presets).
     Pareto {
         /// Search options.
         #[command(flatten)]
@@ -213,6 +275,10 @@ pub struct SearchOptions {
     /// Chance that each gene mutates in a child.
     #[arg(long, default_value_t = 0.1)]
     pub mutation_rate: f32,
+    /// Fresh seeds every design in the atlas is re-evaluated on after the
+    /// search, at the same size: a range `9..16`, a list, or `none`.
+    #[arg(long, default_value = "9..16")]
+    pub confirm_seeds: String,
     /// Output directory (default: a folder under the repository's exports/).
     #[arg(long)]
     pub out: Option<PathBuf>,

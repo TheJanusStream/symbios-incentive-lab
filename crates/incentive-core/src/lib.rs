@@ -55,29 +55,32 @@ pub use atlas::{
     MapCell, MapGrid, ParetoAtlas, inert_levers,
 };
 pub use config::{
-    AltFeed, ArchetypeShares, Config, DesignLevers, ModerationAction, PayoutScheme,
+    AltFeed, ArchetypeShares, BotStrategy, Config, DesignLevers, ModerationAction, PayoutScheme,
     PopulationSettings, RunSettings, Sanctions, WorldAssumptions,
 };
 pub use config_path::FieldValue;
 pub use content::{Group, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS};
 pub use error::ConfigError;
-pub use facts::{Check, CheckResult, Fact, FactRun, Variant, facts};
+pub use facts::{Bound, Check, CheckResult, Fact, FactRun, Variant, facts};
 pub use inspector::{
     AGENT_HISTORY_DAYS, AgentDay, AgentView, ExplainedItem, FeedExplanation, ItemActions,
     TrueResponse,
 };
 pub use metrics::{
-    DailyMetrics, Family, Format, METRIC_COUNT, MetricId, MetricInfo, Summary, Visibility,
-    metric_infos,
+    DailyMetrics, Family, Format, METRIC_COUNT, MOVING_STANDARD_ERRORS, MOVING_THRESHOLD, MetricId,
+    MetricInfo, Summary, Visibility, is_moving_over, is_moving_slope, metric_infos,
 };
 pub use params::{ChoiceInfo, ParamGroup, ParamInfo, ParamKind, ParamSide, param, params};
 pub use person::{Person, PersonState};
 pub use population::{ARCHETYPE_COUNT, Archetype, Traits};
 pub use presets::{Preset, preset, presets};
 pub use ranking::{FeedKind, ScoreComponents};
-pub use scenarios::{Comparison, Goal, GoalResult, Scenario, scenario, scenarios};
+pub use scenarios::{
+    Comparison, Goal, GoalResult, GoalVerdict, Scenario, ScenarioVerdict, Verdict, scenario,
+    scenarios,
+};
 pub use simulation::Simulation;
-pub use stats::{PairedDifference, Stats};
+pub use stats::{MeanInterval, PairedDifference, Stats};
 
 #[cfg(test)]
 mod tests {

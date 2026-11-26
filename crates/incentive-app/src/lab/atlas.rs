@@ -80,6 +80,43 @@ impl AtlasData {
     }
 }
 
+/// Checks that an atlas design, with the world assumptions and population
+/// settings of `base` it was found under, lies within the parameter ranges
+/// of this build. An atlas written by an older build may hold values the
+/// model no longer accepts; such a design is refused, not run.
+pub fn check_design(design: &DesignLevers, base: &Config) -> Result<(), String> {
+    Config {
+        design: design.clone(),
+        world: base.world.clone(),
+        population: base.population.clone(),
+        ..Config::default()
+    }
+    .validate()
+    .map_err(|e| format!("Atlas design not loaded: {e}. The atlas needs regenerating."))
+}
+
+impl AtlasData {
+    /// Every embedded design with its base configuration: the map's elites,
+    /// the Pareto front and each Goodhart generation's best.
+    pub fn designs(&self) -> Vec<(&AtlasDesign, &Config)> {
+        let map = self
+            .map
+            .cells
+            .iter()
+            .map(|c| (&c.elite, &self.map.settings.base));
+        let front = self
+            .pareto
+            .front
+            .iter()
+            .map(|d| (d, &self.pareto.settings.base));
+        let goodhart = self
+            .goodhart
+            .iter()
+            .flat_map(|g| g.generations.iter().map(|r| (&r.best, &g.settings.base)));
+        map.chain(front).chain(goodhart).collect()
+    }
+}
+
 /// The embedded atlas, parsed on first use; the error says which file
 /// failed (only possible if a file was edited by hand).
 pub fn atlas() -> Result<&'static AtlasData, &'static str> {
@@ -146,13 +183,13 @@ impl Default for AtlasState {
     }
 }
 
-/// One design lever that differs from the engagement maximiser.
+/// One design lever that differs from the engagement ranking.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeverDifference {
     /// The lever's display name.
     pub name: &'static str,
-    /// Its value in the engagement maximiser.
-    pub maximiser: String,
+    /// Its value in the engagement ranking.
+    pub baseline: String,
     /// Its value in the design.
     pub design: String,
     /// How far apart, from 0 to 1: a share of the lever's range, or 1 for a
@@ -160,10 +197,13 @@ pub struct LeverDifference {
     pub distance: f32,
 }
 
-/// The design levers of `design` that differ from the engagement maximiser
+/// The design levers of `design` that differ from the engagement ranking
 /// (the default design), the most different first, at most `count`. Levers
 /// that have no effect in `design` (see [`inert_levers`]) are skipped.
-pub fn differences_from_maximiser(design: &DesignLevers, count: usize) -> Vec<LeverDifference> {
+pub fn differences_from_engagement_ranking(
+    design: &DesignLevers,
+    count: usize,
+) -> Vec<LeverDifference> {
     let wrap = |d: &DesignLevers| {
         tree(&Config {
             design: d.clone(),
@@ -200,7 +240,7 @@ pub fn differences_from_maximiser(design: &DesignLevers, count: usize) -> Vec<Le
             };
             Some(LeverDifference {
                 name: p.name,
-                maximiser: a.display(p),
+                baseline: a.display(p),
                 design: b.display(p),
                 distance,
             })
@@ -230,12 +270,21 @@ mod tests {
                 data.map.grid.cell_of(m.engagement_index, m.harm_index),
                 (cell.x, cell.y)
             );
-            let config = Config {
-                design: cell.elite.design.clone(),
-                ..Config::default()
-            };
-            assert!(config.validate().is_ok());
         }
+        // Every embedded design lies within this build's parameter ranges.
+        let designs = data.designs();
+        assert!(designs.len() > data.map.cells.len());
+        let invalid: Vec<String> = designs
+            .iter()
+            .filter_map(|(d, base)| check_design(&d.design, base).err())
+            .collect();
+        assert!(
+            invalid.is_empty(),
+            "{} of {} embedded designs are out of range, first: {}",
+            invalid.len(),
+            designs.len(),
+            invalid[0]
+        );
         let [lo, hi] = data.benefit_range();
         assert!(lo < hi);
         let first = &data.map.cells[0];
@@ -253,28 +302,28 @@ mod tests {
 
     #[test]
     fn differences_put_switches_and_large_moves_first() {
-        assert!(differences_from_maximiser(&DesignLevers::default(), 5).is_empty());
+        assert!(differences_from_engagement_ranking(&DesignLevers::default(), 5).is_empty());
         let design = DesignLevers {
             w_reply: 1.4,
             chronological: true,
             w_quality: 2.4,
             ..DesignLevers::default()
         };
-        let diffs = differences_from_maximiser(&design, 5);
+        let diffs = differences_from_engagement_ranking(&design, 5);
         let names: Vec<&str> = diffs.iter().map(|d| d.name).collect();
         assert_eq!(
             names,
             ["Chronological feed", "Quality weight", "Reply weight"]
         );
-        assert_eq!(diffs[0].maximiser, "off");
+        assert_eq!(diffs[0].baseline, "off");
         assert_eq!(diffs[0].design, "on");
-        assert_eq!(differences_from_maximiser(&design, 1).len(), 1);
+        assert_eq!(differences_from_engagement_ranking(&design, 1).len(), 1);
         let unused = DesignLevers {
             alt_feed: incentive_core::AltFeed::Bridging,
             ..DesignLevers::default()
         };
         assert!(
-            differences_from_maximiser(&unused, 5).is_empty(),
+            differences_from_engagement_ranking(&unused, 5).is_empty(),
             "nobody uses the alternative feed"
         );
     }

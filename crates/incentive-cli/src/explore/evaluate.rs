@@ -84,8 +84,24 @@ impl Evaluations {
         }
     }
 
+    /// The evaluation of a design given by its levers, run now or looked up.
+    pub fn evaluate_design(&self, design: &DesignLevers) -> Option<Arc<Evaluation>> {
+        match self.try_evaluate_design(design.clone()) {
+            Ok(e) => Some(e),
+            Err(message) => {
+                let mut failure = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
+                failure.get_or_insert(message);
+                None
+            }
+        }
+    }
+
     fn try_evaluate(&self, genome: &Genome) -> Result<Arc<Evaluation>, String> {
         let design = self.layout.decode(genome).map_err(|e| e.to_string())?;
+        self.try_evaluate_design(design)
+    }
+
+    fn try_evaluate_design(&self, design: DesignLevers) -> Result<Arc<Evaluation>, String> {
         let key = serde_json::to_string(&design).map_err(|e| e.to_string())?;
         if let Some(hit) = self
             .cache

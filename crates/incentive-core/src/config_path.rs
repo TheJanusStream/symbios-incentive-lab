@@ -14,9 +14,10 @@ pub enum FieldValue {
     Number(f64),
     /// A switch.
     Bool(bool),
-    /// An enum choice by its kebab-case id, or "none" for an optional field.
+    /// An enum choice by its kebab-case id.
     Text(String),
-    /// No value: clears an optional field.
+    /// No value: clears an optional field, or picks the choice "none" of an
+    /// enum field.
     None,
 }
 
@@ -139,6 +140,9 @@ fn convert(path: &str, current: &Value, value: FieldValue) -> Result<Value, Conf
         message: message.to_string(),
     };
     match value {
+        // "none" is a choice of some enum levers (sanctions); only fields
+        // that are not strings, such as `reshare_depth_cap`, are cleared.
+        FieldValue::None if current.is_string() => Ok(Value::String("none".into())),
         FieldValue::None => Ok(Value::Null),
         FieldValue::Bool(b) => Ok(Value::Bool(b)),
         FieldValue::Text(text) => Ok(Value::String(text)),
@@ -223,5 +227,38 @@ mod tests {
             Some(0.0)
         );
         assert!(config.get_path("world").is_err());
+    }
+
+    #[test]
+    fn every_choice_of_every_enum_lever_can_be_set() {
+        use crate::params::{ParamKind, params};
+        let mut tested = 0;
+        for info in params() {
+            let ParamKind::Choice(choices) = info.kind else {
+                continue;
+            };
+            for choice in choices {
+                let mut config = Config::default();
+                let assignment = format!("{}={}", info.path, choice.id);
+                assert!(config.set_assignment(&assignment).is_ok(), "{assignment}");
+                assert_eq!(
+                    config.get_path(info.path).ok(),
+                    Some(Value::String(choice.id.to_string())),
+                    "{assignment}"
+                );
+                tested += 1;
+            }
+        }
+        assert!(tested >= 12, "{tested}");
+        let mut config = Config::default();
+        assert!(config.set_assignment("design.sanctions=none").is_ok());
+        assert_eq!(config.design.sanctions, crate::config::Sanctions::None);
+        assert!(config.set_assignment("design.reshare_depth_cap=3").is_ok());
+        assert!(
+            config
+                .set_assignment("design.reshare_depth_cap=none")
+                .is_ok()
+        );
+        assert_eq!(config.design.reshare_depth_cap, None);
     }
 }
