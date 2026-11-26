@@ -9,6 +9,7 @@ use crate::params;
 mod assumptions;
 mod design;
 
+pub(crate) use assumptions::REFERENCE_SUBSCRIPTION_PRICE;
 pub use assumptions::{BotStrategy, WorldAssumptions};
 pub use design::{AltFeed, DesignLevers, ModerationAction, PayoutScheme, Sanctions};
 
@@ -55,6 +56,12 @@ pub struct RunSettings {
     /// intervention (docs/model.md, 13.2); `None`, the default, runs none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deactivation: Option<Deactivation>,
+    /// A notifications-off experiment at the end of the run, a researcher's
+    /// intervention (docs/model.md, 13.2); `None`, the default, runs none.
+    /// At most one experiment runs at a time, so it cannot be set together
+    /// with `deactivation`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_off: Option<NotificationsOff>,
 }
 
 /// Days of a deactivation experiment's break by default.
@@ -104,6 +111,60 @@ impl Deactivation {
     }
 }
 
+/// Days of a notifications-off experiment by default, a week as in the
+/// field (docs/model.md, 13.2).
+pub const NOTIFICATIONS_OFF_DAYS: u32 = 7;
+/// Share of the eligible users a notifications-off experiment switches
+/// notifications off for by default: all of them, the paired design of fact
+/// 7, which compares a run with its placebo rather than two groups.
+pub const NOTIFICATIONS_OFF_SHARE: f32 = 1.0;
+/// Days before a notifications-off experiment over which each participant's
+/// baseline time and sessions are averaged.
+pub const NOTIFICATIONS_OFF_BASELINE_DAYS: u32 = 7;
+
+/// A notifications-off experiment (docs/model.md, 13.2, and fact 7 of
+/// section 15): over the last `days` days of the run, a random `share` of
+/// the regular users has the platform's notifications switched off, as the
+/// participants of a field experiment switch them off in their phone's
+/// settings. For them notification intensity is 0: no notification-driven
+/// sessions, and none of its other terms. Its measures are the truth metrics
+/// `notifications_off_time`, `notifications_off_sessions` and
+/// `notifications_off_wellbeing`, compared across a real run and its
+/// placebo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationsOff {
+    /// Days the notifications stay off; the experiment ends with the run,
+    /// so it starts this many days before the end. At least 1, and the run
+    /// must have the 7 baseline days before it.
+    pub days: u32,
+    /// Chance that each eligible user has notifications switched off, in
+    /// `(0, 1]`.
+    pub share: f32,
+    /// A placebo run: the participants are found and the treated group
+    /// drawn exactly as in a real run, but nobody's notifications change.
+    /// Left out of JSON when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub placebo: bool,
+}
+
+impl Default for NotificationsOff {
+    fn default() -> Self {
+        Self {
+            days: NOTIFICATIONS_OFF_DAYS,
+            share: NOTIFICATIONS_OFF_SHARE,
+            placebo: false,
+        }
+    }
+}
+
+impl NotificationsOff {
+    /// The first day with notifications off in a run of `run_days` days.
+    pub fn first_day(&self, run_days: u32) -> u32 {
+        run_days.saturating_sub(self.days)
+    }
+}
+
 impl Default for RunSettings {
     fn default() -> Self {
         Self {
@@ -118,6 +179,7 @@ impl Default for RunSettings {
             summary_window: 0.3,
             tracked_agents: 10,
             deactivation: None,
+            notifications_off: None,
         }
     }
 }
@@ -221,6 +283,23 @@ impl Config {
                 return Err(ConfigError::Invalid(format!(
                     "run.deactivation.share must lie above 0 and at most 1, not {}",
                     d.share
+                )));
+            }
+        }
+        if let Some(n) = &r.notifications_off {
+            if r.deactivation.is_some() {
+                return Err(ConfigError::Invalid(
+                    "run.deactivation and run.notifications_off cannot both be set: at most one \
+                     experiment runs at a time"
+                        .into(),
+                ));
+            }
+            let most = r.days.saturating_sub(NOTIFICATIONS_OFF_BASELINE_DAYS);
+            check_int("run.notifications_off.days", n.days, 1, most)?;
+            if !(n.share > 0.0 && n.share <= 1.0) {
+                return Err(ConfigError::Invalid(format!(
+                    "run.notifications_off.share must lie above 0 and at most 1, not {}",
+                    n.share
                 )));
             }
         }
@@ -342,6 +421,53 @@ mod tests {
         });
         assert!(c.to_json_pretty().contains("\"placebo\": true"));
         assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c));
+    }
+
+    #[test]
+    fn the_notifications_off_experiment_is_optional_validated_and_alone() {
+        let config = Config::default();
+        assert!(config.run.notifications_off.is_none());
+        assert!(!config.to_json_pretty().contains("notifications_off"));
+        let parsed = Config::from_json(r#"{"run": {"days": 100, "notifications_off": {}}}"#);
+        let n = parsed.ok().and_then(|c| c.run.notifications_off);
+        assert_eq!(n, Some(NotificationsOff::default()));
+        assert_eq!(NotificationsOff::default().first_day(100), 93);
+        assert_eq!(NotificationsOff::default().share, 1.0);
+        let with = |days: u32, share: f32| {
+            let mut c = Config::default();
+            c.run.days = 100;
+            c.run.notifications_off = Some(NotificationsOff {
+                days,
+                share,
+                placebo: false,
+            });
+            c.validate().is_ok()
+        };
+        assert!(with(1, 0.1) && with(93, 1.0));
+        assert!(!with(0, 1.0), "no experiment");
+        assert!(!with(94, 1.0), "no room for the baseline week");
+        assert!(!with(7, 0.0) && !with(7, 1.5) && !with(7, f32::NAN));
+        // A placebo run is written out and read back.
+        let mut c = Config::default();
+        c.run.notifications_off = Some(NotificationsOff {
+            placebo: true,
+            ..NotificationsOff::default()
+        });
+        assert!(c.to_json_pretty().contains("\"placebo\": true"));
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c.clone()));
+        // At most one experiment at a time; the deactivation JSON still parses.
+        c.run.deactivation = Some(Deactivation::default());
+        assert!(matches!(c.validate(), Err(ConfigError::Invalid(_))));
+        let both = r#"{"run": {"deactivation": {}, "notifications_off": {}}}"#;
+        assert!(Config::from_json(both).is_err());
+        let old = r#"{"run": {"deactivation": {"days": 35, "share": 1.0, "placebo": true}}}"#;
+        let c = Config::from_json(old).expect("the deactivation JSON parses");
+        assert!(c.run.notifications_off.is_none());
+        assert!(
+            c.run
+                .deactivation
+                .is_some_and(|d| d.placebo && d.share == 1.0)
+        );
     }
 
     #[test]

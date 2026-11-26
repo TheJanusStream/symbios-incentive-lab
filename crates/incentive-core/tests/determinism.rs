@@ -1,6 +1,6 @@
 //! A run is a pure function of its configuration (docs/model.md, section 12).
 
-use incentive_core::{Config, DailyMetrics, Deactivation, MetricId, Simulation};
+use incentive_core::{Config, DailyMetrics, Deactivation, MetricId, NotificationsOff, Simulation};
 
 fn small(seed: u64) -> Config {
     let mut config = Config::default();
@@ -181,4 +181,73 @@ fn a_placebo_experiment_changes_nothing_but_its_own_metrics() {
     let last = a.last().expect("days");
     assert!(last.get(MetricId::BreakChange).is_finite());
     assert!(last.get(MetricId::DeactivationEffect).is_finite());
+}
+
+#[test]
+fn extra_sessions_switched_off_change_nothing() {
+    // With both extra-session rates at 0 nothing is drawn, and the other
+    // settings of the extra sessions leave the run untouched.
+    let mut base = small(3);
+    base.world.recheck_rate = 0.0;
+    base.world.notification_pull = 0.0;
+    let mut off = base.clone();
+    off.world.extra_session_share = 0.9;
+    off.world.interruption_cost = 0.5;
+    let base = run(base);
+    assert_identical(&base, &run(off));
+    assert!(
+        base.iter()
+            .all(|d| d.get(MetricId::SessionsPerActive) == 1.0)
+    );
+    assert!(
+        base.iter()
+            .all(|d| d.get(MetricId::NotificationSessionShare) == 0.0)
+    );
+}
+
+#[test]
+fn extra_sessions_are_deterministic() {
+    let mut config = small(4);
+    config.world.recheck_rate = 1.0;
+    config.world.notification_pull = 1.0;
+    config.world.interruption_cost = 0.1;
+    assert_identical(&run(config.clone()), &run(config));
+}
+
+#[test]
+fn a_notifications_off_placebo_changes_nothing_but_its_own_metrics() {
+    let mut placebo = small(3);
+    placebo.run.days = 40;
+    placebo.run.notifications_off = Some(NotificationsOff {
+        days: 7,
+        share: 0.5,
+        placebo: true,
+    });
+    let mut without = placebo.clone();
+    without.run.notifications_off = None;
+    let (a, b) = (run(placebo.clone()), run(without));
+    // Nobody's notifications change, the assignment draws on its own stream
+    // and the baseline is only read, so every other metric is bit for bit
+    // that of a run without it.
+    for (da, db) in a.iter().zip(&b) {
+        for id in MetricId::all().filter(|id| !id.needs_experiment()) {
+            assert_eq!(
+                da.get(id).to_bits(),
+                db.get(id).to_bits(),
+                "day {} metric {} differs",
+                da.day,
+                id.info().key
+            );
+        }
+    }
+    let last = a.last().expect("days");
+    assert!(last.get(MetricId::NotificationsOffTime).is_finite());
+    assert!(last.get(MetricId::NotificationsOffSessions).is_finite());
+    assert!(last.get(MetricId::NotificationsOffWellbeing).is_finite());
+    // The real run is deterministic too.
+    let mut real = placebo;
+    if let Some(n) = real.run.notifications_off.as_mut() {
+        n.placebo = false;
+    }
+    assert_identical(&run(real.clone()), &run(real));
 }

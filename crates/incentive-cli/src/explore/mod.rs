@@ -47,10 +47,11 @@ use evaluate::{Evaluation, Evaluations, Scored};
 use genome::{Genome, Layout};
 
 /// The map's engagement range: 0.04 to 0.36 in steps of 0.02 on a 16-cell
-/// grid. The presets span 0.14 to 0.27 at full size (docs/model.md, 13.3).
+/// grid. The presets span 0.10 to 0.26 at full size (docs/model.md, 13.3),
+/// and the designs the searches found reach 0.27 at their size (13.7).
 pub const ENGAGEMENT_RANGE: [f32; 2] = [0.04, 0.36];
 /// The map's harm range: 0 to 0.64 in steps of 0.04 on a 16-cell grid. The
-/// presets span 0.07 to 0.51 at full size.
+/// presets span 0.07 to 0.49 at full size.
 pub const HARM_RANGE: [f32; 2] = [0.0, 0.64];
 
 /// Elites a Goodhart generation carries over unchanged.

@@ -1,11 +1,12 @@
 //! The inspector: the tracked individuals, one individual's traits, state,
-//! learned style mix and history, and the feed they were last served, item by
-//! item, with what the platform predicted next to what was true.
+//! learned style mix and history, and the feed they were served on their last
+//! day with a session, item by item, with what the platform predicted next to
+//! what was true.
 
 use egui::{Id, RichText, Ui};
 use incentive_core::{
     AgentView, Archetype, ExplainedItem, FeedExplanation, FeedKind, Format, STYLE_COUNT,
-    Simulation, Style, TOPICS,
+    ServedSession, SessionKind, Simulation, Style, TOPICS,
 };
 
 use super::charts::{self, Chart, Series};
@@ -347,24 +348,57 @@ fn feed_kind_name(kind: FeedKind) -> &'static str {
     }
 }
 
-/// The last served feed as a table.
-fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
+/// One line on a served feed: its kind, its length, the day's sessions and
+/// how many items they reached.
+pub fn served_feed_summary(feed: &FeedExplanation) -> String {
     let seen = feed
         .items
         .iter()
         .filter(|i| i.actions.is_some_and(|a| a.seen))
         .count();
-    ui.label(RichText::new(format!("Last served feed, day {}", feed.day)).strong());
-    ui.label(
-        RichText::new(format!(
-            "{}; {} items, {} seen before the session ended (cap {}).",
-            feed_kind_name(feed.kind),
-            feed.items.len(),
-            seen,
+    let kind = feed_kind_name(feed.kind);
+    let items = feed.items.len();
+    let extra: Vec<&ServedSession> = feed.sessions.iter().skip(1).collect();
+    if extra.is_empty() {
+        return format!(
+            "{kind}; {items} items, {seen} seen before the session ended (cap {}).",
             feed.session_limit
-        ))
-        .small(),
-    );
+        );
+    }
+    let notified = extra
+        .iter()
+        .filter(|s| s.kind == SessionKind::Notification)
+        .count();
+    let habitual = extra.len() - notified;
+    let later_cap = extra.iter().map(|s| s.cap).max().unwrap_or(0);
+    format!(
+        "{kind}; {items} items for the day's {} sessions (the first, {habitual} habitual \
+         return{}, {notified} started by a notification), each going on down the list where the \
+         last one stopped: {seen} seen in all (cap {} for the first, up to {later_cap} for each \
+         later one).",
+        feed.sessions.len(),
+        if habitual == 1 { "" } else { "s" },
+        feed.session_limit,
+    )
+}
+
+/// The day's session that reached an item, in words: its number from 1 and,
+/// for an extra session, what started it.
+pub fn session_text(item: &ExplainedItem, sessions: &[ServedSession]) -> String {
+    let Some(a) = item.actions.filter(|a| a.seen) else {
+        return String::new();
+    };
+    match sessions.get(a.session).map(|s| s.kind) {
+        Some(SessionKind::Habitual) => format!("{} (habit)", a.session + 1),
+        Some(SessionKind::Notification) => format!("{} (notification)", a.session + 1),
+        Some(SessionKind::First) | None => (a.session + 1).to_string(),
+    }
+}
+
+/// The last served feed as a table.
+fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
+    ui.label(RichText::new(format!("Last served feed, day {}", feed.day)).strong());
+    ui.label(RichText::new(served_feed_summary(feed)).small());
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Highlighted:").small().strong());
         ui.label(
@@ -377,9 +411,11 @@ fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
         );
     });
     ui.label(
-        RichText::new("Dimmed: the viewer stopped scrolling before reaching it.")
-            .small()
-            .weak(),
+        RichText::new(
+            "Dimmed: no session that day reached it before the viewer stopped scrolling.",
+        )
+        .small()
+        .weak(),
     );
     let cut = high_score_cut(feed);
     let gaps: Vec<bool> = feed.items.iter().map(|i| is_goodhart_gap(i, cut)).collect();
@@ -388,7 +424,7 @@ fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
         .id_salt("feed-scroll")
         .show(ui, |ui| {
             egui::Grid::new("served-feed")
-                .num_columns(12)
+                .num_columns(13)
                 .spacing([10.0, 3.0])
                 .with_row_color(move |row, _style| {
                     row.checked_sub(header_rows)
@@ -399,15 +435,21 @@ fn served_feed(ui: &mut Ui, feed: &FeedExplanation) {
                 .show(ui, |ui| {
                     feed_header(ui);
                     for item in &feed.items {
-                        feed_row(ui, item);
+                        feed_row(ui, item, &feed.sessions);
                     }
                 });
         });
 }
 
 fn feed_header(ui: &mut Ui) {
-    let columns: [(&str, &str); 12] = [
-        ("#", "Position in the feed"),
+    let columns: [(&str, &str); 13] = [
+        ("#", "Position in the day's feed"),
+        (
+            "Session",
+            "Which of the day's sessions reached it: 1 is the first; later ones were habitual \
+             returns or started by a notification, each going on down the list where the last \
+             one stopped",
+        ),
         ("Style", "The post's style"),
         ("Topic", "The post's topic"),
         (
@@ -443,7 +485,7 @@ fn feed_header(ui: &mut Ui) {
     ui.end_row();
 }
 
-fn feed_row(ui: &mut Ui, item: &ExplainedItem) {
+fn feed_row(ui: &mut Ui, item: &ExplainedItem, sessions: &[ServedSession]) {
     let seen = item.actions.is_some_and(|a| a.seen);
     let weak = ui.visuals().weak_text_color();
     let text = |s: String| -> RichText {
@@ -452,6 +494,7 @@ fn feed_row(ui: &mut Ui, item: &ExplainedItem) {
     };
     let post = &item.post;
     ui.label(text((item.rank + 1).to_string()));
+    ui.label(text(session_text(item, sessions)));
     let style_color = if seen {
         palette::STYLES[post.style.index()]
     } else {

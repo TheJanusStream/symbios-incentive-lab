@@ -47,6 +47,9 @@ pub(crate) struct FeedScratch {
     pub seen: Vec<u32>,
     pub stamp: u32,
     pub candidates: Vec<Candidate>,
+    /// Candidates the latest feed gathered, before ranking cut it to its
+    /// length.
+    pub gathered: usize,
     pub adjust: Vec<f32>,
     raw: Vec<Origin>,
 }

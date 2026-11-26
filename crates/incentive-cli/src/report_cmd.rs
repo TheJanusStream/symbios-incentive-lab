@@ -1,7 +1,7 @@
 //! `report`: regenerates the calibration tables of docs/model.md (section 13)
 //! as Markdown ready to paste: the presets at the long and the short horizon,
 //! named paired comparisons with 95% intervals, the stylized facts and the
-//! scenarios' verdicts. Every run of every table is collected first, run
+//! verdicts on each scenario's known solution and naive attempt. Every run of every table is collected first, run
 //! once (identical runs are shared between tables) and in parallel, so the
 //! report is deterministic for its options.
 
@@ -197,6 +197,40 @@ const TIME_EFFECTS: &[MetricId] = &[
 ];
 const FULL_NOTIFICATIONS: &[&str] = &["design.notification_intensity=1"];
 const NO_TIME_COST: &[&str] = &["world.time_cost=0"];
+/// The checking habits world of docs/model.md, section 11: lab #30's fitted
+/// extra sessions, off by default.
+const CHECKING_HABITS: &[&str] = &[
+    "world.recheck_rate=27.5",
+    "world.notification_pull=3",
+    "world.extra_session_share=0.1",
+];
+/// What the checking habits move: sessions, reading, the indices, the bots'
+/// share and the held-out regretted share (13.4).
+const CHECKING_EFFECTS: &[MetricId] = &[
+    MetricId::SessionsPerActive,
+    MetricId::NotificationSessionShare,
+    MetricId::EngagementIndex,
+    MetricId::TimeSpent,
+    MetricId::OutrageShare,
+    MetricId::ToxicShare,
+    MetricId::HarmIndex,
+    MetricId::BenefitIndex,
+    MetricId::WellbeingUsers,
+    MetricId::UserShare,
+    MetricId::BotEngagementShare,
+    MetricId::RegrettedShare,
+];
+/// Twice the default subscription price of 1.87 (8.3, 13.2).
+const DOUBLE_PRICE: &[&str] = &["world.subscription_price=3.74"];
+const PRICE_EFFECTS: &[MetricId] = &[
+    MetricId::SubscriberShare,
+    MetricId::AdRevenue,
+    MetricId::SubscriptionRevenue,
+    MetricId::Revenue,
+    MetricId::EngagementIndex,
+    MetricId::WellbeingUsers,
+    MetricId::UserShare,
+];
 
 /// The named comparisons of the report, in order. Edit this table to add or
 /// change one; every number of section 13.3 comes from a row here or from the
@@ -542,7 +576,8 @@ const COMPARISONS: &[Named] = &[
         ratio: true,
     },
     Named {
-        label: "Notifications at full strength (`notification_intensity` 1 against 0.6)",
+        label: "Notifications at full strength (`notification_intensity` 1 against 0.6), one session a \
+                day (checking habits off)",
         a: PLAIN_ER,
         b: Side {
             preset: ER,
@@ -554,7 +589,8 @@ const COMPARISONS: &[Named] = &[
         ratio: true,
     },
     Named {
-        label: "Notifications at full strength under Q&B (`notification_intensity` 1 against 0.6)",
+        label: "Notifications at full strength under Q&B (`notification_intensity` 1 against 0.6), one \
+                session a day",
         a: PLAIN_QB,
         b: Side {
             preset: QB,
@@ -599,6 +635,43 @@ const COMPARISONS: &[Named] = &[
         both: &[],
         window: Window::Summary,
         metrics: TIME_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "The checking habits world (`recheck_rate` 27.5, `notification_pull` 3, \
+                `extra_session_share` 0.1) against the default world",
+        a: PLAIN_ER,
+        b: Side {
+            preset: ER,
+            set: CHECKING_HABITS,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: CHECKING_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "The checking habits world against the default world under Q&B",
+        a: PLAIN_QB,
+        b: Side {
+            preset: QB,
+            set: CHECKING_HABITS,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: CHECKING_EFFECTS,
+        ratio: true,
+    },
+    Named {
+        label: "The subscription price doubled (`subscription_price` 3.74 against 1.87)",
+        a: PLAIN_ER,
+        b: Side {
+            preset: ER,
+            set: DOUBLE_PRICE,
+        },
+        both: &[],
+        window: Window::Summary,
+        metrics: PRICE_EFFECTS,
         ratio: true,
     },
 ];
@@ -785,7 +858,12 @@ pub fn report(
             scenario_days,
             population,
         )?;
-        scenario_groups.push((plan.add(player), plan.add(baseline)));
+        let naive = sized(
+            sc.player_config(&sc.naive_attempt()?),
+            scenario_days,
+            population,
+        )?;
+        scenario_groups.push((plan.add(player), plan.add(naive), plan.add(baseline)));
     }
     let (outputs, index) = runs::run_unique(&plan.jobs)?;
     eprintln!(
@@ -968,58 +1046,80 @@ pub fn report(
 
     let _ = writeln!(
         md,
-        "## Scenarios\n\nEach scenario's known solution against its baseline, {} paired seeds, `N = {n}`, \
-         the scenario's own days{}. The margin is how far each seed's solution lies on the passing side \
-         of its own baseline's threshold, mean and 95% interval; a goal passes when the interval lies \
-         wholly on the passing side, fails when it lies wholly on the failing side, and is undecided \
-         otherwise. A scenario passes only when every goal passes.\n",
+        "## Scenarios\n\nEach scenario's known solution and its naive attempt, one obvious lever, against \
+         its baseline, {} paired seeds, `N = {n}`, the scenario's own days{}. The margin is how far each \
+         seed's design lies on the passing side of its own baseline's threshold, mean and 95% interval; \
+         a goal passes when the interval lies wholly on the passing side, fails when it lies wholly on \
+         the failing side, and is undecided otherwise. A scenario passes only when every goal passes.\n",
         seeds.len(),
         days.map_or(String::new(), |d| format!(" (here {d})"))
     );
     let mut rows = Vec::new();
-    for (sc, &(gp, gb)) in scenarios().iter().zip(&scenario_groups) {
-        let player: Vec<_> = done.group(gp).iter().map(|r| r.summary.clone()).collect();
-        let baseline: Vec<_> = done.group(gb).iter().map(|r| r.summary.clone()).collect();
-        let verdict = sc.judge(&player, &baseline);
-        let solution: Vec<String> = sc
-            .known_solution_changes()
+    let changes_text = |changes: &[(&str, &str)]| -> String {
+        changes
             .iter()
             .map(|(path, value)| format!("`{}` {value}", path.rsplit('.').next().unwrap_or(path)))
-            .collect();
-        for (k, g) in verdict.goals.iter().enumerate() {
-            rows.push(vec![
-                if k == 0 {
-                    sc.title.to_string()
-                } else {
-                    String::new()
-                },
-                if k == 0 {
-                    solution.join(", ")
-                } else {
-                    String::new()
-                },
-                g.description.to_string(),
-                fmt_value(g.metric, g.player),
-                fmt_value(g.metric, g.baseline),
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for (sc, &(gp, gn, gb)) in scenarios().iter().zip(&scenario_groups) {
+        let baseline: Vec<_> = done.group(gb).iter().map(|r| r.summary.clone()).collect();
+        let designs = [
+            (
+                gp,
+                format!("solution: {}", changes_text(sc.known_solution_changes())),
+            ),
+            (
+                gn,
                 format!(
-                    "{:+.4} ({:+.4} to {:+.4})",
-                    g.margin.mean, g.margin.low, g.margin.high
+                    "naive, {}: {}",
+                    sc.naive_attempt_label(),
+                    changes_text(sc.naive_attempt_changes())
                 ),
-                g.verdict.label().to_lowercase(),
-                if k == 0 {
-                    verdict_text(verdict.verdict)
-                } else {
-                    String::new()
-                },
-            ]);
+            ),
+        ];
+        for (d, (group, design)) in designs.iter().enumerate() {
+            let player: Vec<_> = done
+                .group(*group)
+                .iter()
+                .map(|r| r.summary.clone())
+                .collect();
+            let verdict = sc.judge(&player, &baseline);
+            for (k, g) in verdict.goals.iter().enumerate() {
+                rows.push(vec![
+                    if k == 0 && d == 0 {
+                        sc.title.to_string()
+                    } else {
+                        String::new()
+                    },
+                    if k == 0 {
+                        design.clone()
+                    } else {
+                        String::new()
+                    },
+                    g.description.to_string(),
+                    fmt_value(g.metric, g.player),
+                    fmt_value(g.metric, g.baseline),
+                    format!(
+                        "{:+.4} ({:+.4} to {:+.4})",
+                        g.margin.mean, g.margin.low, g.margin.high
+                    ),
+                    g.verdict.label().to_lowercase(),
+                    if k == 0 {
+                        verdict_text(verdict.verdict)
+                    } else {
+                        String::new()
+                    },
+                ]);
+            }
         }
     }
     md.push_str(&md_table(
         &[
             "Scenario",
-            "Known solution",
+            "Design",
             "Goal",
-            "Solution",
+            "Design's value",
             "Baseline",
             "Margin (95% interval)",
             "Goal verdict",

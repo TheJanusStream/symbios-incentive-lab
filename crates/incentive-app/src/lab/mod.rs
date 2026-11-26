@@ -188,7 +188,7 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
         title: "Stop rewarding angry replies, trust good reporters",
         body: "Set the reply weight to 0, give the platform ten times the human reviewers, and weigh each \
             report by how often its reporter's earlier reports were upheld. Over a year the harm index falls \
-            by about two fifths and the engagement index even rises, by about a seventh, because fewer people \
+            by about two fifths and the engagement index even rises, by about a tenth, because fewer people \
             leave; try it again with churn, harassment exits and the reputation effect switched off, and it costs \
             engagement instead. A strong see-less penalty would backfire here: bot farms mark the other side's \
             popular posts.",
@@ -201,10 +201,10 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
     Suggestion {
         title: "Rank for quality and bridging",
         body: "Load the Quality and bridging design. The harm index falls by about four fifths, and the \
-            engagement index by about a seventh. Watch the survey: after three months the platform's own \
-            numbers say people are less happy than under the engagement ranking, and after a year about as \
-            happy, while the truth says they are better off throughout. The survey mixes wellbeing with \
-            recent pleasure and habit, and the engagement ranking serves more of both.",
+            engagement index by about a sixth. Watch the survey: after three months and after a year alike, \
+            the platform's own numbers say people are less happy than under the engagement ranking, while the \
+            truth says they are better off throughout. The survey mixes wellbeing with recent pleasure and \
+            habit, and the engagement ranking serves more of both.",
         apply: |d| {
             *d = preset("quality-bridging")
                 .map(|p| p.design())
@@ -215,7 +215,7 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
         title: "Make the classifier stricter",
         body: "Lower the classifier threshold to 0.3. Toxic impressions fall by about nineteen twentieths \
             over a year, and authors' evasion barely dents that. But wrongful removals rise from about 3 to \
-            about 47 a day, and the harm index, which counts them, falls by only a quarter.",
+            about 45 a day, and the harm index, which counts them, falls by only about a fifth.",
         apply: |d| d.classifier_threshold = 0.3,
     },
 ];

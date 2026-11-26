@@ -1,7 +1,9 @@
-//! Each scenario's baseline fails and its recorded known solution passes
-//! (docs/model.md, 14.2), on runs of reduced population. Goals are judged on
-//! paired per-seed margins with a 95% interval (`Scenario::judge`), so a
-//! known solution must pass beyond the noise of these seeds.
+//! Each scenario's baseline fails, its recorded known solution passes and
+//! its recorded naive attempt, one obvious lever, fails (docs/model.md, 14.2
+//! and 13.5), on runs of reduced population. Goals are judged on paired
+//! per-seed margins with a 95% interval (`Scenario::judge`), so a known
+//! solution must pass, and a naive attempt fail, beyond the noise of these
+//! seeds. One test per scenario checks all three on the same baseline runs.
 
 use incentive_core::{Config, Simulation, Summary, Verdict, scenario};
 
@@ -49,6 +51,30 @@ fn check(id: &str) {
             g.margin.high
         );
     }
+    let naive = sc.naive_attempt().expect("valid naive attempt");
+    let attempt = sc.judge(&summaries(&sc.player_config(&naive)), &baseline);
+    let goals: Vec<String> = attempt
+        .goals
+        .iter()
+        .map(|g| {
+            format!(
+                "{}: {:?}, margin {} ({} to {})",
+                g.description, g.verdict, g.margin.mean, g.margin.low, g.margin.high
+            )
+        })
+        .collect();
+    assert_ne!(
+        attempt.verdict,
+        Verdict::Pass,
+        "{id}: the naive attempt ({}) passes: {goals:?}",
+        sc.naive_attempt_label()
+    );
+    assert_eq!(
+        attempt.verdict,
+        Verdict::Fail,
+        "{id}: the naive attempt ({}) does not fail: {goals:?}",
+        sc.naive_attempt_label()
+    );
 }
 
 #[test]

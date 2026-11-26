@@ -240,6 +240,7 @@ pub(crate) fn build_feed(
     scratch.stamp += 1;
     scratch.candidates.clear();
     gather(ctx, kind, trending, rng, scratch);
+    scratch.gathered = scratch.candidates.len();
     fill_signals(ctx, scratch);
     if kind != FeedKind::Chronological {
         let weights = RankWeights::for_feed(kind, &ctx.config.design);

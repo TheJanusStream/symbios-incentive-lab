@@ -76,12 +76,16 @@ pub(crate) fn integrity_ranking(d: &mut DesignLevers) {
     d.noted_penalty = 1.0;
 }
 
-/// The most engaging design the searches found (docs/model.md, 13.7 and
-/// 14.1): front design 61 of the Pareto atlas, every lever as found, those
-/// without effect in it included (the classifier removes, so the demotion
-/// penalty never applies, and without community notes the notes penalty
-/// does not either). `incentive explore` leaves it out of its initial
-/// designs, so the atlas it comes from stays reproducible.
+/// The most engaging design any search has found (docs/model.md, 13.7 and
+/// 14.1): v0.3's front design 61, every lever as found, those without
+/// effect in it included (the classifier removes, so the demotion penalty
+/// never applies, and without community notes the notes penalty does not
+/// either). It is the design with the highest full-size engagement among
+/// the 64 front designs of the current Pareto atlas and this preset as v0.3
+/// left it, run at today's defaults. This round's searches did not reach
+/// it: their most engaging front design, 58, has less engagement at full
+/// size. `incentive explore` leaves it out of its initial designs, so the
+/// atlas stays reproducible.
 fn max_engagement(d: &mut DesignLevers) {
     d.w_like = 3.0;
     d.w_reply = 1.0;
@@ -116,7 +120,7 @@ const PRESETS: [Preset; 8] = [
         description: "The feed shows whatever it predicts people will like, reply to, share and linger on, \
             mixing in trending posts from strangers. An automated filter removes the worst toxicity and human \
             moderators handle some reports. It is the default design and the yardstick every other design is \
-            compared with, but it does not maximise engagement: the searches found a design with about 110% more \
+            compared with, but it does not maximise engagement: the searches found a design with about 70% more \
             (the most engaging design found).",
         apply: |_| {},
     },
@@ -169,7 +173,7 @@ const PRESETS: [Preset; 8] = [
     Preset {
         id: "engagement-paid-creators",
         name: "Engagement-paid creators",
-        description: "The engagement ranking, plus a creator fund: 30% of ad revenue is paid to authors in \
+        description: "The engagement ranking, plus a creator fund: 30% of revenue is paid to authors in \
             proportion to the likes, replies and shares their posts collect, angry replies and bot boosts \
             included. Creator programmes on several platforms pay this way.",
         apply: |d| {
@@ -191,16 +195,17 @@ const PRESETS: [Preset; 8] = [
     Preset {
         id: "max-engagement",
         name: "Most engaging design found",
-        description: "The design with the highest engagement that the lab's design-space searches found. It weighs \
-            likes and time spent far above the engagement ranking and shares far below, shows half as many posts \
-            from strangers, pushes notifications at full strength, and keeps a toxicity filter a little laxer than \
-            the engagement ranking's: nine times the human moderators act on reports, weighted by each reporter's \
-            record, but strikes carry no sanctions and blocking does not work. It pays 15% of revenue to creators \
-            per view and takes most of its revenue from subscriptions. It comes from the searches, not from any \
-            real platform, so it shows what maximising engagement looks like in this model now that time spent \
-            has a price: about twice the engagement of the engagement ranking, with about 13% less harm, the same \
-            toxic share and slightly higher wellbeing. It also wastes less of people's time and keeps more of them \
-            on the platform. Other designs the searches found are as engaging with less harm.",
+        description: "The design with the highest engagement that the lab's design-space searches have found, in the \
+            searches of version 0.3; the latest searches did not reach it. It weighs likes and time spent far \
+            above the engagement ranking, replies a little below and shares far below, shows half as many posts \
+            from strangers, pushes notifications at full strength, and keeps a toxicity filter a little laxer \
+            than the engagement ranking's: nine times the human moderators act on reports, weighted by each \
+            reporter's record, but strikes carry no sanctions and blocking does not work. It pays 15% of revenue \
+            to creators per view and shows half the ad load. It comes from a search, not from any real platform, \
+            so it shows what maximising engagement looks like in this model: about 70% more engagement than the \
+            engagement ranking, with about 5% less harm, the same toxic share and slightly higher wellbeing. It \
+            also wastes less of people's time and keeps more of them on the platform. Designs the searches found \
+            come close with far less harm: one has nearly 90% of its engagement and a third of its harm.",
         apply: max_engagement,
     },
 ];

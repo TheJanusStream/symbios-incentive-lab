@@ -44,6 +44,9 @@ pub(crate) enum Stream {
     /// Assignment to a deactivation experiment's break group, per person, on
     /// the experiment's first day.
     Experiment = 25,
+    /// The day's extra sessions of a user who opened the app, per person and
+    /// day; drawn only when an extra-session rate is positive.
+    Sessions = 26,
 }
 
 /// SplitMix64 finaliser: a cheap bijective mixer with good avalanche.

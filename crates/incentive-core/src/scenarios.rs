@@ -4,6 +4,8 @@
 //! [`Scenario::judge`] gives the verdict: each goal is judged on its per-seed
 //! margins, the player's run against the baseline's on the same seed, with a
 //! 95% confidence interval; [`Scenario::evaluate`] compares seed means only.
+//! Each scenario records a known solution and a naive attempt, one obvious
+//! lever that fails it (docs/model.md, 13.5).
 
 use serde::Serialize;
 
@@ -205,6 +207,8 @@ pub struct Scenario {
     pub goals: &'static [Goal],
     setup: fn(&mut Config),
     known_solution: &'static [(&'static str, &'static str)],
+    naive_label: &'static str,
+    naive_attempt: &'static [(&'static str, &'static str)],
 }
 
 impl Scenario {
@@ -231,8 +235,33 @@ impl Scenario {
 
     /// The design known to meet every goal.
     pub fn known_solution(&self) -> Result<DesignLevers, ConfigError> {
+        self.design_with(self.known_solution)
+    }
+
+    /// A short label for the naive attempt: a plausible single-lever change
+    /// to the starting design that fails the scenario (docs/model.md, 13.5).
+    pub fn naive_attempt_label(&self) -> &'static str {
+        self.naive_label
+    }
+
+    /// The naive attempt's changes to the starting design.
+    pub fn naive_attempt_changes(&self) -> &'static [(&'static str, &'static str)] {
+        self.naive_attempt
+    }
+
+    /// The naive attempt's design, which fails the scenario: it shows that
+    /// one obvious lever does not solve it.
+    pub fn naive_attempt(&self) -> Result<DesignLevers, ConfigError> {
+        self.design_with(self.naive_attempt)
+    }
+
+    /// The starting design with `changes` applied.
+    fn design_with(
+        &self,
+        changes: &[(&'static str, &'static str)],
+    ) -> Result<DesignLevers, ConfigError> {
         let mut config = self.config();
-        for (path, value) in self.known_solution {
+        for (path, value) in changes {
             config.set_path(path, FieldValue::parse(value))?;
         }
         Ok(config.design)
@@ -335,6 +364,8 @@ const SCENARIOS: [Scenario; 5] = [
             ("design.review_capacity", "10"),
             ("design.report_trust", "1"),
         ],
+        naive_label: "the chronological feed",
+        naive_attempt: &[("design.chronological", "true")],
     },
     Scenario {
         id: "toxicity-spiral",
@@ -364,6 +395,8 @@ const SCENARIOS: [Scenario; 5] = [
             ("design.account_cost", "1"),
             ("design.classifier_threshold", "0.3"),
         ],
+        naive_label: "three times the reviewers",
+        naive_attempt: &[("design.review_capacity", "1")],
     },
     Scenario {
         id: "creator-living",
@@ -388,6 +421,8 @@ const SCENARIOS: [Scenario; 5] = [
             c.design.payout_share = 0.3;
         },
         known_solution: &[("design.payout_scheme", "fan-funded")],
+        naive_label: "payouts weighted by the quality classifier",
+        naive_attempt: &[("design.payout_scheme", "quality-weighted")],
     },
     Scenario {
         id: "misinformation-surge",
@@ -415,6 +450,8 @@ const SCENARIOS: [Scenario; 5] = [
             ("design.community_notes", "true"),
             ("design.account_cost", "1"),
         ],
+        naive_label: "community notes",
+        naive_attempt: &[("design.community_notes", "true")],
     },
     Scenario {
         id: "public-square",
@@ -435,7 +472,13 @@ const SCENARIOS: [Scenario; 5] = [
             },
         ],
         setup: |c| c.run.days = 365,
-        known_solution: &[("design.w_reply", "0"), ("design.w_bridging", "0.6")],
+        known_solution: &[
+            ("design.w_reply", "0"),
+            ("design.w_bridging", "0.6"),
+            ("design.w_share", "1"),
+        ],
+        naive_label: "no reply weight",
+        naive_attempt: &[("design.w_reply", "0")],
     },
 ];
 
@@ -448,6 +491,9 @@ mod tests {
         for s in scenarios() {
             assert!(s.config().validate().is_ok(), "{}", s.id);
             assert!(s.known_solution().is_ok(), "{}", s.id);
+            assert!(s.naive_attempt().is_ok(), "{}", s.id);
+            assert_eq!(s.naive_attempt_changes().len(), 1, "{}: one lever", s.id);
+            assert!(!s.naive_attempt_label().is_empty(), "{}", s.id);
         }
         assert!(scenario("nope").is_err());
     }

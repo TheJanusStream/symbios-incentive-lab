@@ -12,7 +12,7 @@
 
 use serde::Serialize;
 
-use crate::config::{Config, Deactivation};
+use crate::config::{Config, Deactivation, NotificationsOff};
 use crate::error::ConfigError;
 use crate::metrics::{DailyMetrics, MetricId, nan_mean};
 use crate::scenarios::Verdict;
@@ -394,6 +394,26 @@ const INTEGRITY_PLACEBO: Variant = Variant {
     apply: |c| integrity_deactivation(c, true),
 };
 
+/// The integrity preset with a notifications-off experiment that switches
+/// notifications off for every regular user for the last week, or for none
+/// of them in its placebo.
+fn integrity_notifications_off(c: &mut Config, placebo: bool) {
+    crate::presets::integrity_ranking(&mut c.design);
+    c.run.notifications_off = Some(NotificationsOff {
+        share: 1.0,
+        placebo,
+        ..NotificationsOff::default()
+    });
+}
+const INTEGRITY_NOTIFICATIONS_OFF: Variant = Variant {
+    label: "engagement ranking with integrity, notifications off for every regular user",
+    apply: |c| integrity_notifications_off(c, false),
+};
+const INTEGRITY_NOTIFICATIONS_PLACEBO: Variant = Variant {
+    label: "engagement ranking with integrity, the same switch-off as a placebo",
+    apply: |c| integrity_notifications_off(c, true),
+};
+
 /// A check that has to hold.
 const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
     Check {
@@ -404,7 +424,7 @@ const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
     }
 }
 
-const FACTS: [Fact; 6] = [
+const FACTS: [Fact; 7] = [
     Fact {
         id: "amplification",
         title: "Engagement ranking amplifies divisive content that users do not value",
@@ -574,6 +594,46 @@ const FACTS: [Fact; 6] = [
                 high: 0.25,
             },
         )],
+    },
+    // The same paired design for a week with the platform's notifications
+    // off (docs/model.md, 13.2). The field switched off every app's
+    // notifications on the phone, so switching off one platform's may cut
+    // its own use more: the lower bounds of time and sessions are wider than
+    // the field's null.
+    Fact {
+        id: "notifications-off",
+        title: "A week without notifications barely changes use or wellbeing",
+        reference: "Dekker et al. (2024); Kushlev et al. (2016); Fitz et al. (2019)",
+        variants: &[INTEGRITY_NOTIFICATIONS_OFF, INTEGRITY_NOTIFICATIONS_PLACEBO],
+        checks: &[
+            check(
+                "daily time on the platform, change off minus placebo, in SDs, under integrity",
+                Measure::Last(MetricId::NotificationsOffTime),
+                Judge::Band {
+                    effect: Effect::Difference { a: 0, b: 1 },
+                    low: -0.4,
+                    high: 0.1,
+                },
+            ),
+            check(
+                "sessions a day, change off minus placebo, in SDs, under integrity",
+                Measure::Last(MetricId::NotificationsOffSessions),
+                Judge::Band {
+                    effect: Effect::Difference { a: 0, b: 1 },
+                    low: -0.4,
+                    high: 0.1,
+                },
+            ),
+            check(
+                "wellbeing, change off minus placebo, in SDs, under integrity",
+                Measure::Last(MetricId::NotificationsOffWellbeing),
+                Judge::Band {
+                    effect: Effect::Difference { a: 0, b: 1 },
+                    low: -0.15,
+                    high: 0.15,
+                },
+            ),
+        ],
     },
 ];
 

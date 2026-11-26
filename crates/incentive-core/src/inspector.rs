@@ -184,8 +184,12 @@ pub struct TrueResponse {
 /// 7.6).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ItemActions {
-    /// The viewer reached the item before the session stopped.
+    /// The viewer reached the item in one of the day's sessions before that
+    /// session stopped.
     pub seen: bool,
+    /// The day's session in which the viewer reached the item, counted from
+    /// 0 for the first; 0 for an item nobody reached (see `seen`).
+    pub session: usize,
     /// Liked it.
     pub liked: bool,
     /// Replied to it.
@@ -242,10 +246,41 @@ pub struct FeedExplanation {
     /// Which feed the viewer gets. For a chronological feed the order is by
     /// time and the scores show what the main ranking would have given.
     pub kind: FeedKind,
-    /// The session's item cap.
+    /// The first session's item cap `L` (docs/model.md, 6.1).
     pub session_limit: usize,
-    /// The items in feed order.
+    /// The day's sessions over this feed, in the order they ran, the first
+    /// one first; empty in a preview, which no session served.
+    pub sessions: Vec<ServedSession>,
+    /// The items in feed order: one ranked list for the whole day, which
+    /// each session continues after the items seen before it.
     pub items: Vec<ExplainedItem>,
+}
+
+/// What started one of the day's sessions (docs/model.md, 6.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum SessionKind {
+    /// The day's first session, the one the decision to open the app starts.
+    First,
+    /// A habitual extra session: the user came back on their own.
+    Habitual,
+    /// An extra session that a notification started.
+    Notification,
+}
+
+/// One of the day's sessions over a served feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ServedSession {
+    /// What started it.
+    pub kind: SessionKind,
+    /// Its item cap: `L` for the first session, a share of `L` for an extra
+    /// one, less for a time-limited user near the daily limit.
+    pub cap: usize,
+    /// Position in the feed where it began, just after the last item seen
+    /// earlier that day.
+    pub start: usize,
+    /// Items the viewer saw in it before it ended; 0 when the feed or the
+    /// daily limit had run out.
+    pub seen: usize,
 }
 
 /// The explained items of a built feed, in order, with every post as it is

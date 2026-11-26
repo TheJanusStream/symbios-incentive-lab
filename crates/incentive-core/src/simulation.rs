@@ -111,6 +111,7 @@ impl Simulation {
         learning::run(world, &ctx);
         lifecycle::daily_updates(world, &ctx);
         society::run(world, &ctx);
+        experiment::end_day(world, &ctx);
         let metrics = measure::measure(world, &ctx);
         world
             .truth
@@ -219,17 +220,20 @@ impl Simulation {
         })
     }
 
-    /// The feed a tracked individual was served in their last session, as it
-    /// was served: every item the feed held, its score components, what the
-    /// viewer truly felt about it and what they did with it (`seen` marks how
-    /// far they scrolled). `None` for an untracked individual, or before
+    /// The feed a tracked individual was served on their last day with a
+    /// session, as it was served: one ranked list for the whole day, read by
+    /// the day's sessions in turn (docs/model.md, 6.1), with every item the
+    /// feed held, its score components, what the viewer truly felt about it
+    /// and what they did with it (`seen` marks the items a session reached,
+    /// `session` which one). `None` for an untracked individual, or before
     /// their first session since tracking began.
     pub fn served_feed(&self, id: u32) -> Option<&FeedExplanation> {
         self.inspector.served_feed(id)
     }
 
-    /// A preview: the feed `viewer` would get on opening the app now, with
-    /// every score component, for any user, tracked or not. It ranks the posts
+    /// A preview: the feed `viewer` would get on opening the app now, as
+    /// long as the first session's cap, with every score component, for any
+    /// user, tracked or not. It ranks the posts
     /// alive at the end of the last simulated day as the next day's session
     /// would, so they are a day older and that day's new posts do not exist
     /// yet; what a session really served is [`Simulation::served_feed`]. It
@@ -266,6 +270,7 @@ impl Simulation {
             served: false,
             kind,
             session_limit: limit,
+            sessions: Vec::new(),
             items: inspector::explained_items(
                 &self.world,
                 &scratch.candidates,

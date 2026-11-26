@@ -2,8 +2,9 @@
 //! section 9).
 //!
 //! Missing values are `f32::NAN`: survey satisfaction exists only on survey
-//! days, 30-day retention only from day 30, and the deactivation effect and
-//! the break group's change only on the last day of a run with that
+//! days, 30-day retention only from day 30, and the experiments' measures
+//! (the deactivation effect, the break group's change and the
+//! notifications-off changes) only on the last day of a run with that
 //! experiment. [`DailyMetrics::get_opt`]
 //! turns them into `None`, summaries average only the days that have a value,
 //! and JSON writes them as `null`.
@@ -96,12 +97,18 @@ metrics! {
     LikesPerActive, "likes_per_active", "Likes per active", Decimal, Engagement, Observable, "Likes per reported daily active.";
     RepliesPerActive, "replies_per_active", "Replies per active", Decimal, Engagement, Observable, "Replies per reported daily active.";
     SharesPerActive, "shares_per_active", "Shares per active", Decimal, Engagement, Observable, "Shares per reported daily active.";
+    SessionsPerActive, "sessions_per_active", "Sessions per active", Decimal, Engagement, Observable, "App sessions per reported daily active; each active bot counts as one session.";
+    NotificationSessionShare, "notification_session_share", "Sessions from notifications", Share, Engagement, Observable, "Share of today's sessions that a notification started.";
+    CandidatesPerFeed, "candidates_per_feed", "Candidates per feed", Decimal, Platform, Observable, "Mean candidates gathered for each feed served today, before ranking cuts the feed to its length (6.2).";
     Reports, "reports", "Reports", Count, Platform, Observable, "Posts reported today.";
     SeeLess, "see_less", "See-less marks", Count, Platform, Observable, "\"Show me less\" marks today.";
     AutoRemovals, "auto_removals", "Automated removals", Count, Platform, Observable, "Posts the classifier removed today.";
     HumanRemovals, "human_removals", "Human removals", Count, Platform, Observable, "Posts human reviewers removed today.";
     Notes, "notes", "Community notes", Count, Platform, Observable, "Notes attached today.";
     Revenue, "revenue", "Revenue", Money, Platform, Observable, "Ad and subscription revenue today.";
+    AdRevenue, "ad_revenue", "Ad revenue", Money, Platform, Observable, "Revenue from the ads people saw today.";
+    SubscriptionRevenue, "subscription_revenue", "Subscription revenue", Money, Platform, Observable, "Revenue from subscriptions today.";
+    SubscriberShare, "subscriber_share", "Subscribers per active", Share, Platform, Observable, "Subscribers per reported daily active.";
     Payouts, "payouts", "Creator payouts", Money, Creators, Observable, "Money paid to authors today.";
     NetRevenue, "net_revenue", "Net revenue", Money, Platform, Observable, "Revenue minus creator payouts today.";
     Retention30, "retention_30", "30-day retention", Share, Engagement, Observable, "Share of people active 30 days ago who are active today.";
@@ -125,6 +132,9 @@ metrics! {
     VulnerableLeftShare, "vulnerable_left_share", "Vulnerable who left", Share, Participants, Truth, "Share of vulnerable people who used the platform and left.";
     DeactivationEffect, "deactivation_effect", "Deactivation effect", Decimal, Participants, Truth, "Wellbeing gain of a deactivation experiment's break group over the users who stayed, in standard deviations; only on the last day of a run that sets one up.";
     BreakChange, "break_change", "Break group's change", Decimal, Participants, Truth, "Wellbeing change of a deactivation experiment's break group, in standard deviations; compared between a run and its placebo, it is the break's effect; only on the last day of a run that sets one up.";
+    NotificationsOffTime, "notifications_off_time", "Notifications-off time change", Decimal, Participants, Truth, "Change in daily time on the platform of a notifications-off experiment's treated group, from the week before, in standard deviations; compared between a run and its placebo, it is the effect of switching notifications off; only on the last day of a run that sets one up.";
+    NotificationsOffSessions, "notifications_off_sessions", "Notifications-off sessions change", Decimal, Participants, Truth, "Change in sessions a day of a notifications-off experiment's treated group, from the week before, in standard deviations; compared between a run and its placebo, it is the effect of switching notifications off; only on the last day of a run that sets one up.";
+    NotificationsOffWellbeing, "notifications_off_wellbeing", "Notifications-off wellbeing change", Decimal, Participants, Truth, "Wellbeing change of a notifications-off experiment's treated group, in standard deviations; compared between a run and its placebo, it is the effect of switching notifications off; only on the last day of a run that sets one up.";
     PolarisationUsers, "polarisation_users", "Polarisation of users", Score, Participants, Truth, "Mean affective polarisation of users.";
     InformednessUsers, "informedness_users", "Informedness of users", Score, Participants, Truth, "Mean informedness of users.";
     PolarisationNonUsers, "polarisation_non_users", "Polarisation of non-users", Score, NonUsers, Truth, "Mean affective polarisation of non-users.";
@@ -211,11 +221,19 @@ impl MetricId {
     }
 
     /// Whether the metric exists only in a run that sets up an experiment
-    /// (the deactivation experiment's effect and its break group's change):
-    /// it has no value in an ordinary run, so metric pickers and default
-    /// tables leave it out.
+    /// (the deactivation experiment's effect and its break group's change,
+    /// and the notifications-off experiment's three changes): it has no
+    /// value in an ordinary run, so metric pickers and default tables leave
+    /// it out.
     pub fn needs_experiment(self) -> bool {
-        matches!(self, MetricId::DeactivationEffect | MetricId::BreakChange)
+        matches!(
+            self,
+            MetricId::DeactivationEffect
+                | MetricId::BreakChange
+                | MetricId::NotificationsOffTime
+                | MetricId::NotificationsOffSessions
+                | MetricId::NotificationsOffWellbeing
+        )
     }
 
     /// The post-share metric of a style.

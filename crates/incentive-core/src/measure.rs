@@ -18,6 +18,11 @@ const SURVEY_BIAS: f32 = 0.1;
 /// benefit index. The text says 2; the best presets reach about 0.06, so 2
 /// would flatten that component to zero (docs/model.md, section 13).
 const MEANINGFUL_BENCHMARK: f32 = 0.2;
+/// Human impressions per individual, in typical sessions
+/// (`base_session_items`), at which the engagement index reaches 1, as in the
+/// text. With the checking habits of docs/model.md, 11, the most engaging
+/// designs reach the cap (9.3 and 13.2).
+const ENGAGEMENT_BENCHMARK_SESSIONS: f32 = 1.5;
 /// Days of the retention measure.
 const RETENTION_DAYS: u32 = 30;
 
@@ -49,12 +54,26 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::LikesPerActive, ratio(t.likes as f32, dau));
     m.set(M::RepliesPerActive, ratio(t.replies as f32, dau));
     m.set(M::SharesPerActive, ratio(t.shares as f32, dau));
+    // Each active bot counts as one session, the first and only one.
+    let sessions = t.sessions as f32 + active_bots;
+    m.set(M::SessionsPerActive, ratio(sessions, dau));
+    m.set(
+        M::NotificationSessionShare,
+        ratio(t.notification_sessions as f32, sessions),
+    );
+    m.set(
+        M::CandidatesPerFeed,
+        ratio(t.candidates as f32, t.feeds as f32),
+    );
     m.set(M::Reports, t.reports as f32);
     m.set(M::SeeLess, t.see_less as f32);
     m.set(M::AutoRemovals, t.auto_removals as f32);
     m.set(M::HumanRemovals, t.human_removals as f32);
     m.set(M::Notes, t.notes as f32);
     m.set(M::Revenue, t.revenue);
+    m.set(M::AdRevenue, t.ad_revenue);
+    m.set(M::SubscriptionRevenue, t.subscription_revenue);
+    m.set(M::SubscriberShare, ratio(t.subscribers as f32, dau));
     m.set(M::Payouts, t.payouts);
     m.set(M::NetRevenue, t.revenue - t.payouts);
     m.set(M::Retention30, retention(world, ctx.day));
@@ -98,6 +117,10 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::LowValueTime, ratio(t.low_value_dwell, t.dwell));
     m.set(M::DeactivationEffect, experiment::effect(world, ctx));
     m.set(M::BreakChange, experiment::break_change(world, ctx));
+    let [time, sessions, wellbeing] = experiment::notifications_off_changes(world, ctx);
+    m.set(M::NotificationsOffTime, time);
+    m.set(M::NotificationsOffSessions, sessions);
+    m.set(M::NotificationsOffWellbeing, wellbeing);
     m.set(M::TopToxicShare, t.top_toxic_share);
     m.set(M::TopTruthfulShare, t.top_truthful_share);
     m.set(
@@ -315,7 +338,7 @@ fn gini(sorted: &[f32]) -> f32 {
 /// The composite indices of docs/model.md, 9.3.
 fn indices(world: &World, config: &Config, m: &mut DailyMetrics) {
     let n = world.population() as f32;
-    let benchmark = 1.5 * n * config.world.base_session_items;
+    let benchmark = ENGAGEMENT_BENCHMARK_SESSIONS * n * config.world.base_session_items;
     m.set(
         M::EngagementIndex,
         (m.get(M::Impressions) / benchmark).min(1.0),
@@ -433,6 +456,30 @@ mod tests {
         world.tally.dwell = 8.0;
         world.tally.low_value_dwell = 2.0;
         assert_eq!(measure(&world, &ctx).get(M::LowValueTime), 0.25);
+    }
+
+    #[test]
+    fn sessions_per_active_counts_each_bot_once_and_notifications_apart() {
+        let mut config = Config::default();
+        config.run.population_size = 200;
+        let mut world = crate::init::build_world(&config);
+        let ctx = DayCtx {
+            config: &config,
+            day: 3,
+        };
+        let bots = world.bots.iter().filter(|b| b.active).count() as f32;
+        world.tally.openers = 20;
+        world.tally.sessions = 50;
+        world.tally.notification_sessions = 10;
+        let m = measure(&world, &ctx);
+        assert_eq!(m.get(M::SessionsPerActive), (50.0 + bots) / (20.0 + bots));
+        assert_eq!(m.get(M::NotificationSessionShare), 10.0 / (50.0 + bots));
+        // One session per opener: one session per active, none from notifications.
+        world.tally.sessions = 20;
+        world.tally.notification_sessions = 0;
+        let m = measure(&world, &ctx);
+        assert_eq!(m.get(M::SessionsPerActive), 1.0);
+        assert_eq!(m.get(M::NotificationSessionShare), 0.0);
     }
 
     #[test]

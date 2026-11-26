@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use crate::bots::Bot;
 use crate::config::Config;
 use crate::content::STYLE_COUNT;
-use crate::experiment::Experiment;
+use crate::experiment::{Experiment, Usage};
 use crate::network::Accounts;
 use crate::person::Person;
 use crate::posts::PostStore;
@@ -99,7 +99,7 @@ pub(crate) struct PlatformState {
 /// the toxicity people experienced, behind the platform's reputation, the
 /// day-0 polarisation the indices measure against, the hidden impulsivity
 /// order in which people adopt user controls, and a researcher's
-/// deactivation experiment.
+/// experiment.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TruthState {
     /// Each individual's position when sorted by ascending impulsivity, a
@@ -109,9 +109,13 @@ pub(crate) struct TruthState {
     pub toxic_history: VecDeque<f32>,
     /// Society-wide affective polarisation before day 0.
     pub polarisation_day0: f32,
-    /// The deactivation experiment, from its first day on (docs/model.md,
-    /// 13.2).
+    /// The researcher's experiment, deactivation or notifications off, from
+    /// its first day on (docs/model.md, 13.2).
     pub experiment: Option<Experiment>,
+    /// Each individual's usage over the days before a notifications-off
+    /// experiment, its participants' baseline; empty otherwise, and emptied
+    /// on the experiment's first day.
+    pub baseline_usage: Vec<Usage>,
 }
 
 impl TruthState {
@@ -129,6 +133,22 @@ impl TruthState {
         self.experiment.as_ref().is_some_and(|e| e.on_break(i))
     }
 
+    /// Individual `i`'s own notification intensity under the design's
+    /// `intensity`: 0 for someone whose notifications a notifications-off
+    /// experiment switched off, the design's for everyone else
+    /// (docs/model.md, 6.1 and 13.2).
+    pub(crate) fn notification_intensity(&self, i: usize, intensity: f32) -> f32 {
+        if self
+            .experiment
+            .as_ref()
+            .is_some_and(|e| e.notifications_off(i))
+        {
+            0.0
+        } else {
+            intensity
+        }
+    }
+
     /// Records today's toxic impression share.
     pub(crate) fn push_toxic_share(&mut self, share: f32) {
         if self.toxic_history.len() == REPUTATION_DAYS {
@@ -142,9 +162,21 @@ impl TruthState {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DayTally {
     pub openers: u32,
+    /// Human sessions today, the first and the extra ones (docs/model.md,
+    /// 6.1).
+    pub sessions: u32,
+    /// Of those, the sessions a notification started.
+    pub notification_sessions: u32,
+    /// Feeds served today, one per opener (docs/model.md, 6.2).
+    pub feeds: u32,
+    /// Candidates those feeds gathered, before ranking cut them to length.
+    pub candidates: u32,
     pub new_accounts: u32,
     pub departures: u32,
     pub impressions: u32,
+    /// Human impressions that carried ads: those of people who do not
+    /// subscribe (docs/model.md, 8.3).
+    pub ad_impressions: u32,
     pub dwell: f32,
     pub likes: u32,
     pub replies: u32,
@@ -175,6 +207,12 @@ pub(crate) struct DayTally {
     pub low_value_dwell: f32,
     pub cross_group_likes: u32,
     pub revenue: f32,
+    /// Of the revenue, what ads brought in.
+    pub ad_revenue: f32,
+    /// Of the revenue, what subscriptions brought in.
+    pub subscription_revenue: f32,
+    /// Users who pay for a subscription today.
+    pub subscribers: u32,
     pub payouts: f32,
     pub payout_by_style: [f32; STYLE_COUNT],
     pub impressions_by_style: [u32; STYLE_COUNT],

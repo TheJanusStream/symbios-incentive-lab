@@ -76,6 +76,12 @@ pub struct PersonState {
     /// Reflective utility summed since the last subscription decision.
     #[serde(skip)]
     pub(crate) eref_window: f32,
+    /// Ad annoyance felt since the last subscription decision.
+    #[serde(skip)]
+    pub(crate) annoyance_window: f32,
+    /// Items seen since the last subscription decision.
+    #[serde(skip)]
+    pub(crate) items_window: u32,
     /// Activity of the last 64 days, today in the lowest bit.
     #[serde(skip)]
     pub(crate) active_bits: u64,
@@ -90,6 +96,12 @@ pub(crate) struct DayAccumulators {
     pub opened: bool,
     pub posts: u32,
     pub items: u32,
+    /// Items seen with ads today, while not subscribing (docs/model.md, 8.3).
+    pub ad_items: u32,
+    /// Ad annoyance felt today, included in `e_ref` (docs/model.md, 7.2).
+    pub ad_annoyance: f32,
+    /// Today's dwell, the time on the platform (docs/model.md, 7.1).
+    pub dwell: f32,
     pub e_imp: f32,
     /// Reflective utility before the time cost (docs/model.md, 7.2):
     /// subscriptions read it.
@@ -97,6 +109,13 @@ pub(crate) struct DayAccumulators {
     /// The time cost of today's impressions, `time_cost * D` summed
     /// (docs/model.md, 7.2), kept apart from `e_ref`.
     pub time_cost: f32,
+    /// The interruption cost of today's notification-driven extra sessions
+    /// (docs/model.md, 7.2), kept apart like the time cost.
+    pub interruption_cost: f32,
+    /// Habitual extra sessions today, after the first (docs/model.md, 6.1).
+    pub habitual_sessions: u32,
+    /// Notification-driven extra sessions today, after the first.
+    pub notified_sessions: u32,
     pub harassment: u32,
     pub likes_received: u32,
     pub mutual_replies: u32,
@@ -111,10 +130,10 @@ pub(crate) struct DayAccumulators {
 }
 
 impl DayAccumulators {
-    /// Reflective utility after the time cost, what wellbeing and stay
-    /// utility read (docs/model.md, 7.3).
+    /// Reflective utility after the time cost and the interruption cost,
+    /// what wellbeing and stay utility read (docs/model.md, 7.3).
     pub(crate) fn net_reflective(&self) -> f32 {
-        self.e_ref - self.time_cost
+        self.e_ref - self.time_cost - self.interruption_cost
     }
 
     pub(crate) fn clear(&mut self) {
@@ -172,6 +191,8 @@ impl Person {
             alt_feed_user: false,
             time_limited: false,
             eref_window: 0.0,
+            annoyance_window: 0.0,
+            items_window: 0,
             active_bits: 0,
             today: DayAccumulators::default(),
         };

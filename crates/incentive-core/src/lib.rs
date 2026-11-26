@@ -57,8 +57,9 @@ pub use atlas::{
 };
 pub use config::{
     AltFeed, ArchetypeShares, BotStrategy, Config, DEACTIVATION_DAYS, DEACTIVATION_SHARE,
-    Deactivation, DesignLevers, ModerationAction, PayoutScheme, PopulationSettings, RunSettings,
-    Sanctions, WorldAssumptions,
+    Deactivation, DesignLevers, ModerationAction, NOTIFICATIONS_OFF_BASELINE_DAYS,
+    NOTIFICATIONS_OFF_DAYS, NOTIFICATIONS_OFF_SHARE, NotificationsOff, PayoutScheme,
+    PopulationSettings, RunSettings, Sanctions, WorldAssumptions,
 };
 pub use config_path::FieldValue;
 pub use content::{Group, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS};
@@ -66,7 +67,7 @@ pub use error::ConfigError;
 pub use facts::{Bound, Check, CheckResult, Fact, FactRun, Variant, facts};
 pub use inspector::{
     AGENT_HISTORY_DAYS, AgentDay, AgentView, ExplainedItem, FeedExplanation, ItemActions,
-    TrueResponse,
+    ServedSession, SessionKind, TrueResponse,
 };
 pub use metrics::{
     DailyMetrics, Family, Format, METRIC_COUNT, MOVING_STANDARD_ERRORS, MOVING_THRESHOLD, MetricId,

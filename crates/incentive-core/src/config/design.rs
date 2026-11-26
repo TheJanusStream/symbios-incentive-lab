@@ -124,7 +124,8 @@ pub struct DesignLevers {
     pub alt_feed: AltFeed,
     /// Cost of opening an account.
     pub account_cost: f32,
-    /// Share of the business funded by ads; the rest by subscriptions.
+    /// Ad load for everyone who does not subscribe to the ad-free tier
+    /// (docs/model.md, 8.3).
     pub ads_share: f32,
     /// Share of survey answers collected right after a session, when
     /// momentary pleasure weighs twice as much in the answer.

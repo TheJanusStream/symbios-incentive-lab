@@ -104,16 +104,12 @@ fn every_metric_is_labelled_and_measured() {
     for id in MetricId::all() {
         let info = id.info();
         assert!(!info.key.is_empty() && !info.description.is_empty());
-        // The survey is weekly, retention needs 30 days, and the default
-        // design pays no creators.
+        // The survey is weekly, retention needs 30 days, the default design
+        // pays no creators, and the experiments' measures need an experiment.
         let missing_allowed = matches!(
             id,
-            MetricId::SurveySatisfaction
-                | MetricId::Retention30
-                | MetricId::HarmfulPayoutShare
-                | MetricId::DeactivationEffect
-                | MetricId::BreakChange
-        );
+            MetricId::SurveySatisfaction | MetricId::Retention30 | MetricId::HarmfulPayoutShare
+        ) || id.needs_experiment();
         assert!(
             missing_allowed || day.get_opt(id).is_some(),
             "{} missing on day 0",
@@ -213,7 +209,7 @@ fn the_inspector_tracks_two_per_archetype_and_explains_feeds() {
         .expect("a user");
     let feed = sim.explain_feed(viewer).expect("a user's feed");
     assert_eq!(feed.kind, FeedKind::Ranked);
-    assert!(!feed.items.is_empty() && feed.items.len() <= feed.session_limit);
+    assert!(!feed.items.is_empty() && feed.items.len() <= day_cap(&feed));
     for pair in feed.items.windows(2) {
         assert!(pair[0].score >= pair[1].score, "ranked feed out of order");
     }
@@ -223,11 +219,22 @@ fn the_inspector_tracks_two_per_archetype_and_explains_feeds() {
     }
 }
 
+/// The most items a feed can hold: a preview is as long as the first
+/// session's cap; a served feed is the day's whole feed, read by all of the
+/// day's sessions (docs/model.md, 6.1), so at most the sum of their caps.
+fn day_cap(feed: &FeedExplanation) -> usize {
+    if feed.sessions.is_empty() {
+        feed.session_limit
+    } else {
+        feed.sessions.iter().map(|s| s.cap).sum()
+    }
+}
+
 /// Scores are the sum of their components and fall with rank in a ranked
 /// feed, the diversity adjustment included.
 fn assert_ranked_in_order(feed: &FeedExplanation) {
     assert_eq!(feed.kind, FeedKind::Ranked);
-    assert!(!feed.items.is_empty() && feed.items.len() <= feed.session_limit);
+    assert!(!feed.items.is_empty() && feed.items.len() <= day_cap(feed));
     for item in &feed.items {
         assert!((item.components.total() - item.score).abs() < 1e-5);
     }
