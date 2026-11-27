@@ -126,6 +126,7 @@ pub(crate) fn write_posts(world: &mut World, ctx: &DayCtx) {
             if style == Style::Attack {
                 post.target = targets.pick(&mut post_rng, author.group);
             }
+            let toxicity = post.toxicity;
             world.posts.push(post);
             world.accounts.recent_posts[i].push(id);
             world.tally.posts_by_style[style.index()] += 1;
@@ -133,6 +134,7 @@ pub(crate) fn write_posts(world: &mut World, ctx: &DayCtx) {
             let state = &mut world.people[i].state;
             state.posts_written += 1;
             state.today.posts += 1;
+            state.today.post_toxicity += toxicity;
             state.today.styles_written |= 1 << style.index();
         }
     }

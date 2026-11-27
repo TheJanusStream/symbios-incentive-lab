@@ -105,11 +105,13 @@ fn every_metric_is_labelled_and_measured() {
         let info = id.info();
         assert!(!info.key.is_empty() && !info.description.is_empty());
         // The survey is weekly, retention needs 30 days, the default design
-        // pays no creators, and the experiments' measures need an experiment.
+        // pays no creators, the experiments' measures need an experiment, and
+        // diagnostics need their subject (posts ending, notes).
         let missing_allowed = matches!(
             id,
             MetricId::SurveySatisfaction | MetricId::Retention30 | MetricId::HarmfulPayoutShare
-        ) || id.needs_experiment();
+        ) || id.needs_experiment()
+            || id.diagnostic();
         assert!(
             missing_allowed || day.get_opt(id).is_some(),
             "{} missing on day 0",

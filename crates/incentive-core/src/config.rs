@@ -62,6 +62,11 @@ pub struct RunSettings {
     /// with `deactivation`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications_off: Option<NotificationsOff>,
+    /// A per-person feed experiment at the end of the run, a researcher's
+    /// intervention (docs/model.md, 13.2); `None`, the default, runs none.
+    /// At most one experiment runs at a time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feed_experiment: Option<FeedExperiment>,
 }
 
 /// Days of a deactivation experiment's break by default.
@@ -71,16 +76,16 @@ pub const DEACTIVATION_DAYS: u32 = 35;
 pub const DEACTIVATION_SHARE: f32 = 0.1;
 
 /// A deactivation experiment (docs/model.md, 13.2, and fact 6 of section
-/// 15): over the last `days` days of the run, a random `share` of the regular
-/// users stays off the platform, as the paid participants of a field
-/// experiment do. Its effect within one run is the truth metric
+/// 15): over `days` days that end `ends_before_end` days before the end of
+/// the run (by default with it), a random `share` of the regular users stays
+/// off the platform, as the paid participants of a field experiment do. Its effect within one run is the truth metric
 /// `deactivation_effect`; the truth metric `break_change` is the break
 /// group's own change, compared across a real run and its placebo.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Deactivation {
-    /// Days the break lasts; it ends with the run, so it starts this many
-    /// days before the end. At least 1 and less than the run's days.
+    /// Days the break lasts. At least 1, and the break with the days after
+    /// it must leave at least one day of the run before it.
     pub days: u32,
     /// Chance that each eligible user joins the break group, in `(0, 1]`.
     pub share: f32,
@@ -92,6 +97,18 @@ pub struct Deactivation {
     /// 13.2). Left out of JSON when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub placebo: bool,
+    /// Days between the break's end and the run's end, 0 by default: the
+    /// break covers the days `[end - ends_before_end - days, end -
+    /// ends_before_end)`. After it the break group uses the platform again
+    /// under the usual rules, and the truth metric `post_break_dwell` reads
+    /// their time on it. Left out of JSON when 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ends_before_end: u32,
+}
+
+/// Whether a count is 0, so that serde leaves it out.
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl Default for Deactivation {
@@ -100,6 +117,7 @@ impl Default for Deactivation {
             days: DEACTIVATION_DAYS,
             share: DEACTIVATION_SHARE,
             placebo: false,
+            ends_before_end: 0,
         }
     }
 }
@@ -107,7 +125,13 @@ impl Default for Deactivation {
 impl Deactivation {
     /// The first day of the break in a run of `run_days` days.
     pub fn first_day(&self, run_days: u32) -> u32 {
-        run_days.saturating_sub(self.days)
+        run_days.saturating_sub(self.days.saturating_add(self.ends_before_end))
+    }
+
+    /// The first day after the break in a run of `run_days` days: the run's
+    /// length when the break ends with the run.
+    pub fn end_day(&self, run_days: u32) -> u32 {
+        run_days.saturating_sub(self.ends_before_end)
     }
 }
 
@@ -165,6 +189,78 @@ impl NotificationsOff {
     }
 }
 
+/// Days of a feed experiment by default, the 90 days of the field studies
+/// (docs/model.md, 13.2).
+pub const FEED_EXPERIMENT_DAYS: u32 = 90;
+/// Share of the eligible users a feed experiment treats by default.
+pub const FEED_EXPERIMENT_SHARE: f32 = 0.2;
+
+/// How a feed experiment changes the treated viewers' feeds (docs/model.md,
+/// 13.2). Every kind acts on the candidates or the ranking of the treated
+/// only; a placebo run changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum FeedExperimentKind {
+    /// Drops candidates whose toxicity classifier score (docs/model.md, 6.7),
+    /// an observable score, exceeds `threshold`, as the field study hid posts
+    /// above a classifier's score.
+    HideFlagged {
+        /// Classifier score above which a post is hidden, in `[0, 1]`.
+        threshold: f32,
+    },
+    /// Drops reshares from the candidates, keeping the original posts, in
+    /// network and recommended.
+    #[default]
+    NoReshares,
+    /// Subtracts `penalty` from the ranking score of posts by the viewer's
+    /// own group, so fewer of them reach the top of the feed. A
+    /// chronological feed has no score, so it is unchanged.
+    FewerSameGroup {
+        /// The score penalty, in `[0, 10]`.
+        penalty: f32,
+    },
+}
+
+/// A per-person feed experiment (docs/model.md, 13.2): over the last `days`
+/// days of the run, a random `share` of the regular users gets a changed
+/// feed, as the field studies' extensions and holdbacks gave their
+/// participants. Its measures are the truth metrics `feed_experiment_*`,
+/// compared across a real run and its placebo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedExperiment {
+    /// What changes in the treated viewers' feeds.
+    pub kind: FeedExperimentKind,
+    /// Days the experiment lasts; it ends with the run. At least 1 and less
+    /// than the run's days.
+    pub days: u32,
+    /// Chance that each eligible user is treated, in `(0, 1]`.
+    pub share: f32,
+    /// A placebo run: the participants are found and the treated group
+    /// drawn exactly as in a real run, but nobody's feed changes. Left out
+    /// of JSON when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub placebo: bool,
+}
+
+impl Default for FeedExperiment {
+    fn default() -> Self {
+        Self {
+            kind: FeedExperimentKind::default(),
+            days: FEED_EXPERIMENT_DAYS,
+            share: FEED_EXPERIMENT_SHARE,
+            placebo: false,
+        }
+    }
+}
+
+impl FeedExperiment {
+    /// The experiment's first day in a run of `run_days` days.
+    pub fn first_day(&self, run_days: u32) -> u32 {
+        run_days.saturating_sub(self.days)
+    }
+}
+
 impl Default for RunSettings {
     fn default() -> Self {
         Self {
@@ -180,6 +276,7 @@ impl Default for RunSettings {
             tracked_agents: 10,
             deactivation: None,
             notifications_off: None,
+            feed_experiment: None,
         }
     }
 }
@@ -277,8 +374,27 @@ impl Config {
         check_int("run.initial_follows", r.initial_follows, 0, 1_000)?;
         check_float("run.summary_window", r.summary_window, 0.01, 1.0)?;
         check_int("run.tracked_agents", r.tracked_agents, 0, 1_000)?;
+        let experiments = [
+            r.deactivation.is_some(),
+            r.notifications_off.is_some(),
+            r.feed_experiment.is_some(),
+        ];
+        if experiments.iter().filter(|&&on| on).count() > 1 {
+            return Err(ConfigError::Invalid(
+                "at most one of run.deactivation, run.notifications_off and run.feed_experiment \
+                 may be set: at most one experiment runs at a time"
+                    .into(),
+            ));
+        }
         if let Some(d) = &r.deactivation {
-            check_int("run.deactivation.days", d.days, 1, r.days.saturating_sub(1))?;
+            let room = r.days.saturating_sub(1);
+            check_int(
+                "run.deactivation.ends_before_end",
+                d.ends_before_end,
+                0,
+                room.saturating_sub(1),
+            )?;
+            check_int("run.deactivation.days", d.days, 1, room - d.ends_before_end)?;
             if !(d.share > 0.0 && d.share <= 1.0) {
                 return Err(ConfigError::Invalid(format!(
                     "run.deactivation.share must lie above 0 and at most 1, not {}",
@@ -287,13 +403,6 @@ impl Config {
             }
         }
         if let Some(n) = &r.notifications_off {
-            if r.deactivation.is_some() {
-                return Err(ConfigError::Invalid(
-                    "run.deactivation and run.notifications_off cannot both be set: at most one \
-                     experiment runs at a time"
-                        .into(),
-                ));
-            }
             let most = r.days.saturating_sub(NOTIFICATIONS_OFF_BASELINE_DAYS);
             check_int("run.notifications_off.days", n.days, 1, most)?;
             if !(n.share > 0.0 && n.share <= 1.0) {
@@ -301,6 +410,29 @@ impl Config {
                     "run.notifications_off.share must lie above 0 and at most 1, not {}",
                     n.share
                 )));
+            }
+        }
+        if let Some(f) = &r.feed_experiment {
+            check_int(
+                "run.feed_experiment.days",
+                f.days,
+                1,
+                r.days.saturating_sub(1),
+            )?;
+            if !(f.share > 0.0 && f.share <= 1.0) {
+                return Err(ConfigError::Invalid(format!(
+                    "run.feed_experiment.share must lie above 0 and at most 1, not {}",
+                    f.share
+                )));
+            }
+            match f.kind {
+                FeedExperimentKind::HideFlagged { threshold } => {
+                    check_float("run.feed_experiment.kind.threshold", threshold, 0.0, 1.0)?;
+                }
+                FeedExperimentKind::FewerSameGroup { penalty } => {
+                    check_float("run.feed_experiment.kind.penalty", penalty, 0.0, 10.0)?;
+                }
+                FeedExperimentKind::NoReshares => {}
             }
         }
         let p = &self.population;
@@ -401,7 +533,7 @@ mod tests {
             c.run.deactivation = Some(Deactivation {
                 days,
                 share,
-                placebo: false,
+                ..Deactivation::default()
             });
             c.validate().is_ok()
         };
@@ -413,6 +545,10 @@ mod tests {
         c.run.days = 100;
         c.run.deactivation = Some(Deactivation::default());
         assert!(!c.to_json_pretty().contains("placebo"), "false is left out");
+        assert!(
+            !c.to_json_pretty().contains("ends_before_end"),
+            "0 is left out"
+        );
         assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c.clone()));
         // A placebo run is written out and read back.
         c.run.deactivation = Some(Deactivation {
@@ -421,6 +557,99 @@ mod tests {
         });
         assert!(c.to_json_pretty().contains("\"placebo\": true"));
         assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c));
+    }
+
+    #[test]
+    fn the_break_may_end_before_the_run() {
+        let d = Deactivation {
+            days: 35,
+            ends_before_end: 28,
+            ..Deactivation::default()
+        };
+        assert_eq!((d.first_day(100), d.end_day(100)), (37, 72));
+        assert_eq!(Deactivation::default().end_day(100), 100);
+        let with = |days: u32, offset: u32| {
+            let mut c = Config::default();
+            c.run.days = 100;
+            c.run.deactivation = Some(Deactivation {
+                days,
+                ends_before_end: offset,
+                ..Deactivation::default()
+            });
+            c.validate().is_ok()
+        };
+        assert!(with(35, 28) && with(1, 98) && with(71, 28));
+        assert!(!with(72, 28), "no day before the break");
+        assert!(!with(1, 99), "no room for a break");
+        let mut c = Config::default();
+        c.run.deactivation = Some(d);
+        assert!(c.to_json_pretty().contains("\"ends_before_end\": 28"));
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c));
+    }
+
+    #[test]
+    fn the_feed_experiment_is_optional_validated_and_alone() {
+        let config = Config::default();
+        assert!(config.run.feed_experiment.is_none());
+        assert!(!config.to_json_pretty().contains("feed_experiment"));
+        let parsed = Config::from_json(r#"{"run": {"days": 100, "feed_experiment": {}}}"#);
+        let f = parsed.ok().and_then(|c| c.run.feed_experiment);
+        assert_eq!(f, Some(FeedExperiment::default()));
+        assert_eq!(FeedExperiment::default().first_day(100), 10);
+        let text = r#"{"run": {"feed_experiment": {"kind": {"hide_flagged": {"threshold": 0.4}},
+            "days": 42, "share": 0.2}}}"#;
+        let f = Config::from_json(text)
+            .ok()
+            .and_then(|c| c.run.feed_experiment);
+        assert_eq!(
+            f.map(|f| (f.kind, f.days)),
+            Some((FeedExperimentKind::HideFlagged { threshold: 0.4 }, 42))
+        );
+        let text = r#"{"run": {"feed_experiment": {"kind": "no_reshares"}}}"#;
+        assert!(Config::from_json(text).is_ok());
+        let text =
+            r#"{"run": {"feed_experiment": {"kind": {"fewer_same_group": {"penalty": 0.3}}}}}"#;
+        assert!(Config::from_json(text).is_ok());
+        let with = |kind: FeedExperimentKind, days: u32, share: f32| {
+            let mut c = Config::default();
+            c.run.days = 100;
+            c.run.feed_experiment = Some(FeedExperiment {
+                kind,
+                days,
+                share,
+                placebo: false,
+            });
+            c.validate().is_ok()
+        };
+        let none = FeedExperimentKind::NoReshares;
+        assert!(with(none, 1, 0.2) && with(none, 99, 1.0));
+        assert!(!with(none, 0, 0.2) && !with(none, 100, 0.2));
+        assert!(!with(none, 10, 0.0) && !with(none, 10, 1.5) && !with(none, 10, f32::NAN));
+        let hide = |threshold| FeedExperimentKind::HideFlagged { threshold };
+        assert!(with(hide(0.0), 10, 0.2) && with(hide(1.0), 10, 0.2));
+        assert!(!with(hide(-0.1), 10, 0.2) && !with(hide(f32::NAN), 10, 0.2));
+        let penalty = |penalty| FeedExperimentKind::FewerSameGroup { penalty };
+        assert!(with(penalty(0.5), 10, 0.2) && !with(penalty(-0.5), 10, 0.2));
+        // A placebo is written out and read back; false is left out.
+        let mut c = Config::default();
+        c.run.feed_experiment = Some(FeedExperiment {
+            kind: hide(0.45),
+            ..FeedExperiment::default()
+        });
+        assert!(!c.to_json_pretty().contains("placebo"));
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c.clone()));
+        if let Some(f) = c.run.feed_experiment.as_mut() {
+            f.placebo = true;
+        }
+        assert!(c.to_json_pretty().contains("\"placebo\": true"));
+        assert_eq!(Config::from_json(&c.to_json_pretty()).ok(), Some(c.clone()));
+        // At most one experiment at a time.
+        let mut both = c.clone();
+        both.run.deactivation = Some(Deactivation::default());
+        assert!(matches!(both.validate(), Err(ConfigError::Invalid(_))));
+        let mut both = c;
+        both.run.notifications_off = Some(NotificationsOff::default());
+        assert!(matches!(both.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]

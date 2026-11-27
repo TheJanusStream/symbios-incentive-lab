@@ -90,6 +90,15 @@ pub struct Post {
     pub demoted: bool,
     /// Has a community note.
     pub noted: bool,
+    /// Human shares when the note was attached; 0 for a post without a
+    /// note. Kept for the truth metric `noted_shares_before_note`.
+    #[serde(skip)]
+    pub shares_at_note: u32,
+    /// The toxicity classifier's score of the post, `flag` of docs/model.md,
+    /// 6.7, which the platform computes when it screens the post
+    /// (observable); `None` for a post it did not screen.
+    #[serde(skip)]
+    pub classifier_score: Option<f32>,
     /// Already seen by a human reviewer.
     pub reviewed: bool,
     /// Severity of the sanction its strike drew: 0 none, 1 a warning, 2 a
@@ -343,6 +352,8 @@ pub(crate) fn generate_post(
         struck: false,
         demoted: false,
         noted: false,
+        shares_at_note: 0,
+        classifier_score: None,
         reviewed: false,
         sanction_severity: 0,
         followers_gained: 0,

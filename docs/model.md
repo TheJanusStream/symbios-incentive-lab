@@ -206,10 +206,11 @@ A post is a feed candidate for `run.post_lifetime_days` (default 3) days.
 ## 5. A simulated day
 
 The phases run in this order, and within a phase in ascending individual index, so a run is a pure function of its
-configuration (section 12). Before them, on the first day of an experiment (a deactivation or a notifications-off
-experiment, 13.2), the experiment finds the regular users and draws its treated group; after phase 13, a
+configuration (section 12). Before them, on the first day of an experiment (a deactivation, a notifications-off or a
+feed experiment, 13.2), the experiment finds the regular users and draws its treated group; after phase 13, a
 notifications-off experiment logs each person's time on the platform and sessions over its baseline week and its
-own days.
+own days, a feed experiment logs each person's use and exposure over its days, and a break that ends before the run
+takes its measures on its last day and logs its group's time on the platform after it.
 
 1. Bots: replace banned bots (3.5).
 2. Joining: non-users may join, churned users may return (7.4).
@@ -704,16 +705,59 @@ per metric and the list of `moving` metrics, and the runner's tables mark moving
   replies and likes between mutual follows on Personal posts); the share of Vulnerable individuals who left; time not
   worth it (`low_value_time`): dwell on impressions whose reflective value is below their time cost,
   `R < time_cost * D`, divided by all dwell (at `time_cost` 0, the share of time on items with negative `R`).
-- Experiment: the deactivation effect (`deactivation_effect`), the mean wellbeing change of a deactivation
-  experiment's break group minus that of its stayers, and the break group's change (`break_change`), the mean
-  wellbeing change of everyone assigned to the break, both in standard deviations of the participants' wellbeing at
-  the start (13.2). Compared between a run and its placebo, the break group's change gives the break's effect, fact
-  6's measure. The notifications-off experiment's changes (`notifications_off_time`, `notifications_off_sessions`,
-  `notifications_off_wellbeing`): the treated group's mean change in daily time on the platform and in sessions a
-  day, from each participant's mean over the week before to their mean over the experiment's days, and in
-  wellbeing, each in standard deviations of the participants' baseline (13.2); compared between a run and its
-  placebo, they give fact 7's measures. All five exist only on the last day of a run that sets their experiment
+- Experiment: the deactivation effect (`deactivation_effect`), the mean wellbeing change of a deactivation experiment's
+  break group minus that of its stayers, and the break group's change (`break_change`), the mean wellbeing change of
+  everyone assigned to the break, both in standard deviations of the participants' wellbeing at the start (13.2).
+  Compared between a run and its placebo, the break group's change gives the break's effect, fact 6's measure. Beside
+  it, the break group's changes in affective polarisation (`break_polarisation`) and informedness
+  (`break_informedness`), measured the same way in standard deviations of the participants' values at the start, and the
+  same two changes unscaled, in the quantities' own units (`break_polarisation_raw`, `break_informedness_raw`). All six
+  are taken at the end of the break's last day, which is the run's last day unless the break ends earlier
+  (`ends_before_end`, 13.2); then the break group's mean daily time on the platform from the break's end to the run's
+  end (`post_break_dwell`) is measured too, every member counted, with no time on a day without a session or after
+  leaving. The notifications-off experiment's changes (`notifications_off_time`, `notifications_off_sessions`,
+  `notifications_off_wellbeing`): the treated group's mean change in daily time on the platform and in sessions a day,
+  from each participant's mean over the week before to their mean over the experiment's days, and in wellbeing, each in
+  standard deviations of the participants' baseline (13.2); compared between a run and its placebo, they give fact 7's
+  measures. The feed experiment's measures (13.2), over its days, for everyone assigned to the treated group, leavers
+  counted with no use after leaving: mean daily time on the platform (`feed_experiment_dwell`) and mean daily engagement
+  actions, likes, replies and shares given (`feed_experiment_engagement`); the toxic, misinformation and same-group
+  shares of their impressions (`feed_experiment_toxic_share`, `feed_experiment_misinformation_share`,
+  `feed_experiment_same_group_share`), the mean toxicity of the posts they wrote (`feed_experiment_post_toxicity`) and
+  the mean truth of the posts they shared (`feed_experiment_shared_truth`), each pooled over the whole group's items;
+  and their mean changes in affective polarisation, informedness and wellbeing from the start of the first day to the
+  end of the last (`feed_experiment_polarisation`, `feed_experiment_informedness`, `feed_experiment_wellbeing`), in
+  standard deviations of all participants' values at the start, and the polarisation and informedness changes unscaled
+  (`feed_experiment_polarisation_raw`, `feed_experiment_informedness_raw`). The model's spread of informedness across
+  participants is small, so a change in its standard deviations comes out large; the unscaled changes sit beside the
+  scaled ones. A hide-flagged experiment's dose, the share of the treated's impressions whose classifier score exceeds
+  its threshold (`feed_experiment_flagged_share`), pooled likewise, is counted in a real run and in its placebo; it is
+  read in the placebo, where the treated see those posts (in a real run they see none). Compared between a run and its
+  placebo the measures give the experiment's effects: relative changes for the per-day measures and shares, differences
+  for the changes in standard deviations. All of these exist only on the last day of a run that sets their experiment
   up, so the app's metric pickers and the runner's default tables leave them out.
+- Diagnostics: descriptive measures kept for checking the model against field findings, not goals or harms. They
+  draw nothing and exist in every run, but have no value on a day without their subject, and the app's metric
+  pickers and the runner's default tables leave them out.
+
+  - Reach by partisanship, over the posts that end their life today: `partisan_half_reach`, the mean lifetime human
+    impressions per post of authors in the more partisan half by the `partisanship` trait (3.2), and
+    `extreme_reach_ratio`, that of the most partisan tenth of authors over that of the middle fifth (from 40% to
+    60%). Authors are ranked over the whole population, once, so the halves hold the same people in every design;
+    bots' posts have no partisanship and are left out.
+  - The out-group shares of the in-network stages, after Bakshy et al. (2015): of the in-network candidates gathered
+    for the day's feeds (6.2, after the in-network cap, before ranking cuts the feed;
+    `in_network_outgroup_candidates`), of in-network impressions (`in_network_outgroup_impressions`), and of the
+    likes on in-network impressions (`in_network_outgroup_likes`). An out-group post is one whose author's group
+    differs from the viewer's. Their ratios are metrics too: impressions over candidates
+    (`outgroup_ranking_ratio`), what ranking and stopping do to the mix, and likes over impressions
+    (`outgroup_like_ratio`), what people's choices do.
+  - The share of a noted post's human shares made before its note (`noted_shares_before_note`), pooled over the
+    noted posts that end their life today; the human share count is kept when the note is attached (6.8).
+  - Human shares per impression of Outrage posts over those of the non-hostile styles, Informative, Entertaining and
+    Personal (`outrage_share_ratio`), from the day's counts.
+  - The mean truth of the posts people shared today (`shared_truth`), bots' shares left out.
+
 - Non-users: mean affective polarisation and informedness of non-users, and the same for users.
 - Public discourse: toxic and truthful shares among the day's top 5% most-viewed posts; positive cross-group likes per
   impression; society-wide affective polarisation.
@@ -805,21 +849,21 @@ hub #23 (2026-11-26) keeps it as a world to explore, with its side effects, rath
 | `wrongful_sanction_cost` | 0.5 | 0-2 |
 | `learning_rate`, `imitation_rate`, `choice_temperature` | 0.1, 0.02, 0.25 | 0-0.5, 0-0.1, 0.05-1 |
 | `evasion_rate`, `evasion_decay`, `evasion_cost` | 0.15, 0.01, 0.3 | 0-0.5, 0-0.1, 0-1 |
-| `classifier_retraining`, `intensity_rate`, `deterrence` | 0.2, 0.05, 0.5 | 0-1, 0-0.5, 0-2 |
-| `habit_gain`, `stop_bias` | 0.08, -2.5 | 0-0.3, -5-0 |
-| `churn_base`, `leave_threshold`, `harassment_exit` | 0.02, 0.15, 0.05 | 0-0.1, -0.5-0.5, 0-0.2 |
+| `classifier_retraining`, `intensity_rate`, `deterrence` | 0.2, 0.05, 0.5 | 0-0.5, 0-0.1, 0-2 |
+| `habit_gain`, `stop_bias` | 0.08, -2.5 | 0-0.1125, -5-0 |
+| `churn_base`, `leave_threshold`, `harassment_exit` | 0.02, 0.15, 0.05 | 0-0.1, 0-0, 0-0.2 |
 | `join_base`, `reputation_sensitivity`, `homophily` | 0.004, 2.0, 0.7 | 0-0.02, 0-5, 0.5-1 |
 | `account_cost_deterrence`, `bot_farm_floor` | 0.5, 0.2 | 0-1, 0-1 |
 | `bot_strategy` (3.5) | adaptive | shared-pool, own-side, adaptive |
 | `bot_brigading` (3.5) | 1 | 0-5 |
-| `polarisation_rate`, `contact_rate`, `spillover_rate` | 0.004, 0.01, 0.01 | 0-0.02, 0-0.05, 0-0.05 |
+| `polarisation_rate`, `contact_rate`, `spillover_rate` | 0.004, 0.01, 0.01 | 0-0.00075, 0-0.005, 0-0.05 |
 | `polarisation_backfire` (8.1) | 0 | 0-1 |
 | `credulity_scale` | 1.0 | 0-2 |
-| `ad_rate`, `ad_annoyance` | 0.001, 0.02 | - |
+| `ad_rate`, `ad_annoyance` | 0.001, 0.02 | 0.0003333-0.003, 0.006667-0.06 |
 | `subscription_price` (8.3) | 1.87 | 1-4 |
 | `subscription_uptake`, `subscription_elasticity` (8.3) | 0.0585, 1 | 0.01-0.12, 0.5-2 |
-| `subscription_hurdle` (8.3) | 0.5 | - |
-| `living_income` | 1.0 | - |
+| `subscription_hurdle` (8.3) | 0.5 | 0.1667-1.5 |
+| `living_income` | 1.0 | 0.005-0.045 |
 | `base_session_items` | 20 | 5-60 |
 | `recheck_rate`, `notification_pull`, `extra_session_share` (6.1) | 0, 0, 0.1 | 0-40, 0-20, 0-1 |
 | `quality_signal_noise`, `polish_gain`, `polish_cost` | 0.15, 0.3, 0.03 | 0-0.5, 0-1, 0-1 |
@@ -827,12 +871,29 @@ hub #23 (2026-11-26) keeps it as a world to explore, with its side effects, rath
 | `style_quality_gap` | 1.0 | 0-1.5 |
 | `survey_impulsive_weight`, `survey_habit_weight` | 0.3, 0.1 | 0-0.5, 0-0.5 |
 
+Ranges revised 2026-11-26 (lab #31), by a rule fixed before the robustness runs (`incentive robustness --ranges
+revised`, the default). The Default column gives the specification's text values, and the documented ranges were
+written for them; where 13.1 records a calibrated change, the range is scaled by the same factor as the default, code
+over text. Old values: `classifier_retraining` 0-1 (0.2 to 0.1, factor 0.5), `intensity_rate` 0-0.5 (0.05 to 0.01,
+factor 0.2), `habit_gain` 0-0.3 (0.08 to 0.03, factor 0.375), `leave_threshold` -0.5-0.5 (0.15 to 0, factor 0, so the
+range is 0 alone and the assumption keeps its default), `polarisation_rate` 0-0.02 (0.004 to 0.00015, factor 0.0375)
+and `contact_rate` 0-0.05 (0.01 to 0.001, factor 0.1). An assumption without a documented range gets default/3 to 3 x
+default at the code's default, clamped to the catalogue: `ad_rate`, `ad_annoyance`, `subscription_hurdle` and
+`living_income` (0.015; 0.005 is the catalogue's floor) had none ("-"). The subscription price and uptake ranges were
+written for their current defaults (8.3) and stay. Two population settings vary too, from default/2 to 2 x default
+in global sampling: the troll share (3.1), 0.015-0.06 around 0.03, and the bot share (3.5), 0.025-0.1 around 0.05;
+the troll share is relative, normalised with the other archetypes' shares when the population is drawn. `--ranges
+documented` samples the old values, clipped to the catalogue, with the catalogue range where none was documented.
+
 Run settings (`run`): `seed`, `days` (default 365), `population_size` (default 2,000 natively, 1,000 in the browser),
 `initial_user_share` (0.6), `post_lifetime_days` (3), `candidate_cap` (80), `offline_ties` (8), `initial_follows`
 (30), `summary_window` (0.3), `tracked_agents` (default 10, two per archetype, for the inspector), `deactivation`
-(default none; when set, `days` 35, `share` 0.1 and `placebo` false unless given: a deactivation experiment, 13.2),
-`notifications_off` (default none; when set, `days` 7, `share` 1 and `placebo` false unless given, and the run needs
-the 7 baseline days before it: a notifications-off experiment, 13.2). At most one of the two experiments may be set.
+(default none; when set, `days` 35, `share` 0.1, `placebo` false and `ends_before_end` 0 unless given: a deactivation
+experiment, 13.2), `notifications_off` (default none; when set, `days` 7, `share` 1 and `placebo` false unless given,
+and the run needs the 7 baseline days before it: a notifications-off experiment, 13.2), `feed_experiment` (default
+none; when set, `kind` `no_reshares`, `days` 90, `share` 0.2 and `placebo` false unless given; `kind` may also be
+`{"hide_flagged": {"threshold": t}}` with `t` in 0-1 or `{"fewer_same_group": {"penalty": p}}` with `p` in 0-10: a
+feed experiment, 13.2). At most one of the three experiments may be set.
 
 ## 12. Determinism
 
@@ -862,7 +923,14 @@ the 7 baseline days before it: a notifications-off experiment, 13.2). At most on
   experiment existed, and a run with it shares every draw with that run up to the experiment's first day. A placebo
   run makes the same assignment draws but keeps nobody off, so it matches the run without the experiment in every
   metric but the experiment's own. The notifications-off experiment (fact 7) works the same way: it draws only on its
-  first day, on the same stream, its last day draws nothing, and its placebo matches a run without it.
+  first day, on the same stream, its last day draws nothing, and its placebo matches a run without it. A break that
+  ends before the run draws nothing when it ends: its group's openings and churn draw as anyone's from then on,
+  each keyed on the person as before. The feed experiment (13.2) also draws only on its first day, on the same
+  stream. Its filters and penalty only change which candidates a treated viewer's feed gathers and how it orders
+  them, so only the treated viewers' own feed and engagement draws move, which are keyed on them. A filter that
+  hides flagged posts needs every post's classifier score; with the classifier switched off it computes the score
+  on the classifier's own draw, keyed on the post, which nothing else uses then. Counting its dose (9.2) reads the
+  kept scores and draws nothing. Its placebo therefore matches a run without it in every metric but its own.
 - The extra sessions of 6.1 are drawn on their own stream, keyed on the person and the day, right after the person
   decides to open the app; with both rates at 0 nothing is drawn, so such a run makes exactly the draws it made
   before extra sessions existed. The day's feed is built once and its draws do not depend on its length, and the
@@ -877,7 +945,8 @@ This section records the values the code uses where they differ from the text ab
 open, the measured behaviour of the presets (section 14) at `N = 2,000` with 8 seeds (mean and spread), the facts, the
 scenarios and the run time. Sections 13.3 to 13.5 are regenerated by `incentive report --seeds 1..8` (default size:
 `N = 2,000`, 365 days, 8 paired seeds; output `exports/report/report.md`); every number quoted from them names its
-comparison there.
+comparison there. How well the model reproduces field findings never used in tuning, and how stable and sensitive its
+results are under noise on the world assumptions, is assessed in [validation.md](validation.md) (lab #31).
 
 Targets for calibration:
 
@@ -1140,6 +1209,37 @@ another value, at v0.3's `time_cost` of 0.115.
   difference of a real run and its placebo on the same seed (share 1, under the integrity preset) is fact 7. Like
   Dekker et al. (2024), who compared the intervention week with the baseline week, the per-day measures compare
   weekly means, not one day's draws.
+- A deactivation experiment's break may end before the run (`run.deactivation.ends_before_end`, default 0): it then
+  covers the days `[end - ends_before_end - days, end - ends_before_end)`, so that use in the weeks after the break
+  can be measured, as the field did. On the first day after the break its group is back under the usual rules: it
+  may open the app, with the habit the break left, and may churn. The break's measures (9.2) are taken at the end of
+  its last day and reported on the run's last day, and the break group's mean daily time on the platform from the
+  break's end to the run's end is `post_break_dwell`, every member counted, with no time on a day without a session
+  or after leaving. At the default the break ends with the run and every number of fact 6 is unchanged.
+- The feed experiment (`run.feed_experiment`) is a researcher's intervention like the other two, kept on the truth
+  side, though it acts through the feed, as the field studies' extensions and holdbacks did; at most one of the
+  three experiments runs in a run. It lasts the last `days` days of the run (default 90). Its participants are found
+  as for the deactivation experiment, and each joins the treated group with probability `share` (default 0.2),
+  drawn on the experiment stream (section 12). For a treated viewer the feed changes by `kind`; for everyone else,
+  and for everyone in a placebo run (`placebo` true, the same people drawn), nothing changes.
+
+  - `hide_flagged` with a `threshold`: candidates whose toxicity classifier score (6.7) exceeds the threshold are
+    dropped, as a field study hid posts above a classifier's score. The score is observable: the platform computes
+    it when it screens a new post, and each post keeps it. With the classifier switched off the score is still
+    computed for such an experiment, on the classifier's own draw, and nothing is removed.
+  - `no_reshares`: reshares are dropped from the candidates; original posts stay, in network and recommended, as in
+    the field's feeds without reshares.
+  - `fewer_same_group` with a `penalty`: the penalty is subtracted from the ranking score (6.4) of posts by the
+    viewer's own group, so fewer of them reach the top of the feed, as the field down-ranked like-minded sources. A
+    chronological feed has no score, so it is unchanged.
+
+  A filter acts while the candidates are gathered (6.2): a hidden post or a reshare is skipped in network and is
+  not eligible for recommendation, so the in-network cap and the recommendation quota fill with other posts, as a
+  real feed would backfill. Each participant's use and exposure are logged at the end of each of the experiment's
+  days, and its measures (9.2) are read on the run's last day; the paired comparison of a real run and its placebo
+  on the same seed is the experiment's effect on the treated. How large a dose each field study gave (the share of
+  impressions hidden, the fall in same-group exposure) is matched by choosing `threshold` and `penalty`, which the
+  measures report as manipulation checks.
 - Wellbeing of non-users recovers toward the baseline at the rate of a user's day without a session (7.3): former
   users, banned people, and people who never joined, who sit at the baseline. Until lab #29 it froze when a person
   left. The change moves no draw, so it moves only what reads a non-user's wellbeing: the wellbeing of everyone who
@@ -2649,6 +2749,9 @@ checking habits world (11) fact 2 and fact 6 fail (13.2). Effects at the default
   users' emotional state. *NBER Working Paper* 33697. <https://doi.org/10.3386/w33697>
 - Allcott, Gentzkow, & Song (2022). Digital addiction. *American Economic Review*, 112(7). Read as NBER Working
   Paper 28936 (revised March 2022). <https://www.nber.org/system/files/working_papers/w28936/w28936.pdf>
+- Bakshy, E., Messing, S., & Adamic, L. A. (2015). Exposure to ideologically diverse news and opinion on Facebook.
+  *Science*, 348(6239), 1130-1132. Read in the authors' summary on the Facebook Research blog.
+  <https://doi.org/10.1126/science.aaa1160>
 - Bail, C. A., Argyle, L. P., Brown, T. W., Bumpus, J. P., Chen, H., Hunzaker, M. B. F., Lee, J., Mann, M.,
   Merhout, F., & Volfovsky, A. (2018). Exposure to opposing views on social media can increase political
   polarization. *PNAS*, 115(37), 9216-9221. <https://doi.org/10.1073/pnas.1804840115>

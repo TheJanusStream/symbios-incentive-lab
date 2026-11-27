@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 use crate::bots::Bot;
-use crate::config::Config;
+use crate::config::{Config, FeedExperimentKind};
 use crate::content::STYLE_COUNT;
 use crate::experiment::{Experiment, Usage};
 use crate::network::Accounts;
@@ -109,8 +109,11 @@ pub(crate) struct TruthState {
     pub toxic_history: VecDeque<f32>,
     /// Society-wide affective polarisation before day 0.
     pub polarisation_day0: f32,
-    /// The researcher's experiment, deactivation or notifications off, from
-    /// its first day on (docs/model.md, 13.2).
+    /// Each individual's position when sorted by ascending partisanship, a
+    /// fixed trait; only truth metrics read it (docs/model.md, 9.2).
+    pub partisanship_rank: Vec<u32>,
+    /// The researcher's experiment, deactivation, notifications off or a
+    /// feed experiment, from its first day on (docs/model.md, 13.2).
     pub experiment: Option<Experiment>,
     /// Each individual's usage over the days before a notifications-off
     /// experiment, its participants' baseline; empty otherwise, and emptied
@@ -131,6 +134,12 @@ impl TruthState {
     /// Whether individual `i` is on a deactivation experiment's break.
     pub(crate) fn on_break(&self, i: usize) -> bool {
         self.experiment.as_ref().is_some_and(|e| e.on_break(i))
+    }
+
+    /// How a feed experiment changes individual `i`'s feed, `None` for a
+    /// viewer it does not treat (docs/model.md, 13.2).
+    pub(crate) fn feed_treatment(&self, i: usize) -> Option<FeedExperimentKind> {
+        self.experiment.as_ref().and_then(|e| e.feed_treatment(i))
     }
 
     /// Individual `i`'s own notification intensity under the design's
@@ -230,6 +239,33 @@ pub(crate) struct DayTally {
     pub bot_shares_by_style: [u32; STYLE_COUNT],
     pub dwell_by_style: [f32; STYLE_COUNT],
     pub largest_cascade: u32,
+    /// Summed truth of the posts people (not bots) shared today
+    /// (docs/model.md, 9.2, `shared_truth`).
+    pub shared_truth: f64,
+    /// In-network candidates the day's feeds gathered, and of them those by
+    /// the viewer's out-group (`in_network_outgroup_candidates`).
+    pub in_network_candidates: u32,
+    pub in_network_outgroup_candidates: u32,
+    /// Impressions of in-network items, those of out-group posts, and the
+    /// likes on each (`in_network_outgroup_impressions` and `_likes`).
+    pub in_network_impressions: u32,
+    pub in_network_outgroup_impressions: u32,
+    pub in_network_likes: u32,
+    pub in_network_outgroup_likes: u32,
+    /// Posts ending today by human authors in the more partisan half, the
+    /// most partisan tenth and the middle fifth by the `partisanship` trait,
+    /// and their lifetime human impressions (`partisan_half_reach`,
+    /// `extreme_reach_ratio`).
+    pub partisan_half_posts: u32,
+    pub partisan_half_impressions: u64,
+    pub extreme_posts: u32,
+    pub extreme_impressions: u64,
+    pub middle_posts: u32,
+    pub middle_impressions: u64,
+    /// Human shares of the noted posts ending today, all of them and those
+    /// made before the note (`noted_shares_before_note`).
+    pub noted_shares: u32,
+    pub noted_shares_before_note: u32,
     pub top_toxic_share: f32,
     pub top_truthful_share: f32,
 }

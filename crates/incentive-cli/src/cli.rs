@@ -173,6 +173,122 @@ pub enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Run the out-of-sample validation battery (lab #31): ten literature
+    /// findings, V1 to V10, never used in calibration, with bands fixed
+    /// before the model was run on them.
+    ///
+    /// Every check runs under the integrity preset and is judged there, as
+    /// the stylized facts are; the same check under the engagement ranking is
+    /// reported beside it as a sensitivity, not judged. The experiments (V1,
+    /// V2, V3, V10) treat a random 0.2 of the regular users and pair each real
+    /// run with its placebo on the same seed; V4, V5 and V9 pair the design
+    /// with their comparison design; V6, V7 and V8 read one run. Each check
+    /// reports its effect with the standard deviation across seeds, the 95%
+    /// interval, the band, the verdict and the raw (unscaled) change; V1 and
+    /// V3 also report their doses, the manipulation checks fixed by
+    /// calibration.
+    Validate {
+        /// Number of seeds, paired across variants.
+        #[arg(long, default_value_t = 8)]
+        seeds: u64,
+        /// Individuals per run (the battery's full size is 2,000).
+        #[arg(long, default_value_t = 2000)]
+        population: u32,
+        /// Days per run (the battery's full size is 365; V1 and V10 need more
+        /// than 90).
+        #[arg(long, default_value_t = 365)]
+        days: u32,
+        /// Assignments applied to every arm before the arm's own change,
+        /// `path=value`, for example `world.homophily=0.8`: a world in which
+        /// to check the findings.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
+        /// Check only these, by id, comma-separated (default: all), for
+        /// example `V1,V3`.
+        #[arg(long, value_delimiter = ',')]
+        check: Vec<String>,
+        /// Output directory (default: the repository's exports/validation).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Run the stylized facts, the headline claims and the out-of-sample
+    /// validation checks in sampled worlds: stability under noise on the
+    /// world assumptions (local) and sensitivity across their ranges
+    /// (global).
+    ///
+    /// Varied, 53 assumptions: 51 world assumptions, outrage_appeal,
+    /// arousal_appeal, social_proof, harassment_harm, comparison_cost,
+    /// regret_cost, time_cost, wrongful_sanction_cost, learning_rate,
+    /// imitation_rate, choice_temperature, evasion_rate, evasion_decay,
+    /// evasion_cost, classifier_retraining, intensity_rate, deterrence,
+    /// habit_gain, stop_bias, churn_base, leave_threshold, harassment_exit,
+    /// join_base, reputation_sensitivity, account_cost_deterrence, homophily,
+    /// polarisation_rate, contact_rate, spillover_rate, credulity_scale,
+    /// polarisation_backfire, ad_rate, subscription_price, subscription_hurdle,
+    /// subscription_uptake, subscription_elasticity, ad_annoyance,
+    /// living_income, base_session_items, bot_farm_floor, bot_strategy
+    /// (categorical), bot_brigading, polish_gain, polish_cost,
+    /// reflective_quality_weight, in_group_outrage_cost, clickbait_penalty,
+    /// style_quality_gap, quality_signal_noise, survey_impulsive_weight,
+    /// survey_habit_weight; and two population settings, the troll share
+    /// archetype_shares.troll (normalised with the other archetypes' shares
+    /// when the population is drawn) and bot_share. Kept at their defaults:
+    /// recheck_rate, notification_pull, extra_session_share and
+    /// interruption_cost (off by the owner's decision, docs/model.md 6.1 and
+    /// 13.2), and every run and design setting and the rest of the
+    /// population.
+    ///
+    /// Local: each varied number with a nonzero default is multiplied by
+    /// U(1 - jitter, 1 + jitter) and clamped to its catalogue range; those
+    /// whose default is 0 (leave_threshold, polarisation_backfire) and
+    /// bot_strategy keep their defaults. Global: a Latin hypercube over each
+    /// number's range, and bot_strategy drawn uniformly. The revised ranges
+    /// (the default) follow lab #31's rule, as docs/model.md section 11 lists
+    /// them: a documented range written for a text default that calibration
+    /// changed (13.1) is scaled by the same factor as the default; an
+    /// assumption without a documented range gets default/3 to 3 x default;
+    /// the population settings get default/2 to 2 x default; all clamped to
+    /// the catalogue. The documented ranges are section 11's before that
+    /// revision, clipped to the catalogue, with the catalogue range where it
+    /// gave none. World 0 is always the default world, the reference; the
+    /// summary counts the sampled worlds.
+    Robustness {
+        /// How worlds are sampled.
+        #[arg(long, value_enum, default_value = "local")]
+        mode: crate::robustness::Mode,
+        /// Sampled worlds, beside the default world (0 runs the default world
+        /// alone).
+        #[arg(long, default_value_t = 20)]
+        worlds: usize,
+        /// Seeds 1 to this, paired across variants and the same in every world.
+        #[arg(long, default_value_t = 2)]
+        seeds: u64,
+        /// Seed of the world sampling.
+        #[arg(long, default_value_t = 1)]
+        sample_seed: u64,
+        /// Which battery: the stylized facts, the headline claims, the
+        /// validation checks, or all three.
+        #[arg(long, value_enum, default_value = "all")]
+        battery: crate::robustness::BatteryChoice,
+        /// Global mode: the revised ranges of lab #31's rule, or section
+        /// 11's ranges as documented before it.
+        #[arg(long, value_enum, default_value = "revised")]
+        ranges: crate::robustness::sample::Ranges,
+        /// Individuals per run (default: each battery's full size, 2,000).
+        #[arg(long)]
+        population: Option<u32>,
+        /// Days per run (default: each battery's full size, 365).
+        #[arg(long)]
+        days: Option<u32>,
+        /// Local mode: the half-width of the factor's range, 0 to 1.
+        #[arg(long, default_value_t = 0.25)]
+        jitter: f64,
+        /// Output directory (default: the repository's
+        /// `exports/robustness/<mode>-<sample-seed>`, with -documented for
+        /// global mode on the documented ranges).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 /// Where a design comes from.

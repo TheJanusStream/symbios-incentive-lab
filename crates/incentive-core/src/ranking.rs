@@ -5,14 +5,14 @@
 use serde::Serialize;
 
 use crate::behaviour::{Relation, Signals};
-use crate::config::{AltFeed, Config, DesignLevers};
+use crate::config::{AltFeed, Config, DesignLevers, FeedExperimentKind};
 use crate::content::Post;
 use crate::rng::{self, StreamRng};
 use crate::world::{StyleRates, World};
 
 mod candidates;
 
-pub(crate) use candidates::{FeedScratch, Trending};
+pub(crate) use candidates::{FeedFilter, FeedScratch, Trending};
 use candidates::{fill_signals, gather};
 
 /// Which feed a viewer gets.
@@ -56,6 +56,15 @@ pub struct ScoreComponents {
     pub noted: f32,
     /// Adjustment by diversity re-ranking at the moment the post was picked.
     pub diversity: f32,
+    /// Penalty a researcher's feed experiment gives the post for a treated
+    /// viewer (docs/model.md, 13.2); 0 otherwise, and then left out of JSON.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub experiment: f32,
+}
+
+/// Whether a score component is 0, so that serde leaves it out.
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl ScoreComponents {
@@ -73,6 +82,7 @@ impl ScoreComponents {
             + self.demoted
             + self.noted
             + self.diversity
+            + self.experiment
     }
 }
 
@@ -228,7 +238,9 @@ pub(crate) struct FeedCtx<'a> {
 }
 
 /// Builds, scores and orders the viewer's feed of at most `limit` items into
-/// `scratch.candidates`.
+/// `scratch.candidates`. For a viewer a feed experiment treats
+/// (docs/model.md, 13.2) the candidates are filtered or the ranking
+/// penalised as its kind says; for everyone else nothing changes.
 pub(crate) fn build_feed(
     ctx: &FeedCtx,
     limit: usize,
@@ -237,16 +249,31 @@ pub(crate) fn build_feed(
     scratch: &mut FeedScratch,
 ) -> FeedKind {
     let kind = feed_kind(ctx.world, &ctx.config.design, ctx.viewer);
+    let treatment = ctx.world.truth.feed_treatment(ctx.viewer);
+    scratch.filter = FeedFilter::of(treatment);
     scratch.stamp += 1;
     scratch.candidates.clear();
     gather(ctx, kind, trending, rng, scratch);
     scratch.gathered = scratch.candidates.len();
     fill_signals(ctx, scratch);
+    let in_network = scratch.candidates.iter().filter(|c| c.in_network);
+    let (all, outgroup) = in_network.fold((0, 0), |(n, o), c| {
+        (n + 1, o + u32::from(!c.signals.same_group))
+    });
+    scratch.gathered_in_network = all;
+    scratch.gathered_in_network_outgroup = outgroup;
     if kind != FeedKind::Chronological {
         let weights = RankWeights::for_feed(kind, &ctx.config.design);
+        let penalty = match treatment {
+            Some(FeedExperimentKind::FewerSameGroup { penalty }) => penalty,
+            _ => 0.0,
+        };
         for c in &mut scratch.candidates {
             if let Some(post) = ctx.world.posts.get(c.post) {
                 c.components = score(ctx, post, c, &weights, rng);
+                if penalty > 0.0 && c.signals.same_group {
+                    c.components.experiment = -penalty;
+                }
                 c.score = c.components.total();
             }
         }
@@ -297,6 +324,7 @@ fn score(
         demoted: if post.demoted { -w.demote } else { 0.0 },
         noted: if post.noted { -w.noted } else { 0.0 },
         diversity: 0.0,
+        experiment: 0.0,
     }
 }
 

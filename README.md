@@ -180,6 +180,25 @@ target/release/incentive facts --seeds 8
 target/release/incentive facts --fact deactivation --seeds 16
 ```
 
+Check the model out of sample with `validate`: ten literature findings, V1 to V10, that calibration never used, with
+bands fixed before the model was run on them (lab #31; the battery is `crates/incentive-core/src/validation.rs`, kept
+apart from the stylized facts). Every check runs under the integrity preset and is judged there, as the facts are;
+the same check under the engagement ranking is reported beside it as a sensitivity, not judged. The experiments copy
+the field designs: a random 0.2 of the regular users is treated (a feed experiment for V1, V3 and V10, a five-week
+break for V2), and each real run is paired with its placebo on the same seed. V4, V5 and V9 pair the design with
+their comparison design, and V6, V7 and V8 read one run. For each check the table gives the effect with its standard
+deviation across seeds, the 95% interval, the band, the verdict (pass, fail or undecided, judged as the facts are),
+the raw change (the unscaled quantity behind the effect, beside any change in standard deviations) and the
+engagement ranking's effect; V1 and V3 also report their doses, manipulation checks fixed by calibration. `--seeds`
+(default 8), `--check` (ids, comma-separated), `--set path=value` (a world in which to check the findings) and
+`--out` (default `exports/validation/`) are as for `facts`; the folder holds `validation.md`, with each check's
+source quoted, and `validation.json`:
+
+```text
+target/release/incentive validate
+target/release/incentive validate --check V1,V3 --set world.homophily=0.8
+```
+
 Regenerate the calibration tables of section 13 of [docs/model.md](docs/model.md) as `report.md`, Markdown ready to
 paste: every preset at 365 and at 90 days (mean ± standard deviation, moving metrics marked), a list of named paired
 comparisons with their differences, 95% intervals and ratios (the data table `COMPARISONS` in
@@ -217,6 +236,69 @@ by its generation number or `last`. The file keeps the search's base configurati
 ```text
 target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 40 > front-40.json
 ```
+
+### Robustness across worlds
+
+`robustness` asks whether the model's results survive other worlds. It runs a battery in many sampled worlds: the
+stylized facts (`--battery facts`), the headline claims H1 to H8 (`--battery headline`, the exhibit claims of
+section 13.3 of [docs/model.md](docs/model.md) written as band checks, in `crates/incentive-core/src/headline.rs`),
+the out-of-sample checks V1 to V10 under the integrity preset (`--battery validation`, as `validate` judges them),
+or all three (`all`, the default). Each world runs every variant of every fact or claim on seeds 1 to
+`--seeds` (default 2), paired across variants and the same in every world, at each battery's full size
+(`N = 2,000`, 365 days) unless `--population` and `--days` shrink it. A check holds in a world when its effect on
+the seed means lies in its band; a fact or claim holds when every check that is not a known limit does.
+
+```text
+target/release/incentive robustness --mode local --worlds 100 --seeds 2
+target/release/incentive robustness --mode global --worlds 200 --battery headline --sample-seed 3
+```
+
+Which world assumptions vary, and how:
+
+- Varied, 53 assumptions: the 51 world assumptions of the parameter catalogue (`world.*`, listed by
+  `incentive robustness --help` and in the output) except the checking habits (`recheck_rate`, `notification_pull`,
+  `extra_session_share`) and `interruption_cost`, which are off by the owner's decision and change the model's time
+  scale (sections 6.1 and 13.2), and two population settings, the troll share (`archetype_shares.troll`, relative,
+  normalised with the other archetypes' shares when the population is drawn) and the bot share (`bot_share`). Run and
+  design settings and the rest of the population never vary.
+- `--mode local`: each varied number with a nonzero default is multiplied by U(1 - jitter, 1 + jitter) (`--jitter`,
+  default 0.25) and clamped to its catalogue range. Assumptions whose default is 0 (mechanisms off:
+  `leave_threshold`, `polarisation_backfire`) and the categorical `bot_strategy` keep their defaults.
+- `--mode global`: a Latin hypercube over each varied number's range; `bot_strategy` is drawn uniformly.
+  `--ranges revised` (the default) takes the ranges of section 11 of [docs/model.md](docs/model.md), revised by the
+  rule of lab #31: a range written for a text default that calibration changed (13.1) is scaled by the same factor
+  as the default (`classifier_retraining`, `intensity_rate`, `habit_gain`, `polarisation_rate`, `contact_rate`, and
+  `leave_threshold`, whose default went to 0, so it keeps it); an assumption without a documented range gets
+  default/3 to 3 x default (`ad_rate`, `ad_annoyance`, `subscription_hurdle`, `living_income`); the troll share and
+  the bot share get default/2 to 2 x default; all clamped to the catalogue. `--ranges documented` samples section
+  11's ranges as documented before the revision, clipped to the catalogue range, and the catalogue range where none
+  was documented, so both can be reported; its folder ends in `-documented`.
+- World 0 is always the default world, the reference; the summaries count the K sampled worlds. `--worlds 0` runs the
+  default world alone, so `--mode local --jitter 0 --worlds 0 --seeds 8` gives the batteries' default values.
+
+The worlds come from `--sample-seed` (default 1) and every run is deterministic, so a command reproduces its files.
+The runs go to the CPUs in parallel, a chunk of eight worlds at a time, and identical runs (the default design is an
+arm of several facts and claims) run once. The folder (default `exports/robustness/<mode>-<sample-seed>/`) holds:
+
+- `worlds.json` and `worlds.csv`: per world, the sampled values, each battery's baseline user share and whether the
+  world is degenerate (the default design's user share on the last day, averaged over the seeds, below 0.05), and in
+  the JSON per check the per-seed effects, the seed-mean effect and whether it lies in its band, per fact or claim
+  whether it holds;
+- `checks.csv`: one row per world and check, with the per-seed effects joined by `;`;
+- `summary.md` and `summary.json`: per check, fact and claim, the share of sampled worlds where it holds, over all and
+  over the non-degenerate worlds, the share whose effect lies on the default world's side of its neutral value (0, 1
+  for a ratio or for a ratio or share read as a mean, as in V6, V7 and V8), and the median and 5% and 95% quantiles
+  of the effect.
+
+Global mode adds each check's sensitivity over the non-degenerate worlds: the Spearman rank correlation and the
+partial rank correlation (PRCC: ranks, then the correlation of the residuals after regressing out the other
+assumptions and the categorical choices) of every varied number with the effect, the top five by absolute value, and
+the median effect per `bot_strategy`. PRCC needs more usable worlds than the varied assumptions plus 10 (63); with
+fewer, the summary gives Spearman alone and says so; an assumption held to one value (`leave_threshold` under the
+revised ranges) is left out of both. At full size with two seeds and all three batteries a world takes about 24
+seconds on 8 CPUs for its 56 distinct runs (28 distinct arms on two seeds, measured on two worlds); with the facts and
+the claims alone it took about 17 seconds for 32 distinct runs (the facts have 10 distinct arms and the claims 7),
+and the validation battery adds 12 arms the others do not share. The default world runs in every command.
 
 ### Exploring the design space
 

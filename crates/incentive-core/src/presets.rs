@@ -51,7 +51,8 @@ pub fn preset(id: &str) -> Result<&'static Preset, ConfigError> {
         .ok_or_else(|| ConfigError::UnknownPreset(id.to_string()))
 }
 
-fn quality_bridging(d: &mut DesignLevers) {
+/// The quality and bridging preset's levers (docs/model.md, 14.1).
+pub(crate) fn quality_bridging(d: &mut DesignLevers) {
     d.w_like = 0.5;
     d.w_reply = 0.3;
     d.w_share = 0.5;

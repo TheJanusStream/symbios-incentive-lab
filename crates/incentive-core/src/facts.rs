@@ -12,11 +12,11 @@
 
 use serde::Serialize;
 
-use crate::config::{Config, Deactivation, NotificationsOff};
+use crate::config::{Config, Deactivation, NotificationsOff, RunSettings};
 use crate::error::ConfigError;
 use crate::metrics::{DailyMetrics, MetricId, nan_mean};
 use crate::scenarios::Verdict;
-use crate::simulation::Simulation;
+use crate::simulation::{Simulation, summary_days};
 use crate::stats::MeanInterval;
 
 /// One arm of a fact's paired comparison.
@@ -24,12 +24,12 @@ use crate::stats::MeanInterval;
 pub struct Variant {
     /// Short label.
     pub label: &'static str,
-    apply: fn(&mut Config),
+    pub(crate) apply: fn(&mut Config),
 }
 
 /// What a check measures in one run.
 #[derive(Clone, Copy, Debug)]
-enum Measure {
+pub(crate) enum Measure {
     /// Mean of a metric over a share of the run, `[from, to)` as fractions.
     Window(MetricId, f32, f32),
     /// Mean over the last fifth of the run minus mean over the first fifth.
@@ -38,10 +38,17 @@ enum Measure {
     Days(MetricId, u32, u32),
     /// The value on the run's last day.
     Last(MetricId),
+    /// Mean over the run's summary window: the last days that a run with
+    /// the default `summary_window` averages in its summary
+    /// (`Simulation::summary_days`), so it equals the summary's value.
+    Summary(MetricId),
+    /// Mean over the run's last days, clipped to the run.
+    LastDays(MetricId, u32),
 }
 
 impl Measure {
-    fn of(self, history: &[DailyMetrics]) -> f32 {
+    /// The measurement in one run's daily history.
+    pub(crate) fn of(self, history: &[DailyMetrics]) -> f32 {
         let n = history.len();
         let mean = |id: MetricId, from: usize, to: usize| {
             let to = to.clamp(1, n.max(1));
@@ -60,13 +67,18 @@ impl Measure {
             }
             Self::Days(id, from, to) => mean(id, from as usize, to as usize),
             Self::Last(id) => history.last().map_or(f32::NAN, |d| d.get(id)),
+            Self::Summary(id) => {
+                let window = summary_days(n, RunSettings::default().summary_window);
+                mean(id, n.saturating_sub(window), n)
+            }
+            Self::LastDays(id, days) => mean(id, n.saturating_sub(days as usize), n),
         }
     }
 }
 
 /// The effect a band check measures from the per-seed measurements.
 #[derive(Clone, Copy, Debug)]
-enum Effect {
+pub(crate) enum Effect {
     /// Paired mean of `a - b`.
     Difference { a: usize, b: usize },
     /// Mean of variant `a`.
@@ -75,12 +87,15 @@ enum Effect {
     Ratio { a: usize, b: usize },
     /// Relative difference of the means, `(mean a - mean b) / mean b`.
     Relative { a: usize, b: usize },
+    /// An elasticity: the relative difference of the means over the relative
+    /// change of the lever from `b` to `a`, `change`.
+    Elasticity { a: usize, b: usize, change: f32 },
 }
 
 /// How a check judges the per-seed measurements of two variants.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)] // Not every kind of judge is in use at every calibration.
-enum Judge {
+pub(crate) enum Judge {
     /// Paired mean of `a - b` above the margin.
     Exceeds { a: usize, b: usize, margin: f32 },
     /// Mean of variant `a` above the margin.
@@ -98,12 +113,30 @@ enum Judge {
 pub struct Check {
     /// What the check claims.
     pub label: &'static str,
-    measure: Measure,
-    judge: Judge,
+    pub(crate) measure: Measure,
+    pub(crate) judge: Judge,
     /// Whether the model is known to fail this check (docs/model.md, section
     /// 16): it is judged and reported like any other, but the tests do not
     /// require it to hold.
     pub known_limit: bool,
+    /// The value that separates the effect's two directions, or `None` for
+    /// the effect's natural neutral: 0 for a difference, a mean, a relative
+    /// difference or an elasticity, 1 for a ratio. A mean of a ratio or a
+    /// share (V6, V7, V8) sets it explicitly
+    /// ([`Check::with_neutral`]); [`CheckDetail::direction`] is measured
+    /// from it.
+    pub(crate) neutral: Option<f32>,
+}
+
+impl Check {
+    /// The same check with an explicit neutral value
+    /// ([`CheckDetail::direction`] is measured from it).
+    pub(crate) const fn with_neutral(self, neutral: f32) -> Self {
+        Self {
+            neutral: Some(neutral),
+            ..self
+        }
+    }
 }
 
 /// The verdict on one check.
@@ -140,6 +173,26 @@ pub struct CheckResult {
     pub verdict: Verdict,
     /// Whether the model is known to fail this check ([`Check::known_limit`]).
     pub known_limit: bool,
+}
+
+/// A check's verdict with the per-seed effects behind it, for callers that
+/// study effects across worlds (the runner's `robustness`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CheckDetail {
+    /// The verdict, exactly as [`Fact::evaluate`] gives it.
+    pub result: CheckResult,
+    /// The per-seed effects behind [`CheckResult::interval`], in seed order:
+    /// paired differences, values, per-seed ratios or per-seed relative
+    /// differences (signed, also for a check that bounds their absolute
+    /// value).
+    pub per_seed: Vec<f32>,
+    /// The effect measured from the check's neutral value, whose sign is the
+    /// direction of the effect: the effect minus the neutral
+    /// (`Check::with_neutral`; by default the effect itself for a
+    /// difference, a mean, a relative difference or an elasticity, and the
+    /// ratio minus 1 for a ratio), and the signed relative difference of the
+    /// means for a check that bounds its absolute value.
+    pub direction: f32,
 }
 
 /// Where a check's effect has to lie.
@@ -241,6 +294,22 @@ impl Fact {
         self.checks.iter().map(|c| judge(c, histories)).collect()
     }
 
+    /// Judges the histories, indexed `[variant][seed]`, as
+    /// [`Fact::evaluate`] does, and keeps each check's per-seed effects and
+    /// direction.
+    pub fn evaluate_detailed(&self, histories: &[Vec<Vec<DailyMetrics>>]) -> Vec<CheckDetail> {
+        self.checks
+            .iter()
+            .map(|c| judge_detailed(c, histories))
+            .collect()
+    }
+
+    /// Whether the fact holds on the seed means: every check that is not a
+    /// known limit lies within its bound.
+    pub fn holds(results: &[CheckResult]) -> bool {
+        results.iter().filter(|r| !r.known_limit).all(|r| r.passed)
+    }
+
     /// Runs every variant on every seed, one after the other, and judges them.
     pub fn run_sequential(&self, run: &FactRun) -> Result<Vec<CheckResult>, ConfigError> {
         let mut histories = vec![Vec::new(); self.variants.len()];
@@ -272,7 +341,7 @@ fn mean_sd(values: &[f32]) -> (f32, f32) {
 impl Effect {
     /// The effect, its per-seed spread and the per-seed effects from the
     /// measurements, indexed `[variant][seed]`.
-    fn of(self, values: &dyn Fn(usize) -> Vec<f32>) -> (f32, f32, Vec<f32>) {
+    pub(crate) fn of(self, values: &dyn Fn(usize) -> Vec<f32>) -> (f32, f32, Vec<f32>) {
         let paired = |a: usize, b: usize, f: &dyn Fn(f32, f32) -> f32| -> Vec<f32> {
             values(a)
                 .iter()
@@ -301,11 +370,22 @@ impl Effect {
                 let (ma, mb) = (mean_sd(&values(a)).0, mean_sd(&values(b)).0);
                 with_spread((ma - mb) / mb, paired(a, b, &|x, y| (x - y) / y))
             }
+            Self::Elasticity { a, b, change } => {
+                let (ma, mb) = (mean_sd(&values(a)).0, mean_sd(&values(b)).0);
+                with_spread(
+                    (ma - mb) / mb / change,
+                    paired(a, b, &|x, y| (x - y) / y / change),
+                )
+            }
         }
     }
 }
 
 fn judge(check: &Check, histories: &[Vec<Vec<DailyMetrics>>]) -> CheckResult {
+    judge_detailed(check, histories).result
+}
+
+fn judge_detailed(check: &Check, histories: &[Vec<Vec<DailyMetrics>>]) -> CheckDetail {
     let values = |v: usize| -> Vec<f32> {
         histories
             .get(v)
@@ -314,47 +394,58 @@ fn judge(check: &Check, histories: &[Vec<Vec<DailyMetrics>>]) -> CheckResult {
     };
     // The bound the interval is judged against differs from the reported
     // bound only for `Close`, whose interval is of the signed difference.
-    let (effect, spread, per_seed, bound, interval_bound) = match check.judge {
+    // `signed` is the value whose side of the neutral gives the direction,
+    // `natural` the neutral used when the check sets none.
+    let (effect, spread, per_seed, bound, interval_bound, signed, natural) = match check.judge {
         Judge::Exceeds { a, b, margin } => {
             let (m, sd, v) = Effect::Difference { a, b }.of(&values);
-            (m, sd, v, Bound::Above(margin), Bound::Above(margin))
+            (m, sd, v, Bound::Above(margin), Bound::Above(margin), m, 0.0)
         }
         Judge::Above { a, margin } => {
             let (m, sd, v) = Effect::Mean { a }.of(&values);
-            (m, sd, v, Bound::Above(margin), Bound::Above(margin))
+            (m, sd, v, Bound::Above(margin), Bound::Above(margin), m, 0.0)
         }
         Judge::RatioBelow { a, b, ratio } => {
             let (r, sd, v) = Effect::Ratio { a, b }.of(&values);
-            (r, sd, v, Bound::Below(ratio), Bound::Below(ratio))
+            (r, sd, v, Bound::Below(ratio), Bound::Below(ratio), r, 1.0)
         }
         Judge::Close { a, b, tolerance } => {
             let (rel, sd, v) = Effect::Relative { a, b }.of(&values);
             let band = Bound::Between(-tolerance, tolerance);
-            (rel.abs(), sd, v, Bound::Below(tolerance), band)
+            (rel.abs(), sd, v, Bound::Below(tolerance), band, rel, 0.0)
         }
         Judge::Band { effect, low, high } => {
             let (m, sd, v) = effect.of(&values);
             let band = Bound::Between(low, high);
-            (m, sd, v, band, band)
+            let natural = match effect {
+                Effect::Ratio { .. } => 1.0,
+                _ => 0.0,
+            };
+            (m, sd, v, band, band, m, natural)
         }
     };
-    let interval = MeanInterval::of(per_seed.into_iter());
+    let direction = signed - check.neutral.unwrap_or(natural);
+    let interval = MeanInterval::of(per_seed.iter().copied());
     let verdict = interval_bound.verdict(interval.low, interval.high);
     let (threshold, passed) = match bound {
         Bound::Above(t) => (t, effect > t),
         Bound::Below(t) => (t, effect < t),
         Bound::Between(low, high) => (low, effect > low && effect < high),
     };
-    CheckResult {
-        label: check.label,
-        effect,
-        spread,
-        threshold,
-        bound,
-        interval,
-        passed,
-        verdict,
-        known_limit: check.known_limit,
+    CheckDetail {
+        result: CheckResult {
+            label: check.label,
+            effect,
+            spread,
+            threshold,
+            bound,
+            interval,
+            passed,
+            verdict,
+            known_limit: check.known_limit,
+        },
+        per_seed,
+        direction,
     }
 }
 
@@ -415,12 +506,13 @@ const INTEGRITY_NOTIFICATIONS_PLACEBO: Variant = Variant {
 };
 
 /// A check that has to hold.
-const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
+pub(crate) const fn check(label: &'static str, measure: Measure, judge: Judge) -> Check {
     Check {
         label,
         measure,
         judge,
         known_limit: false,
+        neutral: None,
     }
 }
 
@@ -520,6 +612,7 @@ const FACTS: [Fact; 7] = [
                     high: 0.9,
                 },
                 known_limit: true,
+                neutral: None,
             },
             Check {
                 label: "misinformation impressions, days 30 to 90, chronological / with integrity",
@@ -530,6 +623,7 @@ const FACTS: [Fact; 7] = [
                     high: 3.0,
                 },
                 known_limit: true,
+                neutral: None,
             },
         ],
     },
@@ -739,6 +833,52 @@ mod tests {
         assert_eq!(r.verdict, Verdict::Pass);
         let h = histories(&[&[0.6, 0.62, 0.64], &[0.5, 0.5, 0.5]]);
         assert_eq!(judge(&close(0.1), &h).verdict, Verdict::Fail);
+    }
+
+    #[test]
+    fn an_elasticity_scales_the_relative_change() {
+        // Relative changes 0.02, 0.04, 0.06 over a lever change of -0.5.
+        let h = histories(&[&[1.02, 1.04, 1.06], &[1.0, 1.0, 1.0]]);
+        let r = judge(
+            &check(Judge::Band {
+                effect: Effect::Elasticity {
+                    a: 0,
+                    b: 1,
+                    change: -0.5,
+                },
+                low: -0.15,
+                high: -0.01,
+            }),
+            &h,
+        );
+        assert!((r.effect + 0.08).abs() < 1e-5, "{r:?}");
+        assert!((r.interval.mean + 0.08).abs() < 1e-5 && r.passed);
+        assert!((r.spread - 0.04).abs() < 1e-5, "{r:?}");
+    }
+
+    #[test]
+    fn direction_is_measured_from_the_neutral_value() {
+        // A mean of a ratio at 0.9 on every seed: on the positive side of the
+        // natural neutral 0, below 1 once the neutral is set to 1.
+        let h = histories(&[&[0.9, 0.9, 0.9]]);
+        let mean = check(Judge::Band {
+            effect: Effect::Mean { a: 0 },
+            low: 0.85,
+            high: 1.0,
+        });
+        assert!((judge_detailed(&mean, &h).direction - 0.9).abs() < 1e-6);
+        let d = judge_detailed(&mean.with_neutral(1.0), &h);
+        assert!((d.direction + 0.1).abs() < 1e-6, "{d:?}");
+        // The neutral changes the direction only, not the verdict.
+        assert_eq!(d.result, judge(&mean, &h));
+        // A ratio keeps its natural neutral 1: ratio of means 0.9 / 0.6.
+        let h = histories(&[&[0.9, 0.9, 0.9], &[0.6, 0.6, 0.6]]);
+        let ratio = check(Judge::Band {
+            effect: Effect::Ratio { a: 0, b: 1 },
+            low: 1.0,
+            high: 2.0,
+        });
+        assert!((judge_detailed(&ratio, &h).direction - 0.5).abs() < 1e-5);
     }
 
     #[test]

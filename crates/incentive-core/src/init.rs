@@ -4,7 +4,7 @@ use crate::bots;
 use crate::config::Config;
 use crate::network::{self, Accounts, FollowTarget};
 use crate::person::{POLISH_PRIOR_TEMPERATURES, Person, polish_temperature};
-use crate::population::{draw_archetype, draw_ties, draw_traits};
+use crate::population::{Traits, draw_archetype, draw_ties, draw_traits};
 use crate::posts::PostStore;
 use crate::rng::{self, Stream};
 use crate::world::{DayTally, PlatformState, StyleRates, TruthState, World};
@@ -38,7 +38,8 @@ pub(crate) fn build_world(config: &Config) -> World {
         ..PlatformState::default()
     };
     let truth = TruthState {
-        impulsivity_rank: impulsivity_ranks(&people),
+        impulsivity_rank: ranks(&people, |t| t.impulsivity),
+        partisanship_rank: ranks(&people, |t| t.partisanship),
         ..TruthState::default()
     };
     let mut world = World {
@@ -72,15 +73,15 @@ pub(crate) fn initial_polish_values(choice_temperature: f32) -> [f32; 2] {
     ]
 }
 
-/// Each individual's position when sorted by ascending impulsivity; user
-/// controls are adopted in this order (docs/model.md, 6.5 and 6.10).
-fn impulsivity_ranks(people: &[Person]) -> Vec<u32> {
+/// Each individual's position when sorted by ascending value of a trait,
+/// ties to the lower index. User controls are adopted in the order of
+/// impulsivity (docs/model.md, 6.5 and 6.10); truth metrics read the order of
+/// partisanship (9.2).
+fn ranks(people: &[Person], of: impl Fn(&Traits) -> f32) -> Vec<u32> {
     let mut order: Vec<usize> = (0..people.len()).collect();
     order.sort_by(|&a, &b| {
-        people[a]
-            .traits
-            .impulsivity
-            .total_cmp(&people[b].traits.impulsivity)
+        of(&people[a].traits)
+            .total_cmp(&of(&people[b].traits))
             .then(a.cmp(&b))
     });
     let mut ranks = vec![0; people.len()];

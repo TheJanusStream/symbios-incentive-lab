@@ -556,6 +556,7 @@ fn score_components(ui: &mut Ui, item: &ExplainedItem) {
         ("demoted", c.demoted),
         ("noted", c.noted),
         ("diversity", c.diversity),
+        ("experiment", c.experiment),
     ];
     for (name, value) in parts.iter().filter(|(_, v)| v.abs() > 1e-6) {
         let label = RichText::new(format!("{name} {value:+.3}")).small();

@@ -1,11 +1,12 @@
 //! Phase 11: authors learn what pays (docs/model.md, 7.5), and posts at the end
 //! of their life get their final accounting and leave the store.
 
+use crate::content::Post;
 use crate::content::STYLE_COUNT;
 use crate::moderation;
 use crate::person::{POLISH_LEARNING_SHARE, PersonState};
 use crate::rng::{self, Stream};
-use crate::world::{DayCtx, World};
+use crate::world::{DayCtx, DayTally, World};
 
 /// Share of the day's most-viewed posts that the discourse metrics look at.
 const TOP_POST_SHARE: f32 = 0.05;
@@ -68,6 +69,7 @@ fn collect_post_day(world: &mut World, ctx: &DayCtx) {
         }
         if post.day + lifetime == ctx.day + 1 {
             world.tally.largest_cascade = world.tally.largest_cascade.max(post.human_shares());
+            count_ending_post(&mut world.tally, &world.truth.partisanship_rank, post);
         }
     }
     viewed.sort_by_key(|v| std::cmp::Reverse(v.0));
@@ -81,6 +83,34 @@ fn collect_post_day(world: &mut World, ctx: &DayCtx) {
         world.tally.top_truthful_share = 1.0;
     }
     update_style_rates(world);
+}
+
+/// Adds a post at the end of its life to the descriptive truth tallies
+/// (docs/model.md, 9.2): its lifetime human impressions by its human
+/// author's partisanship, and, for a noted post, its human shares before and
+/// after the note. Measurement only: it draws nothing and changes nothing
+/// else.
+fn count_ending_post(tally: &mut DayTally, partisanship_rank: &[u32], post: &Post) {
+    if post.noted {
+        tally.noted_shares += post.human_shares();
+        tally.noted_shares_before_note += post.shares_at_note;
+    }
+    let Some(&rank) = partisanship_rank.get(post.author as usize) else {
+        return;
+    };
+    let quantile = (f64::from(rank) + 0.5) / partisanship_rank.len() as f64;
+    let impressions = u64::from(post.impressions);
+    if quantile >= 0.5 {
+        tally.partisan_half_posts += 1;
+        tally.partisan_half_impressions += impressions;
+    }
+    if quantile >= 0.9 {
+        tally.extreme_posts += 1;
+        tally.extreme_impressions += impressions;
+    } else if (0.4..0.6).contains(&quantile) {
+        tally.middle_posts += 1;
+        tally.middle_impressions += impressions;
+    }
 }
 
 /// The platform's running per-style rates, from observed counts per human
@@ -405,5 +435,58 @@ mod tests {
         // Styles without impressions keep their rates.
         let other = Style::Informative.index();
         assert_eq!(world.platform.style_rates[other], before);
+    }
+
+    #[test]
+    fn ending_posts_are_counted_by_partisanship_and_note() {
+        let config = Config::default();
+        let mut rng = rng::stream_rng(1, 0, 0, Stream::PostDraw);
+        let profile = AuthorProfile::plain(Group::A, 0.5, 0.5);
+        let mut post = generate_post(
+            &mut rng,
+            0,
+            0,
+            &profile,
+            Style::Outrage,
+            &[1.0 / 6.0; 6],
+            &config.world,
+        );
+        // Ten people, ranked by partisanship: 9 is the most partisan, 5 lies
+        // in the more partisan half and the middle fifth, 4 in the middle
+        // fifth only, 0 in neither.
+        let ranks: Vec<u32> = (0..10).collect();
+        let count = |post: &Post, author: u32, impressions: u32| {
+            let mut tally = DayTally::default();
+            let mut p = post.clone();
+            p.author = author;
+            p.impressions = impressions;
+            count_ending_post(&mut tally, &ranks, &p);
+            tally
+        };
+        let top = count(&post, 9, 30);
+        assert_eq!(
+            (top.partisan_half_posts, top.partisan_half_impressions),
+            (1, 30)
+        );
+        assert_eq!((top.extreme_posts, top.extreme_impressions), (1, 30));
+        assert_eq!(top.middle_posts, 0);
+        let five = count(&post, 5, 7);
+        assert_eq!((five.partisan_half_posts, five.extreme_posts), (1, 0));
+        assert_eq!((five.middle_posts, five.middle_impressions), (1, 7));
+        let four = count(&post, 4, 7);
+        assert_eq!((four.partisan_half_posts, four.middle_posts), (0, 1));
+        let low = count(&post, 0, 7);
+        assert_eq!(
+            (low.partisan_half_posts, low.extreme_posts, low.middle_posts),
+            (0, 0, 0)
+        );
+        // A bot's post has no partisanship; its note still counts.
+        post.noted = true;
+        post.shares = 12;
+        post.bot_shares = 2;
+        post.shares_at_note = 7;
+        let bot = count(&post, 10, 99);
+        assert_eq!(bot.partisan_half_posts + bot.middle_posts, 0);
+        assert_eq!((bot.noted_shares, bot.noted_shares_before_note), (10, 7));
     }
 }

@@ -123,6 +123,24 @@ pub(crate) struct DayAccumulators {
     pub income: f32,
     pub styles_written: u8,
     pub meaningful: u32,
+    /// Engagement actions today: likes, replies and shares given.
+    pub actions: u32,
+    /// Of today's impressions, the toxic ones (toxicity above 0.5).
+    pub toxic_items: u32,
+    /// Of today's impressions, the misinformation (truth below 0.5).
+    pub misinformation_items: u32,
+    /// Of today's impressions, those of posts by the person's own group.
+    pub same_group_items: u32,
+    /// Of today's impressions, those of posts whose classifier score exceeds
+    /// a hide-flagged feed experiment's threshold; counted only in a run that
+    /// sets one up, its placebo included, as that experiment's dose.
+    pub flagged_items: u32,
+    /// Summed toxicity of the posts the person wrote today.
+    pub post_toxicity: f32,
+    /// Shares the person made today.
+    pub shares: u32,
+    /// Summed truth of the posts the person shared today.
+    pub shared_truth: f32,
     /// Misinformation this person shared today: truth and whether noted.
     pub misinformation_shares: Vec<(f32, bool)>,
     /// Posts that gave this person positive reflective value, for fan funding.

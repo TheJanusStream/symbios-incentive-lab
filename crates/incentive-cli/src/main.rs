@@ -24,7 +24,9 @@ mod facts_cmd;
 mod listing;
 mod report;
 mod report_cmd;
+mod robustness;
 mod runs;
+mod validate_cmd;
 
 use std::process::ExitCode;
 
@@ -109,6 +111,37 @@ fn dispatch(cli: Cli) -> Result<(), CliError> {
             fact,
             out,
         } => facts_cmd::run_facts(seeds, population, days, &set, &fact, out)?,
+        Command::Validate {
+            seeds,
+            population,
+            days,
+            set,
+            check,
+            out,
+        } => validate_cmd::run_validate(seeds, population, days, &set, &check, out)?,
+        Command::Robustness {
+            mode,
+            worlds,
+            seeds,
+            sample_seed,
+            battery,
+            population,
+            days,
+            jitter,
+            ranges,
+            out,
+        } => robustness::robustness(&robustness::Options {
+            mode,
+            worlds,
+            seeds,
+            sample_seed,
+            battery,
+            population,
+            days,
+            jitter,
+            ranges,
+            out,
+        })?,
     }
     Ok(())
 }

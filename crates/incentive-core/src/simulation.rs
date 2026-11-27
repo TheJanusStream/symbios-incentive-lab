@@ -25,6 +25,13 @@ use crate::world::{DayCtx, DayTally, World};
 /// Shortest summary window in days.
 const MIN_SUMMARY_DAYS: usize = 30;
 
+/// Days a summary of a run of `days` days averages: `summary_window` of
+/// them, at least `MIN_SUMMARY_DAYS`, at most the run.
+pub(crate) fn summary_days(days: usize, summary_window: f32) -> usize {
+    let window = (summary_window * days as f32).round() as usize;
+    window.max(MIN_SUMMARY_DAYS).min(days)
+}
+
 /// A running simulation. It is plain data: `Send + Sync + Clone`, so an app can
 /// hold it in a resource and a compare mode can run two side by side.
 #[derive(Clone, Debug)]
@@ -144,9 +151,10 @@ impl Simulation {
     /// Days a summary averages: `summary_window` of the configured days, at
     /// least 30, at most the run.
     pub fn summary_days(&self) -> usize {
-        let days = self.config.run.days as usize;
-        let window = (self.config.run.summary_window * days as f32).round() as usize;
-        window.max(MIN_SUMMARY_DAYS).min(days)
+        summary_days(
+            self.config.run.days as usize,
+            self.config.run.summary_window,
+        )
     }
 
     /// The summary of the last [`Simulation::summary_days`] simulated days.

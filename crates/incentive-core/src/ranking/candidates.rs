@@ -3,6 +3,7 @@
 
 use super::{Candidate, FeedCtx, FeedKind, ScoreComponents};
 use crate::behaviour::{self, BehaviourEnv, Relation, Signals};
+use crate::config::FeedExperimentKind;
 use crate::content::{Post, Style};
 use crate::rng::{self, StreamRng};
 use crate::world::World;
@@ -36,6 +37,41 @@ impl Trending {
     }
 }
 
+/// What a feed experiment removes from a treated viewer's candidates
+/// (docs/model.md, 13.2); nothing for everyone else.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FeedFilter {
+    /// Posts whose classifier score exceeds this are hidden.
+    pub hide_above: Option<f32>,
+    /// Reshares are dropped; original posts stay.
+    pub no_reshares: bool,
+}
+
+impl FeedFilter {
+    /// The filter of a viewer with this treatment, `None` for a viewer the
+    /// experiment does not treat. A score penalty filters nothing.
+    pub(crate) fn of(treatment: Option<FeedExperimentKind>) -> Self {
+        match treatment {
+            Some(FeedExperimentKind::HideFlagged { threshold }) => Self {
+                hide_above: Some(threshold),
+                no_reshares: false,
+            },
+            Some(FeedExperimentKind::NoReshares) => Self {
+                hide_above: None,
+                no_reshares: true,
+            },
+            Some(FeedExperimentKind::FewerSameGroup { .. }) | None => Self::default(),
+        }
+    }
+
+    /// Whether the filter hides a post: its classifier score lies above
+    /// the threshold. A post the classifier did not screen is never hidden.
+    pub(crate) fn hides(&self, post: &Post) -> bool {
+        self.hide_above
+            .is_some_and(|t| post.classifier_score.is_some_and(|s| s > t))
+    }
+}
+
 /// Weighted draws per recommendation slot before the sampler stops
 /// rejecting duplicates and draws the rest exactly from what is left.
 const REJECTION_DRAWS_PER_SLOT: usize = 4;
@@ -50,6 +86,12 @@ pub(crate) struct FeedScratch {
     /// Candidates the latest feed gathered, before ranking cut it to its
     /// length.
     pub gathered: usize,
+    /// Of those, the in-network ones, and of them the ones by the viewer's
+    /// out-group (docs/model.md, 9.2).
+    pub gathered_in_network: u32,
+    pub gathered_in_network_outgroup: u32,
+    /// What a feed experiment removes from the latest viewer's candidates.
+    pub filter: FeedFilter,
     pub adjust: Vec<f32>,
     raw: Vec<Origin>,
 }
@@ -184,6 +226,7 @@ fn eligible(ctx: &FeedCtx, id: u32, scratch: &FeedScratch) -> bool {
         && !gathered
         && post.author as usize != ctx.viewer
         && !viewer.has_blocked(post.author)
+        && !scratch.filter.hides(post)
 }
 
 /// Adds a recommendation if the post is eligible; true when added.
@@ -205,15 +248,18 @@ fn try_recommend(ctx: &FeedCtx, id: u32, scratch: &mut FeedScratch) -> bool {
     true
 }
 
+/// In-network posts and reshares of the accounts the viewer follows, less
+/// what a feed experiment's filter removes for a treated viewer.
 fn gather_in_network(ctx: &FeedCtx, scratch: &mut FeedScratch) {
     let world = ctx.world;
     let viewer = &world.people[ctx.viewer];
+    let filter = scratch.filter;
     for &account in &viewer.state.follows {
         if viewer.has_blocked(account) {
             continue;
         }
         for &id in &world.accounts.recent_posts[account as usize] {
-            if let Some(post) = world.posts.get(id) {
+            if let Some(post) = world.posts.get(id).filter(|p| !filter.hides(p)) {
                 let origin = Origin {
                     post: id,
                     in_network: true,
@@ -224,8 +270,11 @@ fn gather_in_network(ctx: &FeedCtx, scratch: &mut FeedScratch) {
                 push_origin(ctx, post, origin, scratch);
             }
         }
+        if filter.no_reshares {
+            continue;
+        }
         for reshare in &world.accounts.reshares[account as usize] {
-            let Some(post) = world.posts.get(reshare.post) else {
+            let Some(post) = world.posts.get(reshare.post).filter(|p| !filter.hides(p)) else {
                 continue;
             };
             if post.author as usize != ctx.viewer && !viewer.has_blocked(post.author) {

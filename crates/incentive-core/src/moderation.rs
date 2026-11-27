@@ -3,8 +3,8 @@
 
 use crate::behaviour;
 use crate::bots;
-use crate::config::{ModerationAction, Sanctions};
-use crate::content::{EVASION_TOXICITY, TOXIC_THRESHOLD};
+use crate::config::{FeedExperimentKind, ModerationAction, Sanctions};
+use crate::content::{EVASION_TOXICITY, Post, TOXIC_THRESHOLD};
 use crate::rng::{self, Stream};
 use crate::world::{DayCtx, World};
 
@@ -32,16 +32,18 @@ const REENTRY_MAX_DAYS: u32 = 30;
 pub(crate) fn classify_new_posts(world: &mut World, ctx: &DayCtx, first_new: u32) {
     let design = &ctx.config.design;
     if !design.classifier_enabled {
+        if hides_flagged(ctx) {
+            for post in world.posts.iter_from_mut(first_new) {
+                post.classifier_score = Some(classifier_score(post, ctx));
+            }
+        }
         return;
     }
     let mut evading_authors = Vec::new();
     let mut wronged_authors = Vec::new();
     for post in world.posts.iter_from_mut(first_new) {
-        // Keyed on the author and the author's post ordinal, not the global
-        // post id, so other people's posting never reshuffles this draw.
-        let mut rng = ctx.rng(post.draw_key(), Stream::Moderation);
-        let flag = (0.7 * post.toxicity + 0.3 * post.outrage) * post.detectability
-            + rng::normal(&mut rng, 0.1);
+        let flag = classifier_score(post, ctx);
+        post.classifier_score = Some(flag);
         if flag <= design.classifier_threshold {
             continue;
         }
@@ -66,6 +68,27 @@ pub(crate) fn classify_new_posts(world: &mut World, ctx: &DayCtx, first_new: u32
     for author in wronged_authors {
         wrongful_sanction(world, ctx, author);
     }
+}
+
+/// The classifier's score of a new post (docs/model.md, 6.7), `flag =
+/// (0.7 * toxicity + 0.3 * outrage) * detectability + N(0, 0.1)`. The draw
+/// is keyed on the author and the author's post ordinal, not the global post
+/// id, so other people's posting never reshuffles it.
+fn classifier_score(post: &Post, ctx: &DayCtx) -> f32 {
+    let mut rng = ctx.rng(post.draw_key(), Stream::Moderation);
+    (0.7 * post.toxicity + 0.3 * post.outrage) * post.detectability + rng::normal(&mut rng, 0.1)
+}
+
+/// Whether a feed experiment that hides flagged posts is configured: it needs
+/// every post's score even with the classifier switched off. The score's
+/// draw is the classifier's own, which nothing else uses then, so no other
+/// draw moves (docs/model.md, section 12).
+fn hides_flagged(ctx: &DayCtx) -> bool {
+    ctx.config
+        .run
+        .feed_experiment
+        .as_ref()
+        .is_some_and(|f| matches!(f.kind, FeedExperimentKind::HideFlagged { .. }))
 }
 
 /// An automated removal or demotion of a toxic post teaches its (human)
@@ -176,6 +199,7 @@ pub(crate) fn community_notes(world: &mut World, ctx: &DayCtx) {
         let mut rng = ctx.rng(post.draw_key(), Stream::Notes);
         if rng::chance(&mut rng, 0.3 * (1.0 - 0.6 * post.outrage)) {
             post.noted = true;
+            post.shares_at_note = post.human_shares();
             world.tally.notes += 1;
         }
     }
@@ -676,5 +700,97 @@ mod tests {
         let removed = plain.iter().filter(|&&r| r).count();
         assert!(removed > 20 && removed < 180, "{removed}");
         assert_eq!(plain, decisions(true));
+    }
+
+    #[test]
+    fn the_classifier_keeps_each_new_posts_score() {
+        let mut config = small_config();
+        config.design.classifier_threshold = 0.5;
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        let mut world = init::build_world(&config);
+        let author = first_user(&world);
+        let first = world.posts.next_id();
+        let ids: Vec<u32> = (0..100)
+            .map(|k| {
+                let id = add_post(&mut world, author, 0.01 * k as f32, 0.5);
+                if let Some(p) = world.posts.get_mut(id) {
+                    p.ordinal = k;
+                }
+                id
+            })
+            .collect();
+        classify_new_posts(&mut world, &ctx, first);
+        let mut removed = 0;
+        for &id in &ids {
+            let post = world.posts.get(id).expect("live");
+            let score = post.classifier_score.expect("screened");
+            // The score is the one that decided the removal.
+            assert_eq!(post.removed, score > 0.5, "post {id}");
+            removed += usize::from(post.removed);
+        }
+        assert!(removed > 10 && removed < 90, "{removed}");
+        // Switched off, the classifier screens nothing, unless a feed
+        // experiment hides flagged posts: then the same scores are kept and
+        // nothing is removed.
+        config.design.classifier_enabled = false;
+        let scores = |config: &Config| {
+            let ctx = DayCtx { config, day: 0 };
+            let mut other = init::build_world(config);
+            let first = other.posts.next_id();
+            for k in 0..100 {
+                let id = add_post(&mut other, author, 0.01 * k as f32, 0.5);
+                if let Some(p) = other.posts.get_mut(id) {
+                    p.ordinal = k;
+                }
+            }
+            classify_new_posts(&mut other, &ctx, first);
+            assert!(other.posts.iter().all(|p| !p.removed && !p.demoted));
+            other
+                .posts
+                .iter()
+                .map(|p| p.classifier_score)
+                .collect::<Vec<_>>()
+        };
+        assert!(scores(&config).iter().all(Option::is_none));
+        config.run.feed_experiment = Some(crate::config::FeedExperiment {
+            kind: FeedExperimentKind::HideFlagged { threshold: 0.5 },
+            ..crate::config::FeedExperiment::default()
+        });
+        let kept: Vec<Option<f32>> = ids
+            .iter()
+            .map(|&id| world.posts.get(id).and_then(|p| p.classifier_score))
+            .collect();
+        assert_eq!(scores(&config), kept);
+    }
+
+    #[test]
+    fn a_note_keeps_the_human_shares_made_before_it() {
+        let mut config = small_config();
+        config.design.community_notes = true;
+        let mut world = init::build_world(&config);
+        let author = first_user(&world);
+        let id = add_post(&mut world, author, 0.1, 0.0);
+        if let Some(p) = world.posts.get_mut(id) {
+            p.truth = 0.2;
+            p.impressions = 500;
+            p.shares = 9;
+            p.bot_shares = 3;
+        }
+        let mut day = 0;
+        while !world.posts.get(id).is_some_and(|p| p.noted) {
+            community_notes(
+                &mut world,
+                &DayCtx {
+                    config: &config,
+                    day,
+                },
+            );
+            day += 1;
+            assert!(day < 200, "never noted");
+        }
+        assert_eq!(world.posts.get(id).map(|p| p.shares_at_note), Some(6));
     }
 }

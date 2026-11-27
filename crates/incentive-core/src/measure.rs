@@ -121,6 +121,22 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::NotificationsOffTime, time);
     m.set(M::NotificationsOffSessions, sessions);
     m.set(M::NotificationsOffWellbeing, wellbeing);
+    let [
+        polarisation,
+        informedness,
+        polarisation_raw,
+        informedness_raw,
+    ] = experiment::break_society_changes(world, ctx);
+    m.set(M::BreakPolarisation, polarisation);
+    m.set(M::BreakInformedness, informedness);
+    m.set(M::BreakPolarisationRaw, polarisation_raw);
+    m.set(M::BreakInformednessRaw, informedness_raw);
+    m.set(M::PostBreakDwell, experiment::post_break_dwell(world, ctx));
+    let feed = experiment::feed_measures(world, ctx);
+    for (id, value) in FEED_EXPERIMENT_METRICS.iter().zip(feed) {
+        m.set(*id, value);
+    }
+    diagnostics(world, &mut m);
     m.set(M::TopToxicShare, t.top_toxic_share);
     m.set(M::TopTruthfulShare, t.top_truthful_share);
     m.set(
@@ -162,6 +178,90 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     creator_metrics(world, ctx.config, &mut m);
     indices(world, ctx.config, &mut m);
     m
+}
+
+/// The feed experiment's metrics, in the order of
+/// [`experiment::feed_measures`].
+const FEED_EXPERIMENT_METRICS: [M; experiment::FEED_MEASURES] = [
+    M::FeedExperimentDwell,
+    M::FeedExperimentEngagement,
+    M::FeedExperimentToxicShare,
+    M::FeedExperimentMisinformationShare,
+    M::FeedExperimentSameGroupShare,
+    M::FeedExperimentPostToxicity,
+    M::FeedExperimentSharedTruth,
+    M::FeedExperimentPolarisation,
+    M::FeedExperimentInformedness,
+    M::FeedExperimentWellbeing,
+    M::FeedExperimentFlaggedShare,
+    M::FeedExperimentPolarisationRaw,
+    M::FeedExperimentInformednessRaw,
+];
+
+/// A ratio that does not exist when its denominator is 0: NaN, which
+/// summaries skip, rather than the 0 of [`ratio`].
+fn ratio_or_nan(num: f64, den: f64) -> f32 {
+    if den > 0.0 {
+        (num / den) as f32
+    } else {
+        f32::NAN
+    }
+}
+
+/// The diagnostics of docs/model.md, 9.2, from the day's tallies: reach by
+/// partisanship among the posts ending today, the out-group shares of the
+/// in-network stages, the shares made before a note, the share rate of
+/// Outrage against the non-hostile styles, and the truth of what people
+/// shared. Measurement only.
+fn diagnostics(world: &World, m: &mut DailyMetrics) {
+    let t = &world.tally;
+    let reach = |impressions: u64, posts: u32| ratio_or_nan(impressions as f64, f64::from(posts));
+    m.set(
+        M::PartisanHalfReach,
+        reach(t.partisan_half_impressions, t.partisan_half_posts),
+    );
+    let extreme = reach(t.extreme_impressions, t.extreme_posts);
+    let middle = reach(t.middle_impressions, t.middle_posts);
+    m.set(
+        M::ExtremeReachRatio,
+        ratio_or_nan(f64::from(extreme), f64::from(middle)),
+    );
+    let share = |part: u32, whole: u32| ratio_or_nan(f64::from(part), f64::from(whole));
+    let candidates = share(t.in_network_outgroup_candidates, t.in_network_candidates);
+    let impressions = share(t.in_network_outgroup_impressions, t.in_network_impressions);
+    let likes = share(t.in_network_outgroup_likes, t.in_network_likes);
+    m.set(M::InNetworkOutgroupCandidates, candidates);
+    m.set(M::InNetworkOutgroupImpressions, impressions);
+    m.set(M::InNetworkOutgroupLikes, likes);
+    m.set(
+        M::OutgroupRankingRatio,
+        ratio_or_nan(f64::from(impressions), f64::from(candidates)),
+    );
+    m.set(
+        M::OutgroupLikeRatio,
+        ratio_or_nan(f64::from(likes), f64::from(impressions)),
+    );
+    m.set(
+        M::NotedSharesBeforeNote,
+        share(t.noted_shares_before_note, t.noted_shares),
+    );
+    let rate = |styles: &[Style]| {
+        let shares: u32 = styles.iter().map(|s| t.shares_by_style[s.index()]).sum();
+        let seen: u32 = styles
+            .iter()
+            .map(|s| t.impressions_by_style[s.index()])
+            .sum();
+        share(shares, seen)
+    };
+    let calm = rate(&[Style::Informative, Style::Entertaining, Style::Personal]);
+    m.set(
+        M::OutrageShareRatio,
+        ratio_or_nan(f64::from(rate(&[Style::Outrage])), f64::from(calm)),
+    );
+    m.set(
+        M::SharedTruth,
+        ratio_or_nan(t.shared_truth, f64::from(t.shares - t.bot_shares)),
+    );
 }
 
 /// Outrage, Clickbait and Attack: the styles scenario goals call harmful.
@@ -516,5 +616,64 @@ mod tests {
         let capped = survey_answer(0.6, 0.9, 0.5, 0.5, 0.3, true);
         assert!((capped - (0.7 * 0.9 + 0.3 * 0.5 + 0.1)).abs() < 1e-6);
         assert!((survey_answer(0.6, 0.9, 0.5, 0.0, 0.0, true) - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_diagnostics_follow_their_definitions() {
+        let mut config = Config::default();
+        config.run.population_size = 100;
+        let mut world = crate::init::build_world(&config);
+        let ctx = DayCtx {
+            config: &config,
+            day: 3,
+        };
+        // Nothing to describe: no value, not 0.
+        let empty = measure(&world, &ctx);
+        assert!(
+            M::all()
+                .filter(|id| id.diagnostic())
+                .all(|id| empty.get(id).is_nan())
+        );
+        let t = &mut world.tally;
+        t.partisan_half_posts = 4;
+        t.partisan_half_impressions = 50;
+        t.extreme_posts = 2;
+        t.extreme_impressions = 30;
+        t.middle_posts = 5;
+        t.middle_impressions = 25;
+        t.in_network_candidates = 200;
+        t.in_network_outgroup_candidates = 50;
+        t.in_network_impressions = 40;
+        t.in_network_outgroup_impressions = 8;
+        t.in_network_likes = 10;
+        t.in_network_outgroup_likes = 1;
+        t.noted_shares = 20;
+        t.noted_shares_before_note = 17;
+        t.impressions_by_style = [100, 100, 200, 50, 10, 5];
+        t.shares_by_style = [2, 4, 0, 6, 9, 9];
+        t.shares = 40;
+        t.bot_shares = 10;
+        t.shared_truth = 15.0;
+        let m = measure(&world, &ctx);
+        let close = |id: M, want: f32| {
+            let got = m.get(id);
+            assert!(
+                (got - want).abs() < 1e-6,
+                "{}: {got} against {want}",
+                id.info().key
+            );
+        };
+        close(M::PartisanHalfReach, 12.5);
+        close(M::ExtremeReachRatio, 15.0 / 5.0);
+        close(M::InNetworkOutgroupCandidates, 0.25);
+        close(M::InNetworkOutgroupImpressions, 0.2);
+        close(M::InNetworkOutgroupLikes, 0.1);
+        close(M::OutgroupRankingRatio, 0.2 / 0.25);
+        close(M::OutgroupLikeRatio, 0.1 / 0.2);
+        close(M::NotedSharesBeforeNote, 0.85);
+        // Outrage 6 shares in 50 impressions against 6 in 400.
+        close(M::OutrageShareRatio, (6.0 / 50.0) / (6.0 / 400.0));
+        // Bots' shares carry no truth of a person's choice: 30 human shares.
+        close(M::SharedTruth, 0.5);
     }
 }

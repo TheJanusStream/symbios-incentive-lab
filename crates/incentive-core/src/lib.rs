@@ -28,6 +28,7 @@ mod economy;
 mod error;
 mod experiment;
 mod facts;
+mod headline;
 mod init;
 mod inspector;
 mod learning;
@@ -49,6 +50,7 @@ mod session;
 mod simulation;
 mod society;
 pub mod stats;
+mod validation;
 mod world;
 
 pub use atlas::{
@@ -57,14 +59,16 @@ pub use atlas::{
 };
 pub use config::{
     AltFeed, ArchetypeShares, BotStrategy, Config, DEACTIVATION_DAYS, DEACTIVATION_SHARE,
-    Deactivation, DesignLevers, ModerationAction, NOTIFICATIONS_OFF_BASELINE_DAYS,
-    NOTIFICATIONS_OFF_DAYS, NOTIFICATIONS_OFF_SHARE, NotificationsOff, PayoutScheme,
-    PopulationSettings, RunSettings, Sanctions, WorldAssumptions,
+    Deactivation, DesignLevers, FEED_EXPERIMENT_DAYS, FEED_EXPERIMENT_SHARE, FeedExperiment,
+    FeedExperimentKind, ModerationAction, NOTIFICATIONS_OFF_BASELINE_DAYS, NOTIFICATIONS_OFF_DAYS,
+    NOTIFICATIONS_OFF_SHARE, NotificationsOff, PayoutScheme, PopulationSettings, RunSettings,
+    Sanctions, WorldAssumptions,
 };
 pub use config_path::FieldValue;
 pub use content::{Group, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS};
 pub use error::ConfigError;
-pub use facts::{Bound, Check, CheckResult, Fact, FactRun, Variant, facts};
+pub use facts::{Bound, Check, CheckDetail, CheckResult, Fact, FactRun, Variant, facts};
+pub use headline::headline_claims;
 pub use inspector::{
     AGENT_HISTORY_DAYS, AgentDay, AgentView, ExplainedItem, FeedExplanation, ItemActions,
     ServedSession, SessionKind, TrueResponse,
@@ -84,6 +88,11 @@ pub use scenarios::{
 };
 pub use simulation::Simulation;
 pub use stats::{MeanInterval, PairedDifference, Stats};
+pub use validation::{
+    Dose, DoseResult, RawChange, V1_DAYS, V1_DOSE_ACHIEVED, V1_DOSE_TARGET, V1_PENALTY, V2_DAYS,
+    V2_LATER_DAYS, V3_DAYS, V3_DOSE_ACHIEVED, V3_DOSE_TARGET, V3_THRESHOLD, V4_FRICTION,
+    V9_ADS_SHARE, V10_DAYS, VALIDATION_SHARE, Validation, validation_battery, validations,
+};
 
 #[cfg(test)]
 mod tests {

@@ -2,10 +2,10 @@
 //! section 9).
 //!
 //! Missing values are `f32::NAN`: survey satisfaction exists only on survey
-//! days, 30-day retention only from day 30, and the experiments' measures
-//! (the deactivation effect, the break group's change and the
-//! notifications-off changes) only on the last day of a run with that
-//! experiment. [`DailyMetrics::get_opt`]
+//! days, 30-day retention only from day 30, the experiments' measures (the
+//! deactivation experiment's, the notifications-off experiment's and the
+//! feed experiment's) only on the last day of a run with that experiment,
+//! and a diagnostic only on a day that has its subject. [`DailyMetrics::get_opt`]
 //! turns them into `None`, summaries average only the days that have a value,
 //! and JSON writes them as `null`.
 
@@ -162,6 +162,34 @@ metrics! {
     DiscourseQuality, "discourse_quality", "Discourse quality", Score, Index, Truth, "Mean of civil and truthful top posts, cross-group approval and stable polarisation.";
     BenefitIndex, "benefit_index", "Benefit index", Score, Index, Truth, "Mean of wellbeing, informedness, meaningful interactions, creator livelihoods and discourse quality.";
     BenefitIndexExCreators, "benefit_index_ex_creators", "Benefit index without creators", Score, Index, Truth, "The benefit index without its creators-living component: the mean of wellbeing, informedness, meaningful interactions and discourse quality.";
+    FeedExperimentDwell, "feed_experiment_dwell", "Feed experiment: time per day", Decimal, Participants, Truth, "Mean daily time on the platform of a feed experiment's treated group over its days, leavers counted with none; compared between a run and its placebo; only on the last day of a run that sets one up.";
+    FeedExperimentEngagement, "feed_experiment_engagement", "Feed experiment: actions per day", Decimal, Participants, Truth, "Mean daily likes, replies and shares given by a feed experiment's treated group over its days, leavers counted with none; only on the last day of a run that sets one up.";
+    FeedExperimentToxicShare, "feed_experiment_toxic_share", "Feed experiment: toxic impressions", Share, Participants, Truth, "Toxic share of a feed experiment's treated group's impressions over its days; only on the last day of a run that sets one up.";
+    FeedExperimentMisinformationShare, "feed_experiment_misinformation_share", "Feed experiment: misinformation impressions", Share, Participants, Truth, "Misinformation share of a feed experiment's treated group's impressions over its days; only on the last day of a run that sets one up.";
+    FeedExperimentSameGroupShare, "feed_experiment_same_group_share", "Feed experiment: same-group impressions", Share, Participants, Truth, "Share of a feed experiment's treated group's impressions that were posts by their own group, over its days; only on the last day of a run that sets one up.";
+    FeedExperimentPostToxicity, "feed_experiment_post_toxicity", "Feed experiment: toxicity of own posts", Score, Participants, Truth, "Mean toxicity of the posts a feed experiment's treated group wrote over its days; only on the last day of a run that sets one up.";
+    FeedExperimentSharedTruth, "feed_experiment_shared_truth", "Feed experiment: truth of shares", Score, Participants, Truth, "Mean truth of the posts a feed experiment's treated group shared over its days; only on the last day of a run that sets one up.";
+    FeedExperimentPolarisation, "feed_experiment_polarisation", "Feed experiment: polarisation change", Decimal, Participants, Truth, "Change in affective polarisation of a feed experiment's treated group over its days, in standard deviations of the participants at its start; only on the last day of a run that sets one up.";
+    FeedExperimentInformedness, "feed_experiment_informedness", "Feed experiment: informedness change", Decimal, Participants, Truth, "Change in informedness of a feed experiment's treated group over its days, in standard deviations of the participants at its start; only on the last day of a run that sets one up.";
+    FeedExperimentWellbeing, "feed_experiment_wellbeing", "Feed experiment: wellbeing change", Decimal, Participants, Truth, "Change in wellbeing of a feed experiment's treated group over its days, in standard deviations of the participants at its start; only on the last day of a run that sets one up.";
+    FeedExperimentFlaggedShare, "feed_experiment_flagged_share", "Feed experiment: flagged impressions", Share, Participants, Truth, "Share of a hide-flagged feed experiment's treated group's impressions whose classifier score exceeds its threshold, over its days: the dose, read in the placebo run; only on the last day of a run that sets one up.";
+    FeedExperimentPolarisationRaw, "feed_experiment_polarisation_raw", "Feed experiment: polarisation change, unscaled", Decimal, Participants, Truth, "Mean change in affective polarisation of a feed experiment's treated group over its days, in its own units; only on the last day of a run that sets one up.";
+    FeedExperimentInformednessRaw, "feed_experiment_informedness_raw", "Feed experiment: informedness change, unscaled", Decimal, Participants, Truth, "Mean change in informedness of a feed experiment's treated group over its days, in its own units; only on the last day of a run that sets one up.";
+    BreakPolarisation, "break_polarisation", "Break group's polarisation change", Decimal, Participants, Truth, "Change in affective polarisation of a deactivation experiment's break group over the break, in standard deviations of the participants at its start; only on the last day of a run that sets one up.";
+    BreakInformedness, "break_informedness", "Break group's informedness change", Decimal, Participants, Truth, "Change in informedness of a deactivation experiment's break group over the break, in standard deviations of the participants at its start; only on the last day of a run that sets one up.";
+    BreakPolarisationRaw, "break_polarisation_raw", "Break group's polarisation change, unscaled", Decimal, Participants, Truth, "Change in affective polarisation of a deactivation experiment's break group over the break, in its own units; only on the last day of a run that sets one up.";
+    BreakInformednessRaw, "break_informedness_raw", "Break group's informedness change, unscaled", Decimal, Participants, Truth, "Change in informedness of a deactivation experiment's break group over the break, in its own units; only on the last day of a run that sets one up.";
+    PostBreakDwell, "post_break_dwell", "Break group's time after the break", Decimal, Participants, Truth, "Mean daily time on the platform of a deactivation experiment's break group from the break's end to the run's end, leavers counted with none; only on the last day of a run whose break ends before it.";
+    PartisanHalfReach, "partisan_half_reach", "Reach of the more partisan half", Decimal, Discourse, Truth, "Mean lifetime human impressions of the posts ending today by authors in the more partisan half by the partisanship trait; a diagnostic.";
+    ExtremeReachRatio, "extreme_reach_ratio", "Reach of the most partisan", Decimal, Discourse, Truth, "Mean reach of the posts ending today by the most partisan tenth of authors over that of the middle fifth; a diagnostic.";
+    InNetworkOutgroupCandidates, "in_network_outgroup_candidates", "Out-group in-network candidates", Share, Discourse, Truth, "Share of the in-network candidates gathered for today's feeds that are posts by the viewer's out-group; a diagnostic.";
+    InNetworkOutgroupImpressions, "in_network_outgroup_impressions", "Out-group in-network impressions", Share, Discourse, Truth, "Share of today's in-network impressions that are posts by the viewer's out-group; a diagnostic.";
+    InNetworkOutgroupLikes, "in_network_outgroup_likes", "Out-group in-network likes", Share, Discourse, Truth, "Share of today's likes on in-network impressions that went to posts by the viewer's out-group; a diagnostic.";
+    OutgroupRankingRatio, "outgroup_ranking_ratio", "Out-group exposure after ranking", Decimal, Discourse, Truth, "The out-group share of in-network impressions over that of in-network candidates; a diagnostic.";
+    OutgroupLikeRatio, "outgroup_like_ratio", "Out-group likes after exposure", Decimal, Discourse, Truth, "The out-group share of likes on in-network impressions over that of in-network impressions; a diagnostic.";
+    NotedSharesBeforeNote, "noted_shares_before_note", "Shares before the note", Share, Harm, Truth, "Share of the human shares of noted posts ending today that were made before the note; a diagnostic.";
+    OutrageShareRatio, "outrage_share_ratio", "Outrage share rate ratio", Decimal, Content, Truth, "Human shares per impression of Outrage posts over those of Informative, Entertaining and Personal posts, today; a diagnostic.";
+    SharedTruth, "shared_truth", "Truth of shares", Score, Harm, Truth, "Mean truth of the posts people shared today; a diagnostic.";
 }
 
 /// Number of metrics.
@@ -221,19 +249,64 @@ impl MetricId {
     }
 
     /// Whether the metric exists only in a run that sets up an experiment
-    /// (the deactivation experiment's effect and its break group's change,
-    /// and the notifications-off experiment's three changes): it has no
-    /// value in an ordinary run, so metric pickers and default tables leave
-    /// it out.
+    /// (the deactivation experiment's effect, its break group's changes and
+    /// time after the break, the notifications-off experiment's three
+    /// changes and the feed experiment's measures): it has no value in an
+    /// ordinary run, so metric pickers and default tables leave it out.
     pub fn needs_experiment(self) -> bool {
         matches!(
             self,
             MetricId::DeactivationEffect
                 | MetricId::BreakChange
+                | MetricId::BreakPolarisation
+                | MetricId::BreakInformedness
+                | MetricId::BreakPolarisationRaw
+                | MetricId::BreakInformednessRaw
+                | MetricId::PostBreakDwell
                 | MetricId::NotificationsOffTime
                 | MetricId::NotificationsOffSessions
                 | MetricId::NotificationsOffWellbeing
+                | MetricId::FeedExperimentDwell
+                | MetricId::FeedExperimentEngagement
+                | MetricId::FeedExperimentToxicShare
+                | MetricId::FeedExperimentMisinformationShare
+                | MetricId::FeedExperimentSameGroupShare
+                | MetricId::FeedExperimentPostToxicity
+                | MetricId::FeedExperimentSharedTruth
+                | MetricId::FeedExperimentPolarisation
+                | MetricId::FeedExperimentInformedness
+                | MetricId::FeedExperimentWellbeing
+                | MetricId::FeedExperimentFlaggedShare
+                | MetricId::FeedExperimentPolarisationRaw
+                | MetricId::FeedExperimentInformednessRaw
         )
+    }
+
+    /// Whether the metric is a diagnostic: a descriptive truth measure kept
+    /// for checking the model against field findings (docs/model.md, 9.2),
+    /// not a goal or a harm. It exists in every run, though it has no value
+    /// on a day without its subject (no posts ending, no notes), so metric
+    /// pickers and default tables leave it out.
+    pub fn diagnostic(self) -> bool {
+        matches!(
+            self,
+            MetricId::PartisanHalfReach
+                | MetricId::ExtremeReachRatio
+                | MetricId::InNetworkOutgroupCandidates
+                | MetricId::InNetworkOutgroupImpressions
+                | MetricId::InNetworkOutgroupLikes
+                | MetricId::OutgroupRankingRatio
+                | MetricId::OutgroupLikeRatio
+                | MetricId::NotedSharesBeforeNote
+                | MetricId::OutrageShareRatio
+                | MetricId::SharedTruth
+        )
+    }
+
+    /// Whether metric pickers and default tables leave the metric out: it
+    /// needs an experiment or it is a diagnostic.
+    pub fn hidden_by_default(self) -> bool {
+        self.needs_experiment() || self.diagnostic()
     }
 
     /// The post-share metric of a style.

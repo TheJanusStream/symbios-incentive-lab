@@ -2,7 +2,7 @@
 //! 6.1, 6.6, 7.1, 7.2 and 7.6).
 
 use crate::behaviour::{sig, weighted_quality};
-use crate::config::{Config, WorldAssumptions};
+use crate::config::{Config, FeedExperimentKind, WorldAssumptions};
 use crate::content::{Group, Style};
 use crate::inspector::{self, FeedExplanation, Inspector, ItemActions, ServedSession, SessionKind};
 use crate::network::{self, Reshare};
@@ -204,6 +204,8 @@ pub(crate) fn run_sessions(
         }
         world.tally.feeds += 1;
         world.tally.candidates += scratch.gathered as u32;
+        world.tally.in_network_candidates += scratch.gathered_in_network;
+        world.tally.in_network_outgroup_candidates += scratch.gathered_in_network_outgroup;
         world.tally.sessions += 1 + habitual + notified;
         world.tally.notification_sessions += notified;
         world.people[v].state.today.interruption_cost += notified as f32 * assume.interruption_cost;
@@ -323,6 +325,16 @@ fn impression(
     actions
 }
 
+/// The threshold of a hide-flagged feed experiment, when the run sets one
+/// up (a placebo included): impressions of posts scored above it are its
+/// dose, counted for everyone and read for the treated (docs/model.md, 9.2).
+fn flag_threshold(ctx: &DayCtx) -> Option<f32> {
+    match ctx.config.run.feed_experiment.as_ref()?.kind {
+        FeedExperimentKind::HideFlagged { threshold } => Some(threshold),
+        _ => None,
+    }
+}
+
 fn record_impression(
     world: &mut World,
     ctx: &DayCtx,
@@ -366,6 +378,17 @@ fn record_impression(
     tally.toxic_impressions += u32::from(post.is_toxic());
     tally.outrage_impressions += u32::from(post.outrage > 0.5);
     tally.misinformation_impressions += u32::from(post.is_misinformation());
+    state.today.toxic_items += u32::from(post.is_toxic());
+    state.today.misinformation_items += u32::from(post.is_misinformation());
+    state.today.same_group_items += u32::from(s.same_group);
+    if let Some(threshold) = flag_threshold(ctx) {
+        state.today.flagged_items +=
+            u32::from(post.classifier_score.is_some_and(|f| f > threshold));
+    }
+    if c.in_network {
+        tally.in_network_impressions += 1;
+        tally.in_network_outgroup_impressions += u32::from(!s.same_group);
+    }
 
     let liked = rng::chance(rng, s.p_like);
     actions.liked = liked;
@@ -379,6 +402,11 @@ fn record_impression(
         tally.likes += 1;
         tally.likes_by_style[style] += 1;
         tally.cross_group_likes += u32::from(!s.same_group);
+        state.today.actions += 1;
+        if c.in_network {
+            tally.in_network_likes += 1;
+            tally.in_network_outgroup_likes += u32::from(!s.same_group);
+        }
         if post.style == Style::Personal && c.relation.mutual {
             state.today.meaningful += 1;
         }
@@ -402,6 +430,7 @@ fn record_impression(
 
     if rng::chance(rng, s.p_reply) {
         actions.replied = true;
+        state.today.actions += 1;
         post.engagement_today += 1;
         tally.replies += 1;
         tally.replies_by_style[style] += 1;
@@ -420,6 +449,10 @@ fn record_impression(
     }
     if rng::chance(rng, s.p_share) {
         actions.shared = true;
+        state.today.actions += 1;
+        state.today.shares += 1;
+        state.today.shared_truth += post.truth;
+        tally.shared_truth += f64::from(post.truth);
         post.shares += 1;
         post.human_shares_today += 1;
         post.engagement_today += 1;
@@ -752,5 +785,54 @@ mod tests {
         let liked = contact_change(0.9, true, 0.8, &assume);
         assert!((liked - (0.5 * contact - 0.8 * contact)).abs() < 1e-9);
         assert!(liked < 0.0);
+    }
+
+    #[test]
+    fn each_persons_day_adds_up_to_the_days_tallies() {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        let mut sim = Simulation::new(config).expect("valid");
+        for _ in 0..3 {
+            sim.step();
+        }
+        let world = sim.world();
+        let t = &world.tally;
+        let sum = |of: fn(&crate::person::DayAccumulators) -> u32| -> u32 {
+            world.people.iter().map(|p| of(&p.state.today)).sum()
+        };
+        assert_eq!(sum(|d| d.items), t.impressions);
+        assert_eq!(sum(|d| d.toxic_items), t.toxic_impressions);
+        assert_eq!(
+            sum(|d| d.misinformation_items),
+            t.misinformation_impressions
+        );
+        assert_eq!(sum(|d| d.shares), t.shares - t.bot_shares);
+        let human = t.likes + t.replies + t.shares - t.bot_likes - t.bot_shares;
+        assert_eq!(sum(|d| d.actions), human);
+        let same = sum(|d| d.same_group_items);
+        assert!(same > 0 && same < t.impressions);
+        let truth: f64 = world
+            .people
+            .iter()
+            .map(|p| f64::from(p.state.today.shared_truth))
+            .sum();
+        assert!(
+            (truth - t.shared_truth).abs() < 1e-3,
+            "{truth} {}",
+            t.shared_truth
+        );
+        assert!(t.in_network_impressions > 0 && t.in_network_impressions < t.impressions);
+        assert!(t.in_network_outgroup_impressions < t.in_network_impressions);
+        assert!(t.in_network_likes <= t.likes - t.bot_likes);
+        assert!(t.in_network_outgroup_likes <= t.in_network_likes);
+        assert!(t.in_network_candidates >= t.in_network_impressions);
+        assert!(t.in_network_outgroup_candidates < t.in_network_candidates);
+        let posts = sum(|d| d.posts);
+        let toxicity: f32 = world
+            .people
+            .iter()
+            .map(|p| p.state.today.post_toxicity)
+            .sum();
+        assert!(posts > 0 && toxicity > 0.0 && toxicity < posts as f32);
     }
 }

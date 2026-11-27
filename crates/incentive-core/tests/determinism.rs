@@ -139,6 +139,7 @@ fn a_deactivation_experiment_changes_nothing_before_it_starts() {
         days: 10,
         share: 0.5,
         placebo: false,
+        ends_before_end: 0,
     });
     let mut without = with.clone();
     without.run.deactivation = None;
@@ -161,6 +162,7 @@ fn a_placebo_experiment_changes_nothing_but_its_own_metrics() {
         days: 10,
         share: 0.5,
         placebo: true,
+        ends_before_end: 0,
     });
     let mut without = placebo.clone();
     without.run.deactivation = None;
