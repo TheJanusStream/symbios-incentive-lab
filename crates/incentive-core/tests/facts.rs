@@ -40,14 +40,37 @@ fn engagement_ranking_amplifies_divisive_content() {
     check("amplification", 120);
 }
 
+/// Both checks of the learning fact are judged against a band from 0.01
+/// to 0.15, and in a short run the rise is large: at `N = 600`, on seeds 1
+/// to 4, after 120 days the rise is 0.118 (standard deviation 0.037, about two
+/// standard errors of the 4-seed mean below the upper bound) and the rise
+/// minus the rise without learning 0.099 (0.034). Since the exposure
+/// contagion (lab #38) carries part of the rise, the difference shrinks over
+/// a longer run: 0.075 after 240 days, 0.053 after 365, and 0.032 at full
+/// size (`N = 2,000`, 365 days). At `N = 1,000` after 120 days the rise is
+/// at 0.106 (0.021, about four standard errors inside the upper bound) and
+/// the difference at 0.093 (0.024, about seven inside the lower bound): the
+/// cheapest size at which both lie at least three standard errors inside
+/// both bounds (at `N = 600` after 240 days, 3.2 and 3.5).
 #[test]
 fn social_reward_teaches_outrage() {
-    check("outrage-learning", 120);
+    check_sized("outrage-learning", 1_000, 120);
 }
 
+/// Fact 3's exposure checks read a holdback over the last 90 days of the run
+/// on the follow graph the ranked feed built (docs/model.md, 13.2), so they
+/// need a ranked year before it: at `N = 600`, seeds 1 to 4, the
+/// misinformation ratio is 0.644 after 120 days (below its bound of 1.05),
+/// then 1.120 after 240 (about two standard errors above it) and 1.519
+/// after 365, where the toxic ratio, 0.817 (0.077), lies about two standard
+/// errors below its bound of 0.9. At `N = 1,000` after 365 days the toxic
+/// ratio is at 0.721 (0.045) and the misinformation ratio at 1.654 (0.116),
+/// each at least eight standard errors inside its band: the cheapest size
+/// with a reliable margin (at `N = 2,000` after 240 days, 0.664 and 1.278,
+/// about four).
 #[test]
 fn chronological_feed_cuts_time_and_barely_moves_polarisation() {
-    check("chronological-feed", 120);
+    check_sized("chronological-feed", 1_000, 365);
 }
 
 #[test]
@@ -66,11 +89,15 @@ fn harassment_drives_targets_away() {
 /// at the default `time_cost` (0.06) the effect lies close to its lower
 /// bound of 0.02, so the size is chosen by what this test judges, the mean of
 /// seeds 1 to 4 after 365 days, at the default and its neighbours on the
-/// calibration grid (0.055 and 0.065). At `N = 600` it is -0.059 at the
-/// default, at `N = 1,000` -0.027, both below the bound; at `N = 1,500` it is
-/// 0.027 but 0.017 at 0.055; at `N = 2,000` it is 0.063, with 0.037 and 0.060
-/// at the neighbours. `N = 2,000`, the full size, is the cheapest size whose
-/// mean holds the bound at both neighbouring values of the grid.
+/// calibration grid (0.055 and 0.065). In the round of hub #23 only the full
+/// size held the bound at both neighbours (at `N = 1,500`, 0.017 at 0.055).
+/// At the fixed point after labs #32, #38 and #34, at `N = 600` it is -0.028
+/// at the default and at `N = 1,000` -0.003, both below the bound; at
+/// `N = 1,500` it is 0.036 (0.046 and 0.079 at the neighbours), less than a
+/// third of a standard error of the 4-seed mean (0.057) above the bound; at
+/// `N = 2,000` it is 0.081 (standard deviation 0.050, about two and a half
+/// standard errors above), with 0.075 and 0.097 at the neighbours. The full
+/// size is kept.
 #[test]
 fn leaving_the_platform_raises_wellbeing() {
     check_sized("deactivation", 2_000, 365);
@@ -78,13 +105,15 @@ fn leaving_the_platform_raises_wellbeing() {
 
 /// The notifications-off fact (docs/model.md, 13.2) measures the run's last
 /// week against the week before. With the paired design and one session a
-/// day, its sessions check (the one closest to its bound of -0.4) is -0.326
-/// SD at full size (`N = 2,000`, 365 days, 8 seeds). At `N = 600`, seeds 1 to
-/// 4, it is -0.379 after 120 days (standard deviation 0.046, about one
-/// standard error of the 4-seed mean inside the bound), -0.302 after 240 days
-/// (0.037, about five standard errors inside) and -0.342 after 365 days
-/// (0.054, about two). So the test runs 240 days at the small population,
-/// the cheapest size with a reliable margin.
+/// day, its sessions check (the one closest to its bound of -0.4) is -0.322
+/// SD at full size (`N = 2,000`, 365 days, 8 seeds). At `N = 600`, seeds 1
+/// to 4, it is -0.376 after 120 days (standard deviation 0.064, under one
+/// standard error of the 4-seed mean inside the bound), -0.325 after 240
+/// days (0.061, about two and a half standard errors inside) and -0.323
+/// after 365 days (0.065, about two and a half); at `N = 1,000` it is -0.350
+/// after 240 days (0.046, about two). So the test runs 240 days at the small
+/// population, the cheapest size with the widest margin (about five standard
+/// errors there in the round of hub #23).
 #[test]
 fn a_week_without_notifications_barely_changes_use_or_wellbeing() {
     check("notifications-off", 240);

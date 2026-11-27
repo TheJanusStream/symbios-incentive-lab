@@ -49,7 +49,8 @@ pub(crate) struct FeedFilter {
 
 impl FeedFilter {
     /// The filter of a viewer with this treatment, `None` for a viewer the
-    /// experiment does not treat. A score penalty filters nothing.
+    /// experiment does not treat. A score penalty and the chronological feed
+    /// filter nothing.
     pub(crate) fn of(treatment: Option<FeedExperimentKind>) -> Self {
         match treatment {
             Some(FeedExperimentKind::HideFlagged { threshold }) => Self {
@@ -60,7 +61,8 @@ impl FeedFilter {
                 hide_above: None,
                 no_reshares: true,
             },
-            Some(FeedExperimentKind::FewerSameGroup { .. }) | None => Self::default(),
+            Some(FeedExperimentKind::FewerSameGroup { .. } | FeedExperimentKind::Chronological)
+            | None => Self::default(),
         }
     }
 
@@ -363,6 +365,7 @@ fn relation(ctx: &FeedCtx, post: &Post, depth: u8) -> Relation {
             .design
             .reshare_depth_cap
             .is_some_and(|cap| u32::from(depth) >= cap),
+        noted: post.note_shown(ctx.day, viewer.state.today.session_hour),
     }
 }
 

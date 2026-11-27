@@ -27,7 +27,8 @@ pub(crate) enum Stream {
     Feed = 10,
     Engagement = 11,
     BotBoosts = 12,
-    Notes = 13,
+    // 13 was the daily note draw of community notes before lab #34, and 17
+    // an early stream; neither may be reused.
     Review = 14,
     Economy = 15,
     Learning = 16,
@@ -41,12 +42,20 @@ pub(crate) enum Stream {
     Archetype = 23,
     /// Reports and see-less marks of brigading bots, per bot account.
     Brigade = 24,
-    /// Assignment to a deactivation experiment's break group, per person, on
-    /// the experiment's first day.
+    /// Assignment to an experiment's treated group (the deactivation break,
+    /// notifications off or a feed experiment), per person, on the
+    /// experiment's first day.
     Experiment = 25,
     /// The day's extra sessions of a user who opened the app, per person and
     /// day; drawn only when an extra-session rate is positive.
     Sessions = 26,
+    /// Whether a false post gets a community note, and the note's delay,
+    /// per post (keyed on its author and ordinal), when the post is written;
+    /// drawn only with community notes on.
+    NoteTiming = 27,
+    /// The time of day of a user's sessions, per person and day; drawn only
+    /// with community notes on.
+    SessionClock = 28,
 }
 
 /// SplitMix64 finaliser: a cheap bijective mixer with good avalanche.

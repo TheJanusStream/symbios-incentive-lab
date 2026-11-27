@@ -65,7 +65,9 @@ pub use config::{
     Sanctions, WorldAssumptions,
 };
 pub use config_path::FieldValue;
-pub use content::{Group, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS};
+pub use content::{
+    Group, NOTE_MIN_IMPRESSIONS, Post, STYLE_COUNT, Style, StyleProfile, TOPIC_COUNT, TOPICS,
+};
 pub use error::ConfigError;
 pub use facts::{Bound, Check, CheckDetail, CheckResult, Fact, FactRun, Variant, facts};
 pub use headline::headline_claims;

@@ -16,18 +16,20 @@
 //!   and sessions a day over the 7 days before are kept as their baseline.
 //! - The feed experiment: the regular users are found the same way, and each
 //!   treated viewer's feed changes as the experiment's kind says (hidden
-//!   flagged posts, no reshares, or a penalty on posts by the viewer's own
-//!   group). Each participant's use of the platform and exposure are logged
-//!   over the experiment's days.
+//!   flagged posts, no reshares, a penalty on posts by the viewer's own
+//!   group, or the chronological feed of their in-network posts). Each
+//!   participant's use of the platform and exposure are logged over the
+//!   experiment's days.
 //!
 //! In a placebo run the participants and the groups are drawn the same way,
 //! but nobody is treated. The experiments' state lives on the truth side of
 //! the world, and nothing the platform reads depends on it.
 
 use crate::config::{Config, FeedExperimentKind, NOTIFICATIONS_OFF_BASELINE_DAYS};
+use crate::content::Post;
 use crate::person::{Person, PersonState};
 use crate::rng::{self, Stream};
-use crate::world::{DayCtx, World};
+use crate::world::{DayCtx, World, partisan_band};
 
 /// Days looked back on to find the regular users.
 const REGULAR_WINDOW_DAYS: u32 = 7;
@@ -84,6 +86,12 @@ struct Exposure {
     /// Of the impressions, those a hide-flagged experiment's threshold
     /// flags (its dose; counted in a placebo run too).
     flagged: u32,
+    /// Of the impressions, those of posts by human authors in the more
+    /// partisan half, the most partisan tenth and the middle fifth by the
+    /// partisanship trait.
+    partisan_half: u32,
+    extreme: u32,
+    middle: u32,
     /// Posts written and their summed toxicity.
     posts: u32,
     post_toxicity: f64,
@@ -103,6 +111,9 @@ impl Exposure {
         self.misinformation += today.misinformation_items;
         self.same_group += today.same_group_items;
         self.flagged += today.flagged_items;
+        self.partisan_half += today.partisan_half_items;
+        self.extreme += today.extreme_items;
+        self.middle += today.middle_items;
         self.posts += today.posts;
         self.post_toxicity += f64::from(today.post_toxicity);
         self.shares += today.shares;
@@ -141,6 +152,32 @@ struct BreakEnd {
     /// quantities' own units.
     polarisation_raw: f32,
     informedness_raw: f32,
+    /// The standard deviations the scaled changes divide by: of all
+    /// participants' wellbeing, polarisation and informedness at the start.
+    sds: [f32; 3],
+}
+
+/// Impressions of a feed experiment's treated group, pooled, by the
+/// author's partisanship: the more partisan half, the most partisan tenth,
+/// the middle fifth, and all impressions.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Reach {
+    half: u64,
+    extreme: u64,
+    middle: u64,
+    all: u64,
+}
+
+impl Reach {
+    /// Adds `n` impressions of a post by `author`.
+    fn add(&mut self, partisanship_rank: &[u32], author: usize, n: u64) {
+        if let Some(band) = partisan_band(partisanship_rank, author) {
+            self.half += if band.half { n } else { 0 };
+            self.extreme += if band.extreme { n } else { 0 };
+            self.middle += if band.middle { n } else { 0 };
+        }
+        self.all += n;
+    }
 }
 
 /// The running experiment: which one, who takes part, in which group, and
@@ -167,6 +204,10 @@ pub(crate) struct Experiment {
     exposure: Vec<Exposure>,
     /// The measures taken at the end of a break that ended before the run.
     break_end: Option<BreakEnd>,
+    /// A feed experiment's treated group's impressions of posts that had
+    /// been removed or demoted by the end of their life, counted as each
+    /// such post ends (feed experiment only; zero otherwise).
+    removed_or_demoted: Reach,
 }
 
 impl Experiment {
@@ -192,6 +233,35 @@ impl Experiment {
     /// notifications-off experiment: assigned in a run that is not a placebo.
     pub(crate) fn notifications_off(&self, i: usize) -> bool {
         self.kind == Kind::NotificationsOff && self.treated(i)
+    }
+
+    /// Whether individual `i` is assigned to a feed experiment's treated
+    /// group, in a real run or its placebo: whose impressions its measures
+    /// count.
+    pub(crate) fn feed_assigned(&self, i: usize) -> bool {
+        matches!(self.kind, Kind::Feed(_))
+            && self
+                .participants
+                .get(i)
+                .copied()
+                .flatten()
+                .is_some_and(|p| p.assigned)
+    }
+
+    /// Counts a post at the end of its life: a feed experiment's treated
+    /// group's impressions of it, if it had been removed or demoted
+    /// (docs/model.md, 9.2). Measurement only.
+    pub(crate) fn count_ending_post(&mut self, partisanship_rank: &[u32], post: &Post) {
+        if matches!(self.kind, Kind::Feed(_))
+            && (post.removed || post.demoted)
+            && post.assigned_impressions > 0
+        {
+            self.removed_or_demoted.add(
+                partisanship_rank,
+                post.author as usize,
+                u64::from(post.assigned_impressions),
+            );
+        }
     }
 
     /// How a feed experiment changes individual `i`'s feed: its kind for a
@@ -369,6 +439,7 @@ pub(crate) fn begin_day(world: &mut World, ctx: &DayCtx) {
         usage,
         exposure,
         break_end: None,
+        removed_or_demoted: Reach::default(),
     });
 }
 
@@ -536,7 +607,20 @@ fn break_measures(experiment: &Experiment, world: &World) -> BreakEnd {
             |s| s.informedness,
             |p| p.start_informedness,
         )),
+        sds: start_sds(experiment),
     }
+}
+
+/// The standard deviations of all participants' wellbeing, affective
+/// polarisation and informedness at the start of the first day, NaN where
+/// there are fewer than two participants or no spread.
+fn start_sds(experiment: &Experiment) -> [f32; 3] {
+    let sd = |v: Option<f64>| v.map_or(f32::NAN, |v| v as f32);
+    [
+        sd(experiment.start_sd()),
+        sd(experiment.participants_sd(|p| p.start_polarisation)),
+        sd(experiment.participants_sd(|p| p.start_informedness)),
+    ]
 }
 
 /// A deactivation experiment's measures at the end of its break, read on
@@ -596,6 +680,15 @@ pub(crate) fn break_society_changes(world: &World, ctx: &DayCtx) -> [f32; 4] {
             b.informedness_raw,
         ]
     })
+}
+
+/// The standard deviations the deactivation experiment's scaled changes
+/// divide by, read with them on the run's last day: of all participants'
+/// wellbeing, affective polarisation and informedness at the start of the
+/// first day, `[wellbeing, polarisation, informedness]`. NaN as
+/// [`break_change`] is, and where there is no spread.
+pub(crate) fn break_sds(world: &World, ctx: &DayCtx) -> [f32; 3] {
+    break_end(world, ctx).map_or([f32::NAN; 3], |b| b.sds)
 }
 
 /// The break group's mean daily time on the platform over the days after a
@@ -661,8 +754,25 @@ pub(crate) fn notifications_off_changes(world: &World, ctx: &DayCtx) -> [f32; 3]
     ]
 }
 
+/// The standard deviations a notifications-off experiment's changes divide
+/// by, on the run's last day: of the participants' baseline daily time and
+/// sessions a day, and of their wellbeing at the start of the first day,
+/// `[time, sessions, wellbeing]`. NaN on every other day, in a run without
+/// the experiment, and where there is no spread.
+pub(crate) fn notifications_off_sds(world: &World, ctx: &DayCtx) -> [f32; 3] {
+    let Some(e) = Experiment::on_last_day(world, ctx, |k| k == Kind::NotificationsOff) else {
+        return [f32::NAN; 3];
+    };
+    let sd = |v: Option<f64>| v.map_or(f32::NAN, |v| v as f32);
+    [
+        sd(e.participants_sd(|p| p.base_dwell)),
+        sd(e.participants_sd(|p| p.base_sessions)),
+        sd(e.start_sd()),
+    ]
+}
+
 /// Number of a feed experiment's measures.
-pub(crate) const FEED_MEASURES: usize = 13;
+pub(crate) const FEED_MEASURES: usize = 26;
 
 /// A feed experiment's measures on the run's last day, over the
 /// experiment's days, for everyone assigned to the treated group, leavers
@@ -682,7 +792,16 @@ pub(crate) const FEED_MEASURES: usize = 13;
 ///   the placebo run (in a real run the treated see none of them), NaN for
 ///   the other kinds;
 /// - their mean changes in affective polarisation and informedness unscaled,
-///   in the quantities' own units.
+///   in the quantities' own units;
+/// - the standard deviations the scaled changes divide by: of all
+///   participants' polarisation, informedness and wellbeing at the start;
+/// - their reach by the author's partisanship, per treated viewer and day,
+///   pooled over the group and the days: impressions of posts by the more
+///   partisan half of authors, by the most partisan tenth, by the middle
+///   fifth (40% to 60%) and of all posts, then the most partisan tenth's
+///   impressions over the middle fifth's;
+/// - the same five without the impressions of posts removed or demoted by
+///   the end of their life (or by the run's end, for posts still live).
 ///
 /// In that order. The paired comparison of a real run and its placebo is
 /// the experiment's effect on the same people. Each NaN on every other day,
@@ -695,6 +814,7 @@ pub(crate) fn feed_measures(world: &World, ctx: &DayCtx) -> [f32; FEED_MEASURES]
     let days = f64::from(ctx.day + 1 - e.first_day);
     let mut total = Exposure::default();
     let (mut dwell, mut actions) = (Vec::new(), Vec::new());
+    let mut reach = Reach::default();
     for (i, _) in e.assigned() {
         let x = e.exposure.get(i).copied().unwrap_or_default();
         dwell.push(x.dwell / days);
@@ -708,7 +828,55 @@ pub(crate) fn feed_measures(world: &World, ctx: &DayCtx) -> [f32; FEED_MEASURES]
         total.post_toxicity += x.post_toxicity;
         total.shares += x.shares;
         total.shared_truth += x.shared_truth;
+        reach.half += u64::from(x.partisan_half);
+        reach.extreme += u64::from(x.extreme);
+        reach.middle += u64::from(x.middle);
+        reach.all += u64::from(x.impressions);
     }
+    // Posts still live: those removed or demoted so far count as such.
+    let mut excluded = e.removed_or_demoted;
+    for post in world.posts.iter() {
+        if (post.removed || post.demoted) && post.assigned_impressions > 0 {
+            excluded.add(
+                &world.truth.partisanship_rank,
+                post.author as usize,
+                u64::from(post.assigned_impressions),
+            );
+        }
+    }
+    let viewer_days = dwell.len() as f64 * days;
+    let per_viewer_day = |n: u64| {
+        if viewer_days > 0.0 {
+            (n as f64 / viewer_days) as f32
+        } else {
+            f32::NAN
+        }
+    };
+    let over = |a: u64, b: u64| {
+        if b > 0 {
+            (a as f64 / b as f64) as f32
+        } else {
+            f32::NAN
+        }
+    };
+    let kept = Reach {
+        half: reach.half.saturating_sub(excluded.half),
+        extreme: reach.extreme.saturating_sub(excluded.extreme),
+        middle: reach.middle.saturating_sub(excluded.middle),
+        all: reach.all.saturating_sub(excluded.all),
+    };
+    let reach_measures = |r: Reach| {
+        [
+            per_viewer_day(r.half),
+            per_viewer_day(r.extreme),
+            per_viewer_day(r.middle),
+            per_viewer_day(r.all),
+            over(r.extreme, r.middle),
+        ]
+    };
+    let [half, extreme, middle, all, ratio] = reach_measures(reach);
+    let [half_kept, extreme_kept, middle_kept, all_kept, ratio_kept] = reach_measures(kept);
+    let [sd_wellbeing, sd_polarisation, sd_informedness] = start_sds(e);
     let per_day = |v: &[f64]| {
         if v.is_empty() {
             f32::NAN
@@ -762,6 +930,19 @@ pub(crate) fn feed_measures(world: &World, ctx: &DayCtx) -> [f32; FEED_MEASURES]
             |s| s.informedness,
             |p| p.start_informedness,
         )),
+        sd_polarisation,
+        sd_informedness,
+        sd_wellbeing,
+        half,
+        extreme,
+        middle,
+        all,
+        ratio,
+        half_kept,
+        extreme_kept,
+        middle_kept,
+        all_kept,
+        ratio_kept,
     ]
 }
 
@@ -1279,6 +1460,13 @@ mod tests {
             day: 29,
         };
         let [time, sessions, wellbeing] = notifications_off_changes(&world, &last);
+        let sds = notifications_off_sds(&world, &last);
+        for (got, want) in sds.iter().zip([sd_dwell, sd_sessions, sd_start]) {
+            assert!(
+                (f64::from(*got) - want).abs() < 1e-6,
+                "{got} against {want}"
+            );
+        }
         assert!((f64::from(time) - 1.0 / sd_dwell).abs() < 1e-4, "{time}");
         assert!(
             (f64::from(sessions) - 2.0 / sd_sessions).abs() < 1e-4,
@@ -1353,7 +1541,9 @@ mod tests {
 
     const HIDE: FeedExperimentKind = FeedExperimentKind::HideFlagged { threshold: 0.3 };
     const PENALTY: FeedExperimentKind = FeedExperimentKind::FewerSameGroup { penalty: 0.5 };
-    const FEED_KINDS: [FeedExperimentKind; 3] = [HIDE, FeedExperimentKind::NoReshares, PENALTY];
+    const CHRONO: FeedExperimentKind = FeedExperimentKind::Chronological;
+    const FEED_KINDS: [FeedExperimentKind; 4] =
+        [HIDE, FeedExperimentKind::NoReshares, PENALTY, CHRONO];
 
     const FEED_IDS: [MetricId; FEED_MEASURES] = [
         MetricId::FeedExperimentDwell,
@@ -1369,6 +1559,19 @@ mod tests {
         MetricId::FeedExperimentFlaggedShare,
         MetricId::FeedExperimentPolarisationRaw,
         MetricId::FeedExperimentInformednessRaw,
+        MetricId::FeedExperimentPolarisationSd,
+        MetricId::FeedExperimentInformednessSd,
+        MetricId::FeedExperimentWellbeingSd,
+        MetricId::FeedExperimentPartisanHalfImpressions,
+        MetricId::FeedExperimentExtremeImpressions,
+        MetricId::FeedExperimentMiddleImpressions,
+        MetricId::FeedExperimentImpressions,
+        MetricId::FeedExperimentExtremeMiddleRatio,
+        MetricId::FeedExperimentPartisanHalfImpressionsKept,
+        MetricId::FeedExperimentExtremeImpressionsKept,
+        MetricId::FeedExperimentMiddleImpressionsKept,
+        MetricId::FeedExperimentImpressionsKept,
+        MetricId::FeedExperimentExtremeMiddleRatioKept,
     ];
 
     #[test]
@@ -1615,6 +1818,62 @@ mod tests {
         assert!(would_see > 20, "the filter has teeth: {would_see}");
     }
 
+    /// The treated read the chronological feed of their in-network posts:
+    /// no recommendation, newest first, nothing scored. Everyone else's feed,
+    /// and the treated's in the placebo, is the ranked one, on the same draws.
+    #[test]
+    fn the_treated_read_the_chronological_feed_and_nobody_else_does() {
+        let (config, world, day) = world_in_experiment(CHRONO);
+        let (mut treated, mut recommended_in_placebo) = (0, 0);
+        for (is_treated, real, placebo) in feeds_both_ways(&config, &world, day, 10_000) {
+            if is_treated {
+                treated += 1;
+                assert!(real.iter().all(|c| c.in_network), "a recommendation");
+                assert!(
+                    real.windows(2)
+                        .all(|w| (w[0].item_day, w[0].post) >= (w[1].item_day, w[1].post)),
+                    "not newest first"
+                );
+                assert!(real.iter().all(|c| c.score == 0.0));
+                recommended_in_placebo += placebo.iter().filter(|c| !c.in_network).count();
+                assert!(
+                    placebo.iter().any(|c| c.score != 0.0),
+                    "the placebo is ranked"
+                );
+            } else {
+                assert!(same_feed(&real, &placebo), "an untreated feed changed");
+            }
+        }
+        assert!(treated > 20, "{treated} treated users");
+        assert!(recommended_in_placebo > 20, "the switch has teeth");
+    }
+
+    /// Under the integrity preset, which demotes, the treated's reach
+    /// without posts removed or demoted lies below the reach with them, in
+    /// a real run and in its placebo.
+    #[test]
+    fn the_kept_reach_leaves_out_demoted_posts_in_a_run() {
+        for placebo in [false, true] {
+            let mut config = feed_config(CHRONO, 0.5, placebo);
+            crate::presets::integrity_ranking(&mut config.design);
+            // At 400 people, with the exposure contagion of lab #38, the
+            // placebo's treated saw no demoted post in these ten days.
+            config.run.population_size = 1000;
+            let mut sim = Simulation::new(config).expect("valid");
+            sim.run_to_end();
+            let last = sim.history().last().expect("days").clone();
+            let all = last.get(MetricId::FeedExperimentImpressions);
+            let kept = last.get(MetricId::FeedExperimentImpressionsKept);
+            assert!(
+                kept > 0.0 && kept < all,
+                "placebo {placebo}: {kept} of {all}"
+            );
+            let half = last.get(MetricId::FeedExperimentPartisanHalfImpressions);
+            let half_kept = last.get(MetricId::FeedExperimentPartisanHalfImpressionsKept);
+            assert!(half_kept <= half && half <= all);
+        }
+    }
+
     #[test]
     fn same_group_posts_are_pushed_down_for_the_treated() {
         let (config, world, day) = world_in_experiment(PENALTY);
@@ -1696,6 +1955,9 @@ mod tests {
                     misinformation: 2,
                     same_group: 10,
                     flagged: 0,
+                    partisan_half: 20,
+                    extreme: 6,
+                    middle: 8,
                     posts: 2,
                     post_toxicity: 0.6,
                     shares: 4,
@@ -1720,7 +1982,11 @@ mod tests {
         let sd_pol = e.participants_sd(|p| p.start_polarisation).expect("spread");
         let sd_inf = e.participants_sd(|p| p.start_informedness).expect("spread");
         let sd_wb = e.start_sd().expect("spread");
-        let expected = [
+        // Per treated viewer and day: 20, 6, 8 and 40 impressions over 10
+        // days for all but the first; no post was removed or demoted, so
+        // the kept measures are the same.
+        let reach = [2.0 * active, 0.6 * active, 0.8 * active, 4.0 * active, 0.75];
+        let mut expected = vec![
             2.0 * active,
             3.0 * active,
             0.1,
@@ -1734,7 +2000,13 @@ mod tests {
             f64::NAN,
             -0.05,
             0.02,
+            sd_pol,
+            sd_inf,
+            sd_wb,
         ];
+        expected.extend(reach);
+        expected.extend(reach);
+        assert_eq!(expected.len(), FEED_MEASURES);
         for (k, (got, want)) in m.iter().zip(expected).enumerate() {
             if want.is_nan() {
                 assert!(got.is_nan(), "measure {k}: {got}, not NaN");
@@ -1756,6 +2028,97 @@ mod tests {
                 .all(|v| v.is_nan())
         );
         assert!(break_change(&world, &last).is_nan() && post_break_dwell(&world, &last).is_nan());
+    }
+
+    /// The reach measures on a hand-checkable case: two treated viewers,
+    /// a removed post and a demoted one, a post that ended removed before
+    /// the last day, and a bot's post.
+    #[test]
+    fn the_reach_measures_count_by_partisanship_with_and_without_removed_posts() {
+        let config = feed_config(CHRONO, 0.5, false);
+        let mut world = init::build_world(&config);
+        for p in &mut world.people {
+            p.state.active_bits = u64::MAX;
+        }
+        begin_day(
+            &mut world,
+            &DayCtx {
+                config: &config,
+                day: 20,
+            },
+        );
+        let n = world.population();
+        // Authors by partisanship rank: the top author of the population is
+        // in the half and the tenth, the median one in the half and the
+        // middle fifth.
+        let rank = &world.truth.partisanship_rank;
+        let by_rank = |r: u32| rank.iter().position(|&x| x == r).expect("ranked");
+        let top = by_rank(n as u32 - 1);
+        let median = by_rank(n as u32 / 2);
+        let e = world.truth.experiment.as_mut().expect("started");
+        let treated: Vec<usize> = e.assigned().map(|(i, _)| i).take(2).collect();
+        e.participants.iter_mut().enumerate().for_each(|(i, p)| {
+            if let Some(p) = p {
+                p.assigned = treated.contains(&i);
+            }
+        });
+        // Over the 10 days the two treated saw 100 items each: 30 by the
+        // top tenth, 20 by the middle fifth (all in the half too, with 10
+        // more), the rest by the lower half or bots.
+        for &i in &treated {
+            e.exposure[i] = Exposure {
+                impressions: 100,
+                partisan_half: 60,
+                extreme: 30,
+                middle: 20,
+                ..Exposure::default()
+            };
+        }
+        // An ended post by the top author, removed, seen 6 times by them.
+        e.removed_or_demoted.add(rank, top, 6);
+        // Live posts: by the median author demoted (4), by the top author
+        // untouched (50), by a bot removed (3).
+        let mut live = |author: usize, impressions: u32, removed: bool, demoted: bool| {
+            let mut rng = rng::stream_rng(1, 0, author as u64, Stream::PostDraw);
+            let profile = crate::content::AuthorProfile::plain(crate::content::Group::A, 0.5, 0.5);
+            let mut post = crate::content::generate_post(
+                &mut rng,
+                world.posts.next_id(),
+                29,
+                &profile,
+                crate::content::Style::Outrage,
+                &[1.0 / 6.0; 6],
+                &config.world,
+            );
+            post.author = author as u32;
+            post.assigned_impressions = impressions;
+            post.removed = removed;
+            post.demoted = demoted;
+            world.posts.push(post);
+        };
+        live(median, 4, false, true);
+        live(top, 50, false, false);
+        live(n + 5, 3, true, false);
+        let m = feed_measures(
+            &world,
+            &DayCtx {
+                config: &config,
+                day: 29,
+            },
+        );
+        let got = |k: usize| f64::from(m[16 + k]);
+        // 2 viewers x 10 days = 20 viewer-days: the half 120 / 20, the tenth
+        // 60 / 20, the middle fifth 40 / 20, all 200 / 20, and the tenth
+        // over the middle fifth 60 / 40.
+        for (k, want) in [6.0, 3.0, 2.0, 10.0, 1.5].into_iter().enumerate() {
+            assert!((got(k) - want).abs() < 1e-5, "reach {k}: {}", got(k));
+        }
+        // Without posts removed or demoted: the half loses 6 + 4, the tenth
+        // 6, the middle fifth 4, all posts 6 + 4 + 3; the untouched post
+        // stays.
+        for (k, want) in [5.5, 2.7, 1.8, 9.35, 1.5].into_iter().enumerate() {
+            assert!((got(5 + k) - want).abs() < 1e-5, "kept {k}: {}", got(5 + k));
+        }
     }
 
     #[test]
@@ -1936,6 +2299,11 @@ mod tests {
         assert!((f64::from(inf) + 0.03 / sd_inf).abs() < 1e-4, "{inf}");
         assert!((pol_raw + 0.04).abs() < 1e-5, "{pol_raw}");
         assert!((inf_raw + 0.03).abs() < 1e-5, "{inf_raw}");
+        // The SDs the scaled changes divide by are reported with them.
+        let [sd_wb, sd_p, sd_i] = break_sds(&world, &last);
+        assert!((f64::from(sd_p) - sd_pol).abs() < 1e-6);
+        assert!((f64::from(sd_i) - sd_inf).abs() < 1e-6);
+        assert!((f64::from(sd_wb) - e.start_sd().expect("spread")).abs() < 1e-6);
         let before = DayCtx {
             config: &config,
             day: 28,

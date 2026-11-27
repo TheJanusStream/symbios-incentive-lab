@@ -239,8 +239,9 @@ pub(crate) struct FeedCtx<'a> {
 
 /// Builds, scores and orders the viewer's feed of at most `limit` items into
 /// `scratch.candidates`. For a viewer a feed experiment treats
-/// (docs/model.md, 13.2) the candidates are filtered or the ranking
-/// penalised as its kind says; for everyone else nothing changes.
+/// (docs/model.md, 13.2) the candidates are filtered, the ranking
+/// penalised or the feed made chronological as its kind says; for everyone
+/// else nothing changes.
 pub(crate) fn build_feed(
     ctx: &FeedCtx,
     limit: usize,
@@ -248,8 +249,12 @@ pub(crate) fn build_feed(
     rng: &mut StreamRng,
     scratch: &mut FeedScratch,
 ) -> FeedKind {
-    let kind = feed_kind(ctx.world, &ctx.config.design, ctx.viewer);
     let treatment = ctx.world.truth.feed_treatment(ctx.viewer);
+    let kind = if treatment == Some(FeedExperimentKind::Chronological) {
+        FeedKind::Chronological
+    } else {
+        feed_kind(ctx.world, &ctx.config.design, ctx.viewer)
+    };
     scratch.filter = FeedFilter::of(treatment);
     scratch.stamp += 1;
     scratch.candidates.clear();
@@ -322,7 +327,7 @@ fn score(
         in_network: if c.in_network { w.in_network } else { 0.0 },
         see_less: -w.see_less * see_less_rate,
         demoted: if post.demoted { -w.demote } else { 0.0 },
-        noted: if post.noted { -w.noted } else { 0.0 },
+        noted: if c.relation.noted { -w.noted } else { 0.0 },
         diversity: 0.0,
         experiment: 0.0,
     }

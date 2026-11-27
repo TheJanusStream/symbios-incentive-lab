@@ -121,6 +121,10 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::NotificationsOffTime, time);
     m.set(M::NotificationsOffSessions, sessions);
     m.set(M::NotificationsOffWellbeing, wellbeing);
+    let [time, sessions, wellbeing] = experiment::notifications_off_sds(world, ctx);
+    m.set(M::NotificationsOffTimeSd, time);
+    m.set(M::NotificationsOffSessionsSd, sessions);
+    m.set(M::NotificationsOffWellbeingSd, wellbeing);
     let [
         polarisation,
         informedness,
@@ -132,6 +136,10 @@ pub(crate) fn measure(world: &World, ctx: &DayCtx) -> DailyMetrics {
     m.set(M::BreakPolarisationRaw, polarisation_raw);
     m.set(M::BreakInformednessRaw, informedness_raw);
     m.set(M::PostBreakDwell, experiment::post_break_dwell(world, ctx));
+    let [wellbeing, polarisation, informedness] = experiment::break_sds(world, ctx);
+    m.set(M::BreakWellbeingSd, wellbeing);
+    m.set(M::BreakPolarisationSd, polarisation);
+    m.set(M::BreakInformednessSd, informedness);
     let feed = experiment::feed_measures(world, ctx);
     for (id, value) in FEED_EXPERIMENT_METRICS.iter().zip(feed) {
         m.set(*id, value);
@@ -196,6 +204,19 @@ const FEED_EXPERIMENT_METRICS: [M; experiment::FEED_MEASURES] = [
     M::FeedExperimentFlaggedShare,
     M::FeedExperimentPolarisationRaw,
     M::FeedExperimentInformednessRaw,
+    M::FeedExperimentPolarisationSd,
+    M::FeedExperimentInformednessSd,
+    M::FeedExperimentWellbeingSd,
+    M::FeedExperimentPartisanHalfImpressions,
+    M::FeedExperimentExtremeImpressions,
+    M::FeedExperimentMiddleImpressions,
+    M::FeedExperimentImpressions,
+    M::FeedExperimentExtremeMiddleRatio,
+    M::FeedExperimentPartisanHalfImpressionsKept,
+    M::FeedExperimentExtremeImpressionsKept,
+    M::FeedExperimentMiddleImpressionsKept,
+    M::FeedExperimentImpressionsKept,
+    M::FeedExperimentExtremeMiddleRatioKept,
 ];
 
 /// A ratio that does not exist when its denominator is 0: NaN, which
@@ -209,10 +230,12 @@ fn ratio_or_nan(num: f64, den: f64) -> f32 {
 }
 
 /// The diagnostics of docs/model.md, 9.2, from the day's tallies: reach by
-/// partisanship among the posts ending today, the out-group shares of the
-/// in-network stages, the shares made before a note, the share rate of
-/// Outrage against the non-hostile styles, and the truth of what people
-/// shared. Measurement only.
+/// partisanship among the posts ending today, with and without the posts
+/// removed or demoted, the out-group shares of the in-network stages, the
+/// shares made before a note, the share rate of Outrage against the
+/// non-hostile styles, the truth of what people shared, the day's counts
+/// behind the ratios (for ratios pooled over a window), and the like
+/// probability's terms by viewer group. Measurement only.
 fn diagnostics(world: &World, m: &mut DailyMetrics) {
     let t = &world.tally;
     let reach = |impressions: u64, posts: u32| ratio_or_nan(impressions as f64, f64::from(posts));
@@ -225,6 +248,16 @@ fn diagnostics(world: &World, m: &mut DailyMetrics) {
     m.set(
         M::ExtremeReachRatio,
         ratio_or_nan(f64::from(extreme), f64::from(middle)),
+    );
+    m.set(
+        M::PartisanHalfReachKept,
+        reach(t.partisan_half_kept_impressions, t.partisan_half_kept_posts),
+    );
+    let extreme_kept = reach(t.extreme_kept_impressions, t.extreme_kept_posts);
+    let middle_kept = reach(t.middle_kept_impressions, t.middle_kept_posts);
+    m.set(
+        M::ExtremeReachRatioKept,
+        ratio_or_nan(f64::from(extreme_kept), f64::from(middle_kept)),
     );
     let share = |part: u32, whole: u32| ratio_or_nan(f64::from(part), f64::from(whole));
     let candidates = share(t.in_network_outgroup_candidates, t.in_network_candidates);
@@ -253,14 +286,125 @@ fn diagnostics(world: &World, m: &mut DailyMetrics) {
             .sum();
         share(shares, seen)
     };
-    let calm = rate(&[Style::Informative, Style::Entertaining, Style::Personal]);
+    let calm_styles = [Style::Informative, Style::Entertaining, Style::Personal];
+    let calm = rate(&calm_styles);
     m.set(
         M::OutrageShareRatio,
         ratio_or_nan(f64::from(rate(&[Style::Outrage])), f64::from(calm)),
     );
+    let count = |id: M, n: u32| (id, n as f32);
+    let calm_shares: u32 = calm_styles
+        .iter()
+        .map(|s| t.shares_by_style[s.index()])
+        .sum();
+    let calm_seen: u32 = calm_styles
+        .iter()
+        .map(|s| t.impressions_by_style[s.index()])
+        .sum();
+    let outrage = Style::Outrage.index();
+    for (id, value) in [
+        count(M::InNetworkCandidateCount, t.in_network_candidates),
+        count(
+            M::InNetworkOutgroupCandidateCount,
+            t.in_network_outgroup_candidates,
+        ),
+        count(M::InNetworkImpressionCount, t.in_network_impressions),
+        count(
+            M::InNetworkOutgroupImpressionCount,
+            t.in_network_outgroup_impressions,
+        ),
+        count(M::InNetworkLikeCount, t.in_network_likes),
+        count(M::InNetworkOutgroupLikeCount, t.in_network_outgroup_likes),
+        count(M::OutrageStyleShareCount, t.shares_by_style[outrage]),
+        count(
+            M::OutrageStyleImpressionCount,
+            t.impressions_by_style[outrage],
+        ),
+        count(M::CalmStyleShareCount, calm_shares),
+        count(M::CalmStyleImpressionCount, calm_seen),
+        count(M::MisinformationCountBots, t.misinformation_bot_impressions),
+        count(M::FalsePostsEnded, t.false_posts_ended),
+        count(M::NotedFalsePostsEnded, t.noted_false_posts_ended),
+        count(M::ContagionAuthors, t.contagion.authors),
+        count(M::ExposedPostCount, t.contagion.exposed_posts),
+        count(M::ExposedHostilePostCount, t.contagion.exposed_hostile),
+        count(M::UnexposedPostCount, t.contagion.unexposed_posts),
+        count(M::UnexposedHostilePostCount, t.contagion.unexposed_hostile),
+    ] {
+        m.set(id, value);
+    }
+    for style in Style::ALL {
+        m.set(
+            M::misinformation_count(style),
+            t.misinformation_by_style[style.index()] as f32,
+        );
+    }
+    // The sums have no value on a day without authors, their subject.
+    let authors = t.contagion.authors > 0;
+    let sum = |v: f64| if authors { v as f32 } else { f32::NAN };
+    m.set(M::ContagionChanceExposed, sum(t.contagion.chance_exposed));
+    m.set(
+        M::ContagionChanceUnexposed,
+        sum(t.contagion.chance_unexposed),
+    );
+    m.set(M::ContagionRatioSum, sum(t.contagion.ratio_sum));
+    like_terms(world, m);
     m.set(
         M::SharedTruth,
         ratio_or_nan(t.shared_truth, f64::from(t.shares - t.bot_shares)),
+    );
+}
+
+/// The like probability's terms (docs/model.md, 7.1 and 9.2): the means of
+/// each logit term, the out-group multiplier and `P_like` over today's
+/// impressions, by same-group and out-group viewers. NaN for a group
+/// without impressions.
+fn like_terms(world: &World, m: &mut DailyMetrics) {
+    let [same, out] = &world.tally.like_terms;
+    let mean = |sum: f64, n: u32| ratio_or_nan(sum, f64::from(n));
+    for (sums, ids) in [
+        (
+            same,
+            [
+                M::LikeBiasSame,
+                M::LikeInterestSame,
+                M::LikeArousalSame,
+                M::LikeHostilitySame,
+                M::LikeSocialProofSame,
+                M::LikeReflectiveSame,
+                M::LikeProbabilitySame,
+            ],
+        ),
+        (
+            out,
+            [
+                M::LikeBiasOut,
+                M::LikeInterestOut,
+                M::LikeArousalOut,
+                M::LikeHostilityOut,
+                M::LikeSocialProofOut,
+                M::LikeReflectiveOut,
+                M::LikeProbabilityOut,
+            ],
+        ),
+    ] {
+        let n = sums.impressions;
+        let values = [
+            sums.bias,
+            sums.interest,
+            sums.arousal,
+            sums.hostility,
+            sums.social_proof,
+            sums.reflective,
+            sums.p_like,
+        ];
+        for (id, sum) in ids.into_iter().zip(values) {
+            m.set(id, mean(sum, n));
+        }
+    }
+    m.set(
+        M::LikeOutgroupMultiplier,
+        mean(out.multiplier, out.impressions),
     );
 }
 
@@ -627,13 +771,16 @@ mod tests {
             config: &config,
             day: 3,
         };
-        // Nothing to describe: no value, not 0.
+        // Nothing to describe: no value, not 0; the day's counts are 0.
         let empty = measure(&world, &ctx);
-        assert!(
-            M::all()
-                .filter(|id| id.diagnostic())
-                .all(|id| empty.get(id).is_nan())
-        );
+        for id in M::all().filter(|id| id.diagnostic()) {
+            let value = empty.get(id);
+            if id.info().format == crate::metrics::Format::Count {
+                assert_eq!(value, 0.0, "{}", id.info().key);
+            } else {
+                assert!(value.is_nan(), "{}: {value}", id.info().key);
+            }
+        }
         let t = &mut world.tally;
         t.partisan_half_posts = 4;
         t.partisan_half_impressions = 50;
@@ -641,6 +788,38 @@ mod tests {
         t.extreme_impressions = 30;
         t.middle_posts = 5;
         t.middle_impressions = 25;
+        t.partisan_half_kept_posts = 2;
+        t.partisan_half_kept_impressions = 30;
+        t.extreme_kept_posts = 1;
+        t.extreme_kept_impressions = 20;
+        t.middle_kept_posts = 4;
+        t.middle_kept_impressions = 16;
+        let terms = crate::behaviour::LikeTerms {
+            bias: -3.5,
+            interest: 0.6,
+            arousal: 0.2,
+            hostility: 0.3,
+            social_proof: 0.1,
+            reflective: -0.4,
+            multiplier: 1.0,
+        };
+        t.like_terms[0].add(&terms, 0.1);
+        t.like_terms[0].add(
+            &crate::behaviour::LikeTerms {
+                interest: 0.0,
+                hostility: 0.1,
+                ..terms
+            },
+            0.3,
+        );
+        t.like_terms[1].add(
+            &crate::behaviour::LikeTerms {
+                hostility: 0.0,
+                multiplier: 0.6,
+                ..terms
+            },
+            0.05,
+        );
         t.in_network_candidates = 200;
         t.in_network_outgroup_candidates = 50;
         t.in_network_impressions = 40;
@@ -675,5 +854,29 @@ mod tests {
         close(M::OutrageShareRatio, (6.0 / 50.0) / (6.0 / 400.0));
         // Bots' shares carry no truth of a person's choice: 30 human shares.
         close(M::SharedTruth, 0.5);
+        close(M::PartisanHalfReachKept, 15.0);
+        close(M::ExtremeReachRatioKept, 20.0 / 4.0);
+        close(M::InNetworkCandidateCount, 200.0);
+        close(M::InNetworkOutgroupCandidateCount, 50.0);
+        close(M::InNetworkImpressionCount, 40.0);
+        close(M::InNetworkOutgroupImpressionCount, 8.0);
+        close(M::InNetworkLikeCount, 10.0);
+        close(M::InNetworkOutgroupLikeCount, 1.0);
+        close(M::OutrageStyleShareCount, 6.0);
+        close(M::OutrageStyleImpressionCount, 50.0);
+        close(M::CalmStyleShareCount, 6.0);
+        close(M::CalmStyleImpressionCount, 400.0);
+        // Same-group means over two impressions, out-group over one.
+        close(M::LikeBiasSame, -3.5);
+        close(M::LikeInterestSame, 0.3);
+        close(M::LikeArousalSame, 0.2);
+        close(M::LikeHostilitySame, 0.2);
+        close(M::LikeSocialProofSame, 0.1);
+        close(M::LikeReflectiveSame, -0.4);
+        close(M::LikeProbabilitySame, 0.2);
+        close(M::LikeHostilityOut, 0.0);
+        close(M::LikeInterestOut, 0.6);
+        close(M::LikeOutgroupMultiplier, 0.6);
+        close(M::LikeProbabilityOut, 0.05);
     }
 }

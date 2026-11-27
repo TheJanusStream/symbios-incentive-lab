@@ -12,7 +12,10 @@
 
 use serde::Serialize;
 
-use crate::config::{Config, Deactivation, NotificationsOff, RunSettings};
+use crate::config::{
+    Config, Deactivation, FEED_EXPERIMENT_SHARE, FeedExperiment, FeedExperimentKind,
+    NotificationsOff, RunSettings,
+};
 use crate::error::ConfigError;
 use crate::metrics::{DailyMetrics, MetricId, nan_mean};
 use crate::scenarios::Verdict;
@@ -44,6 +47,17 @@ pub(crate) enum Measure {
     Summary(MetricId),
     /// Mean over the run's last days, clipped to the run.
     LastDays(MetricId, u32),
+    /// A ratio pooled over the run's summary window: the sum of `num` over
+    /// the window's days divided by the sum of `den`, and, with `over`, that
+    /// divided by the pooled ratio of its two metrics. It weighs each day by
+    /// its counts, where the mean of daily ratios weighs every day alike and
+    /// is biased upward when the denominator varies (Jensen's inequality).
+    /// The metrics are daily counts; days without a value are skipped.
+    Pooled {
+        num: MetricId,
+        den: MetricId,
+        over: Option<(MetricId, MetricId)>,
+    },
 }
 
 impl Measure {
@@ -72,6 +86,26 @@ impl Measure {
                 mean(id, n.saturating_sub(window), n)
             }
             Self::LastDays(id, days) => mean(id, n.saturating_sub(days as usize), n),
+            Self::Pooled { num, den, over } => {
+                let window = summary_days(n, RunSettings::default().summary_window);
+                let days = &history[n.saturating_sub(window)..];
+                let sum = |id: MetricId| -> f64 {
+                    days.iter()
+                        .map(|d| f64::from(d.get(id)))
+                        .filter(|v| !v.is_nan())
+                        .sum()
+                };
+                let pooled = |a: MetricId, b: MetricId| {
+                    let den = sum(b);
+                    if den > 0.0 { sum(a) / den } else { f64::NAN }
+                };
+                let ratio = pooled(num, den);
+                let value = match over {
+                    Some((a, b)) => ratio / pooled(a, b),
+                    None => ratio,
+                };
+                value as f32
+            }
         }
     }
 }
@@ -126,9 +160,22 @@ pub struct Check {
     /// ([`Check::with_neutral`]); [`CheckDetail::direction`] is measured
     /// from it.
     pub(crate) neutral: Option<f32>,
+    /// For an effect in standard deviations, the metric that holds the
+    /// standard deviation it divides by, read on the run's last day
+    /// ([`Check::with_scale`]); `None` for every other effect.
+    pub(crate) scale: Option<MetricId>,
 }
 
 impl Check {
+    /// The same check with the metric of the standard deviation its effect
+    /// is scaled by, reported as [`CheckResult::scale`].
+    pub(crate) const fn with_scale(self, scale: MetricId) -> Self {
+        Self {
+            scale: Some(scale),
+            ..self
+        }
+    }
+
     /// The same check with an explicit neutral value
     /// ([`CheckDetail::direction`] is measured from it).
     pub(crate) const fn with_neutral(self, neutral: f32) -> Self {
@@ -173,6 +220,14 @@ pub struct CheckResult {
     pub verdict: Verdict,
     /// Whether the model is known to fail this check ([`Check::known_limit`]).
     pub known_limit: bool,
+    /// For an effect in standard deviations, the standard deviation it was
+    /// scaled by: the mean over the seeds of the participants' standard
+    /// deviation at the experiment's start, read in the effect's first arm
+    /// (the paired arms share it, since they are identical until the
+    /// experiment starts). `None` for every other effect; left out of JSON
+    /// then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
 }
 
 /// A check's verdict with the per-seed effects behind it, for callers that
@@ -339,6 +394,17 @@ fn mean_sd(values: &[f32]) -> (f32, f32) {
 }
 
 impl Effect {
+    /// The effect's first arm, `a`.
+    fn first(self) -> usize {
+        match self {
+            Self::Difference { a, .. }
+            | Self::Mean { a }
+            | Self::Ratio { a, .. }
+            | Self::Relative { a, .. }
+            | Self::Elasticity { a, .. } => a,
+        }
+    }
+
     /// The effect, its per-seed spread and the per-seed effects from the
     /// measurements, indexed `[variant][seed]`.
     pub(crate) fn of(self, values: &dyn Fn(usize) -> Vec<f32>) -> (f32, f32, Vec<f32>) {
@@ -425,6 +491,20 @@ fn judge_detailed(check: &Check, histories: &[Vec<Vec<DailyMetrics>>]) -> CheckD
         }
     };
     let direction = signed - check.neutral.unwrap_or(natural);
+    let scale = check.scale.map(|id| {
+        let arm = match check.judge {
+            Judge::Exceeds { a, .. }
+            | Judge::Above { a, .. }
+            | Judge::RatioBelow { a, .. }
+            | Judge::Close { a, .. } => a,
+            Judge::Band { effect, .. } => effect.first(),
+        };
+        let values: Vec<f32> = histories
+            .get(arm)
+            .map(|runs| runs.iter().map(|h| Measure::Last(id).of(h)).collect())
+            .unwrap_or_default();
+        mean_sd(&values).0
+    });
     let interval = MeanInterval::of(per_seed.iter().copied());
     let verdict = interval_bound.verdict(interval.low, interval.high);
     let (threshold, passed) = match bound {
@@ -443,6 +523,7 @@ fn judge_detailed(check: &Check, histories: &[Vec<Vec<DailyMetrics>>]) -> CheckD
             passed,
             verdict,
             known_limit: check.known_limit,
+            scale,
         },
         per_seed,
         direction,
@@ -462,9 +543,29 @@ const CHRONOLOGICAL: Variant = Variant {
     label: "chronological",
     apply: |c| c.design.chronological = true,
 };
-const INTEGRITY: Variant = Variant {
-    label: "engagement ranking with integrity",
-    apply: |c| crate::presets::integrity_ranking(&mut c.design),
+/// Days of fact 3's holdback, Guess et al. (2023)'s three months.
+pub(crate) const CHRONOLOGICAL_HOLDBACK_DAYS: u32 = 90;
+
+/// The integrity preset with a feed experiment that moves a random 0.2 of
+/// the regular users to the chronological feed of their in-network posts
+/// for the last 90 days, or, in its placebo, keeps them on the ranked feed:
+/// fact 3's exposure checks on the follow graph the ranked feed built.
+fn integrity_holdback(c: &mut Config, placebo: bool) {
+    crate::presets::integrity_ranking(&mut c.design);
+    c.run.feed_experiment = Some(FeedExperiment {
+        kind: FeedExperimentKind::Chronological,
+        days: CHRONOLOGICAL_HOLDBACK_DAYS,
+        share: FEED_EXPERIMENT_SHARE,
+        placebo,
+    });
+}
+const INTEGRITY_HOLDBACK: Variant = Variant {
+    label: "engagement ranking with integrity, 0.2 of the regular users on the chronological feed for 90 days",
+    apply: |c| integrity_holdback(c, false),
+};
+const INTEGRITY_HOLDBACK_PLACEBO: Variant = Variant {
+    label: "engagement ranking with integrity, the same users kept on the ranked feed as a placebo",
+    apply: |c| integrity_holdback(c, true),
 };
 /// The integrity preset with a deactivation experiment that sends every
 /// regular user on the break, or none of them in its placebo.
@@ -513,6 +614,7 @@ pub(crate) const fn check(label: &'static str, measure: Measure, judge: Judge) -
         judge,
         known_limit: false,
         neutral: None,
+        scale: None,
     }
 }
 
@@ -580,7 +682,12 @@ const FACTS: [Fact; 7] = [
         title: "A chronological feed cuts time spent, barely moves polarisation in three months, and shifts \
             exposure from incivility toward untrustworthy content",
         reference: "Guess et al. (2023)",
-        variants: &[ENGAGEMENT, CHRONOLOGICAL, INTEGRITY],
+        variants: &[
+            ENGAGEMENT,
+            CHRONOLOGICAL,
+            INTEGRITY_HOLDBACK,
+            INTEGRITY_HOLDBACK_PLACEBO,
+        ],
         checks: &[
             check(
                 "time spent under chronological / engagement ranking",
@@ -600,31 +707,33 @@ const FACTS: [Fact; 7] = [
                     tolerance: 0.05,
                 },
             ),
-            // The field lowered incivility by tens of percent, not by a
-            // factor (docs/model.md, section 15): the model's cut is deeper,
-            // a known limit (section 16).
-            Check {
-                label: "toxic impressions, days 30 to 90, chronological / with integrity",
-                measure: Measure::Days(MetricId::ToxicShare, 30, 90),
-                judge: Judge::Band {
-                    effect: Effect::Ratio { a: 1, b: 2 },
+            // The field moved users to the chronological feed for three
+            // months (docs/model.md, section 15); since lab #33 the two
+            // checks copy that design: the treated of a holdback on the
+            // integrity preset's follow graph, real against placebo (a
+            // declared change to an in-sample fact, 13.4). Known limits on
+            // separate platforms before, they are required since the fixed
+            // point that followed labs #32, #38 and #34, where both pass.
+            check(
+                "toxic share of the treated's impressions, last 90 days, chronological / ranked \
+                with integrity",
+                Measure::Last(MetricId::FeedExperimentToxicShare),
+                Judge::Band {
+                    effect: Effect::Ratio { a: 2, b: 3 },
                     low: 0.5,
                     high: 0.9,
                 },
-                known_limit: true,
-                neutral: None,
-            },
-            Check {
-                label: "misinformation impressions, days 30 to 90, chronological / with integrity",
-                measure: Measure::Days(MetricId::MisinformationShare, 30, 90),
-                judge: Judge::Band {
-                    effect: Effect::Ratio { a: 1, b: 2 },
+            ),
+            check(
+                "misinformation share of the treated's impressions, last 90 days, chronological / \
+                ranked with integrity",
+                Measure::Last(MetricId::FeedExperimentMisinformationShare),
+                Judge::Band {
+                    effect: Effect::Ratio { a: 2, b: 3 },
                     low: 1.05,
                     high: 3.0,
                 },
-                known_limit: true,
-                neutral: None,
-            },
+            ),
         ],
     },
     Fact {
@@ -687,7 +796,8 @@ const FACTS: [Fact; 7] = [
                 low: 0.02,
                 high: 0.25,
             },
-        )],
+        )
+        .with_scale(MetricId::BreakWellbeingSd)],
     },
     // The same paired design for a week with the platform's notifications
     // off (docs/model.md, 13.2). The field switched off every app's
@@ -708,7 +818,8 @@ const FACTS: [Fact; 7] = [
                     low: -0.4,
                     high: 0.1,
                 },
-            ),
+            )
+            .with_scale(MetricId::NotificationsOffTimeSd),
             check(
                 "sessions a day, change off minus placebo, in SDs, under integrity",
                 Measure::Last(MetricId::NotificationsOffSessions),
@@ -717,7 +828,8 @@ const FACTS: [Fact; 7] = [
                     low: -0.4,
                     high: 0.1,
                 },
-            ),
+            )
+            .with_scale(MetricId::NotificationsOffSessionsSd),
             check(
                 "wellbeing, change off minus placebo, in SDs, under integrity",
                 Measure::Last(MetricId::NotificationsOffWellbeing),
@@ -726,7 +838,8 @@ const FACTS: [Fact; 7] = [
                     low: -0.15,
                     high: 0.15,
                 },
-            ),
+            )
+            .with_scale(MetricId::NotificationsOffWellbeingSd),
         ],
     },
 ];
@@ -879,6 +992,86 @@ mod tests {
             high: 2.0,
         });
         assert!((judge_detailed(&ratio, &h).direction - 0.5).abs() < 1e-5);
+    }
+
+    /// A pooled ratio sums its counts over the summary window: here the
+    /// last 30 of 40 days (the window's floor), a hand computation.
+    #[test]
+    fn a_pooled_ratio_sums_its_counts_over_the_summary_window() {
+        let history: Vec<DailyMetrics> = (0..40u32)
+            .map(|d| {
+                let mut day = DailyMetrics::empty(d);
+                // Days 10 to 39 count; the earlier ones must not.
+                let (num, den, a, b) = if d < 10 {
+                    (1000.0, 1.0, 1000.0, 1.0)
+                } else if d % 2 == 0 {
+                    (1.0, 10.0, 3.0, 10.0)
+                } else {
+                    (9.0, 30.0, 1.0, 10.0)
+                };
+                day.set(MetricId::InNetworkOutgroupLikeCount, num);
+                day.set(MetricId::InNetworkLikeCount, den);
+                day.set(MetricId::InNetworkOutgroupImpressionCount, a);
+                day.set(MetricId::InNetworkImpressionCount, b);
+                day
+            })
+            .collect();
+        assert_eq!(summary_days(40, RunSettings::default().summary_window), 30);
+        let share = Measure::Pooled {
+            num: MetricId::InNetworkOutgroupLikeCount,
+            den: MetricId::InNetworkLikeCount,
+            over: None,
+        };
+        // 15 even days of 1 / 10 and 15 odd days of 9 / 30: (15 + 135) /
+        // (150 + 450) = 0.25, where the mean of the daily ratios is 0.2.
+        assert!((share.of(&history) - 0.25).abs() < 1e-6);
+        let ratio = Measure::Pooled {
+            num: MetricId::InNetworkOutgroupLikeCount,
+            den: MetricId::InNetworkLikeCount,
+            over: Some((
+                MetricId::InNetworkOutgroupImpressionCount,
+                MetricId::InNetworkImpressionCount,
+            )),
+        };
+        // Over (45 + 15) / (150 + 150) = 0.2: 0.25 / 0.2.
+        assert!((ratio.of(&history) - 1.25).abs() < 1e-6);
+        // Without a denominator there is no ratio.
+        let empty: Vec<DailyMetrics> = (0..40).map(DailyMetrics::empty).collect();
+        assert!(share.of(&empty).is_nan());
+    }
+
+    /// An effect in standard deviations reports the mean standard deviation
+    /// of its first arm; other effects report none.
+    #[test]
+    fn a_scaled_effect_reports_its_standard_deviation() {
+        let arm = |values: &[(f32, f32)]| -> Vec<Vec<DailyMetrics>> {
+            values
+                .iter()
+                .map(|&(effect, sd)| {
+                    let mut day = DailyMetrics::empty(0);
+                    day.set(MetricId::BreakChange, effect);
+                    day.set(MetricId::BreakWellbeingSd, sd);
+                    vec![day]
+                })
+                .collect()
+        };
+        let h = vec![
+            arm(&[(0.3, 0.1), (0.5, 0.3)]),
+            arm(&[(0.1, 0.1), (0.1, 0.3)]),
+        ];
+        let c = super::check(
+            "test",
+            Measure::Last(MetricId::BreakChange),
+            Judge::Band {
+                effect: Effect::Difference { a: 0, b: 1 },
+                low: 0.0,
+                high: 1.0,
+            },
+        );
+        assert_eq!(judge(&c, &h).scale, None);
+        let r = judge(&c.with_scale(MetricId::BreakWellbeingSd), &h);
+        assert!((r.scale.expect("a scale") - 0.2).abs() < 1e-6, "{r:?}");
+        assert!((r.effect - 0.3).abs() < 1e-6);
     }
 
     #[test]

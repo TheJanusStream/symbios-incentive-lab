@@ -7,6 +7,12 @@
 //! dummies of a categorical input), and correlates the two residuals: the
 //! monotone association of that input with the output once the others are
 //! held fixed (Marino et al. 2008).
+//!
+//! The rank regression ([`rank_regression`]) regresses the output's ranks on
+//! the same columns at once; its R2 is the share of the output's rank
+//! variance that additive monotone effects explain. A PRCC's standard error
+//! under no association is taken as Fisher's for a partial correlation,
+//! 1/sqrt(n - k - 2) with k the regression's terms ([`prcc_se`]).
 
 /// The `q` quantile of the values that are not NaN, interpolating linearly
 /// between order statistics (type 7 of Hyndman and Fan); NaN for none.
@@ -92,6 +98,102 @@ pub fn prcc(inputs: &[Vec<f64>], controls: &[Vec<f64>], output: &[f64]) -> Vec<f
             pearson(&residual(&ranked[j], &basis), &residual(&y, &basis))
         })
         .collect()
+}
+
+/// The fit of a rank regression: the output's ranks on the ranks of every
+/// input and on the controls, with an intercept.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RankFit {
+    /// The share of the output's rank variance the regression explains.
+    pub r2: f64,
+    /// R2 adjusted for the terms: 1 - (1 - R2) (n - 1) / (n - k - 1); NaN
+    /// when n - k - 1 is not positive.
+    pub adjusted_r2: f64,
+    /// The terms k besides the intercept: the columns that add something
+    /// the others do not explain (a constant column adds nothing).
+    pub terms: usize,
+    /// The observations n.
+    pub n: usize,
+}
+
+/// The rank regression of `output` on `inputs` (ranked) and `controls` (as
+/// they are), with an intercept; NaN R2 for a constant output or fewer than
+/// 3 observations.
+pub fn rank_regression(inputs: &[Vec<f64>], controls: &[Vec<f64>], output: &[f64]) -> RankFit {
+    let n = output.len();
+    let ranked: Vec<Vec<f64>> = inputs.iter().map(|c| ranks(c)).collect();
+    let columns: Vec<&[f64]> = ranked
+        .iter()
+        .map(Vec::as_slice)
+        .chain(controls.iter().map(Vec::as_slice))
+        .collect();
+    let basis = orthonormal_basis(&columns, n);
+    let terms = basis.len() - 1;
+    let y = ranks(output);
+    let mean = y.iter().sum::<f64>() / n.max(1) as f64;
+    let total: f64 = y.iter().map(|v| (v - mean).powi(2)).sum();
+    let left: f64 = residual(&y, &basis).iter().map(|v| v * v).sum();
+    let r2 = if n < 3 || total <= 1e-12 {
+        f64::NAN
+    } else {
+        1.0 - left / total
+    };
+    let df = n as f64 - terms as f64 - 1.0;
+    let adjusted_r2 = if df > 0.0 {
+        1.0 - (1.0 - r2) * (n as f64 - 1.0) / df
+    } else {
+        f64::NAN
+    };
+    RankFit {
+        r2,
+        adjusted_r2,
+        terms,
+        n,
+    }
+}
+
+/// The standard error of a PRCC under no association, from `n`
+/// observations and a regression of `terms` terms besides the intercept
+/// (the input itself and the k - 1 columns partialled out): Fisher's
+/// 1/sqrt(n - (k - 1) - 3) = 1/sqrt(n - k - 2) for a partial correlation, on
+/// the z scale, where z is close to the correlation itself near 0. NaN when
+/// n - k - 2 is not positive.
+pub fn prcc_se(n: usize, terms: usize) -> f64 {
+    let df = n as f64 - terms as f64 - 2.0;
+    if df > 0.0 { 1.0 / df.sqrt() } else { f64::NAN }
+}
+
+/// The pooled standard deviation within groups: the square root of the
+/// summed squared deviations from each group's mean over the summed degrees
+/// of freedom (n_g - 1). Groups with a value that is not finite (NaN, or
+/// infinite where a ratio's denominator was 0) or with fewer than two values
+/// are skipped; NaN without any degree of freedom. With two values per group
+/// it is sqrt(mean(d^2) / 2), d the groups' differences.
+pub fn pooled_sd(groups: &[Vec<f64>]) -> f64 {
+    let (mut squares, mut df) = (0.0, 0usize);
+    for g in groups {
+        if g.len() < 2 || g.iter().any(|x| !x.is_finite()) {
+            continue;
+        }
+        let mean = g.iter().sum::<f64>() / g.len() as f64;
+        squares += g.iter().map(|x| (x - mean).powi(2)).sum::<f64>();
+        df += g.len() - 1;
+    }
+    if df == 0 {
+        f64::NAN
+    } else {
+        (squares / df as f64).sqrt()
+    }
+}
+
+/// The sample variance (n - 1) of the finite values; NaN for fewer than two.
+pub fn variance(values: &[f64]) -> f64 {
+    let v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.len() < 2 {
+        return f64::NAN;
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (v.len() - 1) as f64
 }
 
 /// An orthonormal basis of the span of a constant column and `columns`, by
@@ -207,5 +309,82 @@ mod tests {
         assert!(with[0] > 0.99, "{with:?}");
         let without = prcc(&[x, other], &[], &y);
         assert!(without[0] < with[0]);
+    }
+    /// The rank regression explains a monotone output entirely, pure noise
+    /// hardly at all (its adjusted R2 near 0), and a constant column adds no
+    /// term.
+    #[test]
+    fn rank_regression_reads_monotone_fits() {
+        let mut rng = Pcg64::seed_from_u64(5);
+        let n = 300;
+        let x1: Vec<f64> = (0..n).map(|_| rng.random()).collect();
+        let x2: Vec<f64> = (0..n).map(|_| rng.random()).collect();
+        let constant = vec![0.0; n];
+        let exact: Vec<f64> = x1.iter().map(|v| v.powi(3)).collect();
+        let fit = rank_regression(std::slice::from_ref(&x1), &[constant], &exact);
+        assert!((fit.r2 - 1.0).abs() < 1e-9, "{fit:?}");
+        assert_eq!((fit.terms, fit.n), (1, n));
+        let noise: Vec<f64> = (0..n).map(|_| rng.random()).collect();
+        let fit = rank_regression(&[x1.clone(), x2.clone()], &[], &noise);
+        assert!(fit.r2 < 0.05 && fit.adjusted_r2.abs() < 0.03, "{fit:?}");
+        // Half signal, half noise: in between, and adjusted below plain.
+        let mixed: Vec<f64> = x1.iter().zip(&noise).map(|(a, b)| a + b).collect();
+        let fit = rank_regression(&[x1, x2], &[], &mixed);
+        assert!(fit.r2 > 0.3 && fit.r2 < 0.7, "{fit:?}");
+        assert!(fit.adjusted_r2 < fit.r2);
+        assert!(rank_regression(&[], &[], &[1.0; 5]).r2.is_nan());
+    }
+
+    /// The PRCC standard error is 1/sqrt(n - k - 2): with 191 worlds and 53
+    /// terms, 1/sqrt(136) (docs/validation.md, 6.3). Inputs without an
+    /// effect stay within 2 SE about 95% of the time; a real effect lies far
+    /// beyond.
+    #[test]
+    fn prcc_significance_uses_two_standard_errors() {
+        assert!((prcc_se(191, 53) - 1.0 / 136f64.sqrt()).abs() < 1e-12);
+        assert!(prcc_se(10, 8).is_nan());
+        let mut rng = Pcg64::seed_from_u64(21);
+        let (n, k) = (150, 12);
+        let (mut beyond, mut nulls) = (0, 0);
+        for _ in 0..20 {
+            let cols: Vec<Vec<f64>> = (0..k)
+                .map(|_| (0..n).map(|_| rng.random()).collect())
+                .collect();
+            let y: Vec<f64> = (0..n)
+                .map(|i| 2.0 * cols[0][i] + rng.random::<f64>())
+                .collect();
+            let p = prcc(&cols, &[], &y);
+            let fit = rank_regression(&cols, &[], &y);
+            let se = prcc_se(fit.n, fit.terms);
+            assert_eq!(fit.terms, k);
+            assert!(p[0] > 2.0 * se, "{p:?}");
+            for r in &p[1..] {
+                nulls += 1;
+                beyond += usize::from(r.abs() > 2.0 * se);
+            }
+        }
+        let rate = beyond as f64 / nulls as f64;
+        assert!(rate < 0.1, "{beyond} of {nulls} null inputs beyond 2 SE");
+    }
+
+    /// Pooled within-group SD: two values per group give sqrt(mean d^2 / 2);
+    /// groups of other sizes weigh by their degrees of freedom.
+    #[test]
+    fn pooled_sd_pools_within_groups() {
+        let pairs = vec![vec![1.0, 3.0], vec![10.0, 11.0], vec![5.0, 5.0]];
+        let expected = ((4.0 + 1.0 + 0.0) / 3.0 / 2.0_f64).sqrt();
+        assert!((pooled_sd(&pairs) - expected).abs() < 1e-12);
+        let mixed = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 6.0],
+            vec![7.0],
+            vec![f64::NAN, 1.0],
+            vec![f64::INFINITY, 1.0],
+        ];
+        // (2 + 2) / (2 + 1): the groups with NaN or an infinite value are
+        // skipped, so one ratio with a zero denominator cannot void the SD.
+        assert!((pooled_sd(&mixed) - (4.0 / 3.0_f64).sqrt()).abs() < 1e-12);
+        assert!(pooled_sd(&[vec![1.0]]).is_nan());
+        assert!((variance(&[1.0, 2.0, 3.0, f64::NAN, f64::INFINITY]) - 1.0).abs() < 1e-12);
     }
 }

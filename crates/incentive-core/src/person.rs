@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::content::{NEUTRAL_INTENSITY, STYLE_COUNT};
+use crate::content::{NEUTRAL_INTENSITY, STYLE_COUNT, Style};
 use crate::population::Traits;
 use crate::society::INFORMEDNESS_BASELINE;
 
@@ -88,6 +88,13 @@ pub struct PersonState {
     /// Today's accumulators.
     #[serde(skip)]
     pub(crate) today: DayAccumulators,
+    /// Impressions of the previous day, and of them those of hostile posts
+    /// (Outrage or Attack), kept when the day's accumulators are cleared:
+    /// the exposure of docs/model.md, 7.5.
+    #[serde(skip)]
+    pub(crate) yesterday_items: u32,
+    #[serde(skip)]
+    pub(crate) yesterday_hostile_items: u32,
 }
 
 /// What happened to one person today; cleared every day.
@@ -129,12 +136,24 @@ pub(crate) struct DayAccumulators {
     pub toxic_items: u32,
     /// Of today's impressions, the misinformation (truth below 0.5).
     pub misinformation_items: u32,
+    /// Of today's impressions, those of hostile posts (Outrage or Attack).
+    pub hostile_items: u32,
+    /// The time of day of today's sessions, in hours from 0 to 24, drawn
+    /// only with community notes on (docs/model.md, 6.8); 0 otherwise.
+    pub session_hour: f32,
     /// Of today's impressions, those of posts by the person's own group.
     pub same_group_items: u32,
     /// Of today's impressions, those of posts whose classifier score exceeds
     /// a hide-flagged feed experiment's threshold; counted only in a run that
     /// sets one up, its placebo included, as that experiment's dose.
     pub flagged_items: u32,
+    /// Of today's impressions, those of posts by human authors in the more
+    /// partisan half, the most partisan tenth and the middle fifth by the
+    /// partisanship trait (docs/model.md, 9.2); truth-side counts for a feed
+    /// experiment's reach measures.
+    pub partisan_half_items: u32,
+    pub extreme_items: u32,
+    pub middle_items: u32,
     /// Summed toxicity of the posts the person wrote today.
     pub post_toxicity: f32,
     /// Shares the person made today.
@@ -213,6 +232,8 @@ impl Person {
             items_window: 0,
             active_bits: 0,
             today: DayAccumulators::default(),
+            yesterday_items: 0,
+            yesterday_hostile_items: 0,
         };
         Self { traits, state }
     }
@@ -268,9 +289,33 @@ impl Person {
         self.state.blocked.push(account);
     }
 
-    /// The probability of choosing each style (docs/model.md, 7.5).
+    /// The probability of choosing each style (docs/model.md, 7.5), without
+    /// the exposure term.
     pub fn style_mix(&self, temperature: f32) -> [f32; STYLE_COUNT] {
         softmax(&self.state.style_value, temperature)
+    }
+
+    /// The hostile share of the person's impressions on the previous day,
+    /// `e` of docs/model.md, 7.5; 0 when they had none.
+    pub fn hostile_exposure(&self) -> f32 {
+        let items = self.state.yesterday_items;
+        if items == 0 {
+            0.0
+        } else {
+            self.state.yesterday_hostile_items as f32 / items as f32
+        }
+    }
+
+    /// The probability of choosing each style with the exposure term of
+    /// docs/model.md, 7.5: `contagion * e` added to the values of the hostile
+    /// styles. Without contagion or exposure it is [`Person::style_mix`]
+    /// exactly.
+    pub fn exposed_style_mix(&self, temperature: f32, contagion: f32) -> [f32; STYLE_COUNT] {
+        let lift = contagion * self.hostile_exposure();
+        if lift == 0.0 {
+            return self.style_mix(temperature);
+        }
+        softmax(&lift_hostile(&self.state.style_value, lift), temperature)
     }
 
     /// The probability of polishing a post (docs/model.md, 7.5): a logistic
@@ -308,6 +353,39 @@ pub const POLISH_PRIOR_TEMPERATURES: f32 = 3.0;
 /// Least chance of either polishing or not polishing a post.
 pub const POLISH_EXPLORATION: f32 = 0.05;
 
+/// Style values with `lift` added to the hostile styles' (docs/model.md,
+/// 7.5).
+pub(crate) fn lift_hostile(values: &[f32; STYLE_COUNT], lift: f32) -> [f32; STYLE_COUNT] {
+    let mut out = *values;
+    for style in Style::ALL {
+        if style.is_hostile() {
+            out[style.index()] += lift;
+        }
+    }
+    out
+}
+
+/// The chance that a post's style is hostile (Outrage or Attack) after a
+/// previous-day feed without a hostile item (`e = 0`) and after a fully
+/// hostile one (`e = 1`), from the style choice of docs/model.md, 7.5 with
+/// the given values: the two arms of the causal exposure diagnostic.
+pub(crate) fn hostile_chances(
+    values: &[f32; STYLE_COUNT],
+    temperature: f32,
+    contagion: f32,
+) -> (f32, f32) {
+    let hostile = |mix: [f32; STYLE_COUNT]| -> f32 {
+        Style::ALL
+            .iter()
+            .filter(|s| s.is_hostile())
+            .map(|s| mix[s.index()])
+            .sum()
+    };
+    let calm = hostile(softmax(values, temperature));
+    let exposed = hostile(softmax(&lift_hostile(values, contagion), temperature));
+    (calm, exposed)
+}
+
 /// Softmax with a temperature, stable against large values.
 pub(crate) fn softmax(values: &[f32; STYLE_COUNT], temperature: f32) -> [f32; STYLE_COUNT] {
     let t = temperature.max(1e-3);
@@ -316,4 +394,80 @@ pub(crate) fn softmax(values: &[f32; STYLE_COUNT], temperature: f32) -> [f32; ST
     let total: f32 = out.iter().sum();
     out.iter_mut().for_each(|p| *p /= total);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::init;
+
+    /// A user with the given style values who saw `items` items yesterday,
+    /// `hostile` of them Outrage or Attack posts.
+    fn person(values: [f32; STYLE_COUNT], items: u32, hostile: u32) -> Person {
+        let mut config = Config::default();
+        config.run.population_size = 50;
+        let world = init::build_world(&config);
+        let mut p = world.people[0].clone();
+        p.state.style_value = values;
+        p.state.yesterday_items = items;
+        p.state.yesterday_hostile_items = hostile;
+        p
+    }
+
+    const VALUES: [f32; STYLE_COUNT] = [0.3, 0.2, 0.25, 0.1, 0.0, -0.2];
+
+    #[test]
+    fn the_exposure_term_lifts_the_hostile_styles_by_contagion_times_exposure() {
+        let p = person(VALUES, 10, 4);
+        assert!((p.hostile_exposure() - 0.4).abs() < 1e-6);
+        // By hand: kappa 0.5 and e 0.4 add 0.2 to Outrage and Attack, at
+        // temperature 0.25.
+        let lifted: [f32; STYLE_COUNT] = [0.3, 0.2, 0.25, 0.3, 0.0, 0.0];
+        let weights: Vec<f64> = lifted
+            .iter()
+            .map(|v| (f64::from(*v) / 0.25).exp())
+            .collect();
+        let total: f64 = weights.iter().sum();
+        let mix = p.exposed_style_mix(0.25, 0.5);
+        for (got, w) in mix.iter().zip(&weights) {
+            assert!(
+                (f64::from(*got) - w / total).abs() < 1e-6,
+                "{got} {}",
+                w / total
+            );
+        }
+        assert!(mix[Style::Outrage.index()] > p.style_mix(0.25)[Style::Outrage.index()]);
+    }
+
+    #[test]
+    fn without_contagion_or_exposure_the_style_mix_is_unchanged() {
+        let p = person(VALUES, 10, 4);
+        assert_eq!(p.exposed_style_mix(0.25, 0.0), p.style_mix(0.25));
+        let calm = person(VALUES, 10, 0);
+        assert_eq!(calm.exposed_style_mix(0.25, 0.7), calm.style_mix(0.25));
+        let away = person(VALUES, 0, 0);
+        assert_eq!(away.hostile_exposure(), 0.0);
+        assert_eq!(away.exposed_style_mix(0.25, 0.7), away.style_mix(0.25));
+    }
+
+    #[test]
+    fn the_causal_diagnostic_compares_a_hostile_with_a_calm_feed() {
+        let (calm, exposed) = hostile_chances(&VALUES, 0.25, 0.0);
+        assert_eq!(calm, exposed);
+        let (calm, exposed) = hostile_chances(&VALUES, 0.25, 0.28);
+        let w = |v: f32| f64::from(v / 0.25).exp();
+        let hostile = w(0.1) + w(-0.2);
+        let other = w(0.3) + w(0.2) + w(0.25) + w(0.0);
+        let k = f64::from(0.28f32 / 0.25).exp();
+        assert!((f64::from(calm) - hostile / (hostile + other)).abs() < 1e-6);
+        let lifted = hostile * k / (hostile * k + other);
+        assert!((f64::from(exposed) - lifted).abs() < 1e-6);
+        // The full-exposure arm is the mix of a person whose whole feed was
+        // hostile yesterday.
+        let p = person(VALUES, 7, 7);
+        let mix = p.exposed_style_mix(0.25, 0.28);
+        let from_mix = mix[Style::Outrage.index()] + mix[Style::Attack.index()];
+        assert!((from_mix - exposed).abs() < 1e-6);
+    }
 }

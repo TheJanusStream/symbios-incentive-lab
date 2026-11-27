@@ -83,10 +83,12 @@ pub(crate) fn integrity_ranking(d: &mut DesignLevers) {
 /// never applies, and without community notes the notes penalty does not
 /// either). It is the design with the highest full-size engagement among
 /// the 64 front designs of the current Pareto atlas and this preset as v0.3
-/// left it, run at today's defaults. This round's searches did not reach
-/// it: their most engaging front design, 58, has less engagement at full
-/// size. `incentive explore` leaves it out of its initial designs, so the
-/// atlas stays reproducible.
+/// left it, run at today's defaults. The latest searches did not reach it:
+/// their most engaging front design at full size, 53, has less engagement
+/// (by 0.007, with a 95% interval of -0.013 to -0.001 that narrowly
+/// excludes 0).
+/// `incentive explore` leaves it out of its initial designs, so the atlas
+/// stays reproducible.
 fn max_engagement(d: &mut DesignLevers) {
     d.w_like = 3.0;
     d.w_reply = 1.0;
@@ -204,9 +206,11 @@ const PRESETS: [Preset; 8] = [
             reporter's record, but strikes carry no sanctions and blocking does not work. It pays 15% of revenue \
             to creators per view and shows half the ad load. It comes from a search, not from any real platform, \
             so it shows what maximising engagement looks like in this model: about 70% more engagement than the \
-            engagement ranking, with about 5% less harm, the same toxic share and slightly higher wellbeing. It \
-            also wastes less of people's time and keeps more of them on the platform. Designs the searches found \
-            come close with far less harm: one has nearly 90% of its engagement and a third of its harm.",
+            engagement ranking, with as much harm or slightly more, the same toxic share and slightly higher \
+            wellbeing for its users. It also wastes less of people's time and keeps more of them on the platform. \
+            Designs the searches found give up some of its engagement for far less harm: one has about 90% of \
+            its engagement and little more than half its harm, another nearly 80% of it and under a quarter of \
+            its harm.",
         apply: max_engagement,
     },
 ];

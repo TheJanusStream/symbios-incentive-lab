@@ -109,6 +109,7 @@ impl Simulation {
         let first_new = world.posts.next_id();
         posting::write_posts(world, &ctx);
         moderation::classify_new_posts(world, &ctx, first_new);
+        moderation::decide_notes(world, &ctx, first_new);
         moderation::deliver_harassment(world, &ctx, first_new);
         session::run_sessions(world, &ctx, &mut self.scratch, &mut self.inspector);
         bots::boost(world, &ctx);
@@ -289,11 +290,15 @@ impl Simulation {
     }
 }
 
-/// Clears the day's accumulators.
+/// Clears the day's accumulators, keeping what each person saw the day
+/// before for the exposure term of docs/model.md, 7.5.
 fn start_day(world: &mut World) {
     world.tally = DayTally::default();
     for person in &mut world.people {
-        person.state.today.clear();
+        let state = &mut person.state;
+        state.yesterday_items = state.today.items;
+        state.yesterday_hostile_items = state.today.hostile_items;
+        state.today.clear();
     }
 }
 

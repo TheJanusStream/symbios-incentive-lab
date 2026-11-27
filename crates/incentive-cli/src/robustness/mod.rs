@@ -11,7 +11,15 @@
 //!   same seeds 1 to S, paired across variants and the same in every world, and
 //!   the default design on those seeds as the world's baseline: a world is
 //!   degenerate when the baseline's user share on its last day, averaged over
-//!   the seeds, lies below [`DEGENERATE_USER_SHARE`].
+//!   the seeds, lies below [`DEGENERATE_USER_SHARE`]. The noisy facts and
+//!   claims ([`is_noisy`]) run on seeds 1 to `--seeds-noisy` instead; a fact's
+//!   variants run on the same seeds for all its checks, so noisiness is a
+//!   property of the fact or claim, not of one check.
+//! - The summary classes each failure of a check in a world as compatible
+//!   with seed noise or clear ([`seed_noise`], [`noise_compatible`]), and at
+//!   the level of a fact or claim, and in global mode marks
+//!   the PRCC values beyond two standard errors and gives each check's
+//!   rank-regression R2 ([`stats::rank_regression`]).
 //! - Runs go through the runner's parallel batch (`runs::run_unique`) a chunk
 //!   of worlds at a time, identical runs once (the default design is variant
 //!   0 of several facts and claims); every run is a pure function of its
@@ -55,6 +63,32 @@ const OPEN_BOUND: f32 = 1.0e8;
 
 /// Worlds whose runs go to the parallel batch together.
 const CHUNK_WORLDS: usize = 8;
+
+/// The facts and claims whose seed share exceeded 0.4 in lab #31's local run
+/// (docs/validation.md, section 8, recommendation 4(d)): fact 2's second
+/// check, fact 5, H5's wellbeing, V1's toxic share, V3's time and
+/// engagement, V4, V5's extremes, V9 and V10. They run on `--seeds-noisy`
+/// seeds.
+pub const NOISY_LOCAL: [&str; 9] = [
+    "outrage-learning",
+    "harassment-exit",
+    "H5",
+    "V1",
+    "V3",
+    "V4",
+    "V5",
+    "V9",
+    "V10",
+];
+
+/// The facts and claims noisy in lab #31's global run beside
+/// [`NOISY_LOCAL`]: H7.
+pub const NOISY_GLOBAL_EXTRA: [&str; 1] = ["H7"];
+
+/// Whether a fact or claim, by id, runs on the noisy seeds in this mode.
+pub fn is_noisy(mode: Mode, id: &str) -> bool {
+    NOISY_LOCAL.contains(&id) || (mode == Mode::Global && NOISY_GLOBAL_EXTRA.contains(&id))
+}
 
 /// How worlds are sampled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -151,6 +185,9 @@ pub struct Options {
     pub worlds: usize,
     /// Seeds 1 to this, paired across variants.
     pub seeds: u64,
+    /// Seeds 1 to this for the noisy facts and claims ([`is_noisy`]);
+    /// `None` runs them on `seeds` too.
+    pub seeds_noisy: Option<u64>,
     /// Seed of the world sampling.
     pub sample_seed: u64,
     /// Which battery.
@@ -211,10 +248,40 @@ struct WorldRecord {
     batteries: Vec<BatteryRecord>,
 }
 
-/// Where a group's runs sit in a chunk's job list: `start + seed * k + v`.
+/// Where a group's runs sit in a chunk's job list: `start + seed * k + v`,
+/// for `seeds` seeds.
 struct Slot {
     start: usize,
     variants: usize,
+    seeds: usize,
+}
+
+impl Options {
+    /// The seeds of the baseline and of the facts and claims that are not
+    /// noisy: 1 to `seeds`.
+    fn base_seeds(&self) -> Vec<u64> {
+        (1..=self.seeds.max(1)).collect()
+    }
+
+    /// Seeds of the noisy facts and claims: 1 to `seeds_noisy`, or to
+    /// `seeds` without it.
+    fn noisy_seeds(&self) -> u64 {
+        self.seeds_noisy.unwrap_or(self.seeds).max(1)
+    }
+
+    /// The seeds a fact or claim runs on, by id.
+    fn seeds_of(&self, id: &str) -> Vec<u64> {
+        if is_noisy(self.mode, id) {
+            (1..=self.noisy_seeds()).collect()
+        } else {
+            self.base_seeds()
+        }
+    }
+
+    /// Whether the noisy facts and claims run on other seeds than the rest.
+    fn noisy_differs(&self) -> bool {
+        self.noisy_seeds() != self.seeds.max(1)
+    }
 }
 
 /// `incentive robustness`.
@@ -233,7 +300,7 @@ pub fn robustness(options: &Options) -> Result<(), CliError> {
         Mode::Global => Plan::Global,
     };
     let selected = batteries(options.battery);
-    let seeds: Vec<u64> = (1..=options.seeds.max(1)).collect();
+    let seeds = options.base_seeds();
     let mut values = vec![default_values(&varied)];
     values.extend(sample::sample(
         &varied,
@@ -265,6 +332,7 @@ pub fn robustness(options: &Options) -> Result<(), CliError> {
                 let baseline = Slot {
                     start: jobs.len(),
                     variants: 1,
+                    seeds: seeds.len(),
                 };
                 for &s in &seeds {
                     let mut c = world.clone();
@@ -276,11 +344,13 @@ pub fn robustness(options: &Options) -> Result<(), CliError> {
                 }
                 let mut items = Vec::new();
                 for item in b.items {
+                    let item_seeds = options.seeds_of(item.id);
                     let slot = Slot {
                         start: jobs.len(),
                         variants: item.variants.len(),
+                        seeds: item_seeds.len(),
                     };
-                    for &s in &seeds {
+                    for &s in &item_seeds {
                         for c in item.configs_from(world, &run, s) {
                             c.validate()?;
                             jobs.push((c, s));
@@ -309,7 +379,7 @@ pub fn robustness(options: &Options) -> Result<(), CliError> {
                 for (item, slot) in b.items.iter().zip(items) {
                     let histories: Vec<Vec<_>> = (0..slot.variants)
                         .map(|v| {
-                            (0..seeds.len())
+                            (0..slot.seeds)
                                 .map(|s| history(slot, s, v).clone())
                                 .collect()
                         })
@@ -490,9 +560,124 @@ struct CheckSummary {
     q95_nondegenerate: f64,
     /// Sampled worlds with a value (not NaN).
     with_value: usize,
+    /// Seed noise over the non-degenerate sampled worlds.
+    noise: SeedNoise,
+    /// The failing non-degenerate sampled worlds, by class.
+    failures: FailureCounts,
     /// Global mode only: what drives the effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     sensitivity: Option<Sensitivity>,
+}
+
+/// One world's value of a check, as the failure classes read it.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldCheck<'a> {
+    /// The effect on the seed means.
+    pub effect: f32,
+    /// The per-seed effects.
+    pub per_seed: &'a [f32],
+    /// The band.
+    pub bound: Bound,
+    /// Whether the effect lies in its band.
+    pub in_band: bool,
+}
+
+/// A check's seed noise across worlds (docs/validation.md, 5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct SeedNoise {
+    /// Seeds per world.
+    pub seeds: usize,
+    /// The seed SD: the SD of the per-seed effects within a world, pooled
+    /// over the worlds ([`stats::pooled_sd`]); NaN with one seed.
+    pub seed_sd: f64,
+    /// The standard error of a world's seed mean: seed SD / sqrt(seeds).
+    pub standard_error: f64,
+    /// The seed share: the squared standard error over the variance of the
+    /// worlds' effects, the part of the spread across worlds that seed noise
+    /// alone would make (1 or more: no detectable effect of the world).
+    pub seed_share: f64,
+}
+
+/// A check's seed noise over these worlds' values.
+pub fn seed_noise(worlds: &[WorldCheck]) -> SeedNoise {
+    let groups: Vec<Vec<f64>> = worlds
+        .iter()
+        .map(|w| w.per_seed.iter().map(|x| f64::from(*x)).collect())
+        .collect();
+    let seeds = worlds.iter().map(|w| w.per_seed.len()).max().unwrap_or(0);
+    let seed_sd = stats::pooled_sd(&groups);
+    let standard_error = seed_sd / (seeds.max(1) as f64).sqrt();
+    let effects: Vec<f64> = worlds.iter().map(|w| f64::from(w.effect)).collect();
+    let between = stats::variance(&effects);
+    SeedNoise {
+        seeds,
+        seed_sd,
+        standard_error,
+        seed_share: if between > 0.0 {
+            standard_error.powi(2) / between
+        } else {
+            f64::NAN
+        },
+    }
+}
+
+/// Whether a world's failure of a check is compatible with seed noise: its
+/// effect lies within two standard errors of the band
+/// (docs/validation.md, 5.2), so the interval of the effect +- 2 SE overlaps
+/// the band. `None` when the check holds, or when the effect or the standard
+/// error is not a number.
+pub fn noise_compatible(w: &WorldCheck, standard_error: f64) -> Option<bool> {
+    if w.in_band || w.effect.is_nan() || standard_error.is_nan() {
+        return None;
+    }
+    let (low, high) = open_ends(w.bound);
+    let e = f64::from(w.effect);
+    let distance = if e < f64::from(low) {
+        f64::from(low) - e
+    } else {
+        e - f64::from(high)
+    };
+    Some(distance <= 2.0 * standard_error)
+}
+
+/// Failing worlds by class: compatible with seed noise, clear failures, and
+/// those that cannot be classed (one seed, or no value).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FailureCounts {
+    /// Worlds where it fails.
+    pub failing: usize,
+    /// Of those, failures within seed noise.
+    pub noise_compatible: usize,
+    /// Of those, failures beyond seed noise.
+    pub clear: usize,
+    /// Of those, failures without a class.
+    pub unclassified: usize,
+}
+
+impl FailureCounts {
+    fn add(&mut self, class: Option<bool>) {
+        self.failing += 1;
+        match class {
+            Some(true) => self.noise_compatible += 1,
+            Some(false) => self.clear += 1,
+            None => self.unclassified += 1,
+        }
+    }
+}
+
+/// An item's failure class in one world from its failing checks' classes
+/// (known limits left out): compatible with noise when every one is, clear
+/// when one is clear, otherwise unclassed.
+fn item_class(classes: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut all = Some(true);
+    for c in classes {
+        match c {
+            Some(false) => return Some(false),
+            None => all = None,
+            Some(true) => {}
+        }
+    }
+    all
 }
 
 /// Across worlds, one fact or claim.
@@ -503,6 +688,13 @@ struct ItemSummary {
     reference_holds: bool,
     holds_share: f64,
     holds_share_nondegenerate: f64,
+    /// Seeds per world.
+    seeds: usize,
+    /// Whether it runs on the noisy seeds.
+    noisy: bool,
+    /// The non-degenerate sampled worlds where it fails, by class: within
+    /// noise when every failing check (known limits aside) is.
+    failures: FailureCounts,
     checks: Vec<CheckSummary>,
 }
 
@@ -523,6 +715,9 @@ struct Driver {
     spearman: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     prcc: Option<f64>,
+    /// |PRCC| above two standard errors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    significant: Option<bool>,
 }
 
 /// A check's sensitivity to the varied assumptions (global mode).
@@ -533,12 +728,27 @@ struct Sensitivity {
     /// Why PRCC is missing, when it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    /// The standard error of a PRCC under no association,
+    /// 1/sqrt(n - k - 2) (`stats::prcc_se`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prcc_se: Option<f64>,
+    /// The rank regression of the effect on every varied assumption.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rank_regression: Option<Fit>,
     /// The five largest by absolute PRCC, or by absolute Spearman without it.
     top: Vec<Driver>,
     /// Every continuous assumption, in catalogue order.
     all: Vec<Driver>,
     /// The median effect per choice of each categorical assumption.
     by_choice: BTreeMap<&'static str, BTreeMap<&'static str, (usize, f64)>>,
+}
+
+/// A rank regression's fit, for the summary.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Fit {
+    r2: f64,
+    adjusted_r2: f64,
+    terms: usize,
 }
 
 /// Where a check sits in a world's record: battery, item, check.
@@ -564,6 +774,15 @@ impl Point {
             direction: c.direction,
             in_band: c.in_band,
         }
+    }
+}
+
+fn world_check(c: &CheckRecord) -> WorldCheck<'_> {
+    WorldCheck {
+        effect: c.effect,
+        per_seed: &c.per_seed,
+        bound: c.bound,
+        in_band: c.in_band,
     }
 }
 
@@ -614,6 +833,12 @@ fn summarise(
         .map(|(bi, b)| {
             let degenerate: Vec<bool> =
                 sampled.iter().map(|w| w.batteries[bi].degenerate).collect();
+            let kept: Vec<&WorldRecord> = sampled
+                .iter()
+                .zip(&degenerate)
+                .filter(|(_, d)| !**d)
+                .map(|(w, _)| w)
+                .collect();
             let items = b
                 .items
                 .iter()
@@ -642,6 +867,18 @@ fn summarise(
                             };
                             let sensitivity = (options.mode == Mode::Global)
                                 .then(|| sensitivity(varied, sampled, &degenerate, at));
+                            let values: Vec<WorldCheck> =
+                                kept.iter().map(|w| world_check(check_at(w, at))).collect();
+                            let with_values: Vec<WorldCheck> = values
+                                .iter()
+                                .filter(|v| !v.effect.is_nan())
+                                .copied()
+                                .collect();
+                            let noise = seed_noise(&with_values);
+                            let mut failures = FailureCounts::default();
+                            for v in values.iter().filter(|v| !v.in_band) {
+                                failures.add(noise_compatible(v, noise.standard_error));
+                            }
                             CheckSummary {
                                 label: rc.label,
                                 bound: rc.bound_text.clone(),
@@ -671,10 +908,26 @@ fn summarise(
                                 q05_nondegenerate: stats::quantile(&nondeg, 0.05),
                                 q95_nondegenerate: stats::quantile(&nondeg, 0.95),
                                 with_value: effects.iter().filter(|e| !e.is_nan()).count(),
+                                noise,
+                                failures,
                                 sensitivity,
                             }
                         })
-                        .collect();
+                        .collect::<Vec<CheckSummary>>();
+                    let mut failures = FailureCounts::default();
+                    for w in kept.iter().filter(|w| !item_at(w, bi, ii).holds) {
+                        let record = item_at(w, bi, ii);
+                        failures.add(item_class(
+                            record
+                                .checks
+                                .iter()
+                                .zip(&checks)
+                                .filter(|(c, _)| !c.known_limit && !c.in_band)
+                                .map(|(c, s)| {
+                                    noise_compatible(&world_check(c), s.noise.standard_error)
+                                }),
+                        ));
+                    }
                     ItemSummary {
                         id: item.id,
                         title: item.title,
@@ -687,6 +940,9 @@ fn summarise(
                                 .filter(|(_, d)| !**d)
                                 .map(|(w, _)| item_of(w)),
                         ),
+                        seeds: options.seeds_of(item.id).len(),
+                        noisy: is_noisy(options.mode, item.id),
+                        failures,
                         checks,
                     }
                 })
@@ -726,8 +982,9 @@ fn sensitivity(
             .and_then(Json::as_f64)
             .unwrap_or(f64::NAN)
     };
-    // An assumption whose range is one value (leave_threshold under the
-    // revised ranges) is constant across worlds: it drives nothing.
+    // An assumption whose range is one value (a number whose default is 0
+    // under a rule that scales its default) is constant across worlds: it
+    // drives nothing.
     let continuous: Vec<&Varied> = varied
         .iter()
         .filter(|v| matches!(v.kind, Kind::Continuous { .. }) && v.spans())
@@ -771,13 +1028,24 @@ fn sensitivity(
     let spearman: Vec<f64> = inputs.iter().map(|x| stats::spearman(x, &y)).collect();
     let enough = n > varied.len() + 10;
     let prcc = enough.then(|| stats::prcc(&inputs, &controls, &y));
+    let fit = enough.then(|| stats::rank_regression(&inputs, &controls, &y));
+    let prcc_se = fit
+        .map(|f| stats::prcc_se(f.n, f.terms))
+        .filter(|se| !se.is_nan());
     let all: Vec<Driver> = continuous
         .iter()
         .enumerate()
-        .map(|(j, v)| Driver {
-            assumption: short(v.info.path),
-            spearman: spearman[j],
-            prcc: prcc.as_ref().map(|p| p[j]),
+        .map(|(j, v)| {
+            let p = prcc.as_ref().map(|p| p[j]);
+            Driver {
+                assumption: short(v.info.path),
+                spearman: spearman[j],
+                prcc: p,
+                significant: p
+                    .zip(prcc_se)
+                    .filter(|(p, _)| !p.is_nan())
+                    .map(|(p, se)| p.abs() > 2.0 * se),
+            }
         })
         .collect();
     let mut top = all.clone();
@@ -796,6 +1064,12 @@ fn sensitivity(
                 varied.len() + 10,
                 varied.len()
             )
+        }),
+        prcc_se,
+        rank_regression: fit.map(|f| Fit {
+            r2: f.r2,
+            adjusted_r2: f.adjusted_r2,
+            terms: f.terms,
         }),
         top,
         all,
@@ -820,7 +1094,7 @@ fn pct(x: f64) -> String {
 }
 
 /// The output directory: `--out`, or `exports/robustness/<mode>-<sample
-/// seed>`, with `-documented` for the documented global ranges.
+/// seed>`, with `-documented` or `-plausible` for those global ranges.
 fn out_dir(options: &Options) -> PathBuf {
     options.out.clone().unwrap_or_else(|| {
         report::default_out(&format!(
@@ -829,6 +1103,7 @@ fn out_dir(options: &Options) -> PathBuf {
             options.sample_seed,
             match (options.mode, options.ranges) {
                 (Mode::Global, Ranges::Documented) => "-documented",
+                (Mode::Global, Ranges::Plausible) => "-plausible",
                 _ => "",
             }
         ))
@@ -845,6 +1120,9 @@ fn command_text(options: &Options) -> String {
         options.sample_seed,
         options.battery.name()
     );
+    if let Some(n) = options.seeds_noisy {
+        let _ = write!(c, " --seeds-noisy {}", n.max(1));
+    }
     match options.mode {
         Mode::Local => {
             let _ = write!(c, " --jitter {}", options.jitter);
@@ -895,11 +1173,51 @@ fn rule_text(options: &Options, v: &Varied) -> (String, String) {
             format!("Latin hypercube, {}", source.label()),
             format!("{} to {}", num(global.0), num(global.1)),
         ),
-        (Mode::Global, Kind::Categorical { choices, .. }) => (
+        (Mode::Global, Kind::Categorical { choices, drawn, .. }) if drawn => (
             "uniform choice".into(),
             choices.iter().map(|c| c.id).collect::<Vec<_>>().join(", "),
         ),
+        (
+            Mode::Global,
+            Kind::Categorical {
+                choices, default, ..
+            },
+        ) => (
+            "default (categorical, held under the plausible ranges)".into(),
+            choices[default].id.to_string(),
+        ),
     }
+}
+
+/// The plausible rule of an assumption, as short text for the rule table.
+fn plausible_text(v: &Varied) -> &'static str {
+    match (v.kind, sample::plausible_rule(v.info.path)) {
+        (Kind::Categorical { .. }, _) => "held (categorical)",
+        (_, Some(sample::PlausibleRule::Scale)) => "scale",
+        (_, Some(sample::PlausibleRule::Share)) => "share or weight",
+        (_, Some(sample::PlausibleRule::LeaveThreshold)) => "leave threshold",
+        (_, Some(sample::PlausibleRule::Population)) => "population",
+        (_, None) => "unclassified",
+    }
+}
+
+/// The seeds as text: `1 to S`, and the noisy items' when they differ.
+fn seeds_text(options: &Options, quote: &str) -> String {
+    let base = format!("seeds 1 to {}", options.seeds.max(1));
+    if !options.noisy_differs() {
+        return base;
+    }
+    let noisy: Vec<String> = NOISY_LOCAL
+        .iter()
+        .chain(NOISY_GLOBAL_EXTRA.iter())
+        .filter(|id| is_noisy(options.mode, id))
+        .map(|id| format!("{quote}{id}{quote}"))
+        .collect();
+    format!(
+        "{base}, 1 to {} for the noisy facts and claims ({})",
+        options.noisy_seeds(),
+        noisy.join(", ")
+    )
 }
 
 /// A number in its shortest form.
@@ -912,7 +1230,9 @@ fn num(x: f64) -> String {
 fn default_text(v: &Varied) -> String {
     match v.kind {
         Kind::Continuous { default, .. } => num(default),
-        Kind::Categorical { choices, default } => choices[default].id.to_string(),
+        Kind::Categorical {
+            choices, default, ..
+        } => choices[default].id.to_string(),
     }
 }
 
@@ -930,17 +1250,18 @@ fn print_header(
         })
         .collect();
     outln!(
-        "Robustness, {} mode: the default world and {} sampled worlds (sample seed {}), {} paired seeds; {}.",
+        "Robustness, {} mode: the default world and {} sampled worlds (sample seed {}), paired {}; {}.",
         options.mode.name(),
         options.worlds,
         options.sample_seed,
-        options.seeds.max(1),
+        seeds_text(options, ""),
         sizes.join("; ")
     );
     let names: Vec<&str> = varied.iter().map(|v| short(v.info.path)).collect();
     outln!(
-        "Varied ({}): {}.\nKept at their defaults: {} (docs/model.md, 6.1 and 13.2), and every run and \
-         design setting and the rest of the population.",
+        "Varied ({}): {}.\nKept at their defaults: {} (the checking habits, the interruption cost and the \
+         session length change the model's time scale: docs/model.md, 6.1, 11 and 13.2, lab #35), and every \
+         run and design setting and the rest of the population.",
         varied.len(),
         names.join(", "),
         sample::EXCLUDED
@@ -965,8 +1286,8 @@ fn print_header(
             );
         }
         Mode::Global => outln!(
-            "Global: a Latin hypercube over each number's range; categorical assumptions drawn uniformly. \
-             {}\n",
+            "Global: a Latin hypercube over each number's range; {}. {}\n",
+            categorical_text(options.ranges),
             ranges_text(options.ranges, varied, "")
         ),
     }
@@ -983,9 +1304,14 @@ fn ranges_text(ranges: Ranges, varied: &[Varied], quote: &str) -> String {
             documented`)"
         }
         Ranges::Revised => {
-            "Ranges revised by lab #31's rule (`--ranges revised`, docs/model.md, section 11)"
+            "Ranges revised by lab #31's rule with lab #35's judgement ranges (`--ranges revised`, \
+            docs/model.md, section 11)"
+        }
+        Ranges::Plausible => {
+            "Plausible ranges by lab #35's rule (`--ranges plausible`, docs/model.md, section 11)"
         }
     };
+    use sample::PlausibleRule as P;
     let groups: Vec<String> = [
         S::Docs,
         S::DocsClipped,
@@ -993,6 +1319,12 @@ fn ranges_text(ranges: Ranges, varied: &[Varied], quote: &str) -> String {
         S::Scaled,
         S::DefaultThirds,
         S::Population,
+        S::Judgement,
+        S::Plausible(P::Scale),
+        S::Plausible(P::Share),
+        S::Plausible(P::LeaveThreshold),
+        S::Plausible(P::Population),
+        S::Unclassified,
     ]
     .iter()
     .filter_map(|&src| {
@@ -1010,7 +1342,7 @@ fn ranges_text(ranges: Ranges, varied: &[Varied], quote: &str) -> String {
     .collect();
     let fixed: Vec<String> = varied
         .iter()
-        .filter(|v| !v.spans())
+        .filter(|v| matches!(v.kind, Kind::Continuous { .. }) && !v.spans())
         .map(|v| format!("{quote}{}{quote}", short(v.info.path)))
         .collect();
     let mut text = format!("{rule}: {}.", groups.join("; "));
@@ -1021,6 +1353,28 @@ fn ranges_text(ranges: Ranges, varied: &[Varied], quote: &str) -> String {
         ));
     }
     text
+}
+
+/// How global mode treats the categorical assumptions under these ranges.
+fn categorical_text(ranges: Ranges) -> &'static str {
+    match ranges {
+        Ranges::Plausible => "categorical assumptions kept at their defaults",
+        _ => "categorical assumptions drawn uniformly",
+    }
+}
+
+/// A check's or item's failure classes as text: `failing (noise, clear)`,
+/// with the unclassed count where there is one.
+fn failures_text(f: &FailureCounts) -> String {
+    if f.failing == 0 {
+        return "0".into();
+    }
+    let mut t = format!("{} ({}, {}", f.failing, f.noise_compatible, f.clear);
+    if f.unclassified > 0 {
+        let _ = write!(t, ", {} unclassed", f.unclassified);
+    }
+    t.push(')');
+    t
 }
 
 fn print_summary(summary: &[BatterySummary]) -> Result<(), CliError> {
@@ -1040,11 +1394,20 @@ fn print_summary(summary: &[BatterySummary]) -> Result<(), CliError> {
         let mut rows = Vec::new();
         for item in &b.items {
             rows.push(vec![
-                format!("{}: holds", item.id),
+                format!(
+                    "{}: holds{}",
+                    item.id,
+                    if item.noisy {
+                        format!(" ({} seeds)", item.seeds)
+                    } else {
+                        String::new()
+                    }
+                ),
                 if item.reference_holds { "yes" } else { "no" }.into(),
                 pct(item.holds_share),
                 pct(item.holds_share_nondegenerate),
                 String::new(),
+                failures_text(&item.failures),
                 String::new(),
             ]);
             for c in &item.checks {
@@ -1062,6 +1425,7 @@ fn print_summary(summary: &[BatterySummary]) -> Result<(), CliError> {
                     pct(c.in_band_share),
                     pct(c.in_band_share_nondegenerate),
                     pct(c.same_sign_share),
+                    failures_text(&c.failures),
                     format!(
                         "{} [{}, {}]",
                         fmt(c.median, 3),
@@ -1080,6 +1444,7 @@ fn print_summary(summary: &[BatterySummary]) -> Result<(), CliError> {
                     "holds",
                     "non-degen.",
                     "sign",
+                    "fails (noise, clear)",
                     "median [5%, 95%]"
                 ],
                 &rows
@@ -1091,8 +1456,10 @@ fn print_summary(summary: &[BatterySummary]) -> Result<(), CliError> {
         "\"default\" is the default world's effect and whether it lies in its band; \"holds\" the share of \
          sampled worlds in which the check lies in its band (a fact or claim: every check that is not a known \
          limit), also over the non-degenerate worlds; \"sign\" the share whose effect lies on the default \
-         world's side of its neutral value (0, 1 for a ratio or for a ratio or share read as a mean); then \
-         the effect's quantiles."
+         world's side of its neutral value (0, 1 for a ratio or for a ratio or share read as a mean); \
+         \"fails\" the non-degenerate worlds where it fails, those within two standard errors of a world's \
+         seed mean of the band (noise) and the clear failures (a fact or claim is within noise when every \
+         failing check is); then the effect's quantiles."
     );
     Ok(())
 }
@@ -1120,6 +1487,7 @@ fn settings_json(
                 "default": default_text(v),
                 "rule": rule,
                 "range": range,
+                "plausible_rule": plausible_text(v),
             });
             if let Kind::Continuous {
                 catalogue,
@@ -1140,7 +1508,10 @@ fn settings_json(
         "command": command_text(options),
         "mode": options.mode.name(),
         "worlds": options.worlds,
-        "seeds": (1..=options.seeds.max(1)).collect::<Vec<u64>>(),
+        "seeds": options.base_seeds(),
+        "seeds_noisy": (1..=options.noisy_seeds()).collect::<Vec<u64>>(),
+        "noisy_items": NOISY_LOCAL.iter().chain(NOISY_GLOBAL_EXTRA.iter())
+            .filter(|id| is_noisy(options.mode, id)).collect::<Vec<_>>(),
         "sample_seed": options.sample_seed,
         "jitter": (options.mode == Mode::Local).then_some(options.jitter),
         "ranges": (options.mode == Mode::Global).then_some(options.ranges),
@@ -1262,22 +1633,26 @@ fn summary_md(
         .collect();
     let _ = writeln!(
         md,
-        "Generated by `{}`: the default world (world 0, the reference) and {} sampled worlds, seeds 1 to {} \
-         paired across variants; {}. A check holds in a world when its effect on the seed means lies in its \
+        "Generated by `{}`: the default world (world 0, the reference) and {} sampled worlds, {} paired \
+         across variants (a fact's variants run on the same seeds for all its checks, so a fact or claim is \
+         noisy as a whole); {}. A check holds in a world when its effect on the seed means lies in its \
          band; a fact or claim when every check that is not a known limit holds. A world is degenerate when \
-         the default design's user share on its last day, averaged over the seeds, lies below {}.\n",
+         the default design's user share on its last day, averaged over the seeds of the baseline (1 to {}), \
+         lies below {}.\n",
         command_text(options),
         options.worlds,
-        options.seeds.max(1),
+        seeds_text(options, "`"),
         sizes.join("; "),
+        options.seeds.max(1),
         DEGENERATE_USER_SHARE
     );
     let _ = writeln!(
         md,
         "## Varied assumptions\n\n{} varied: the world assumptions and two population settings, the troll \
          share and the bot share. Kept at their defaults: {} (the checking habits and the interruption cost, \
-         off by the owner's decision, docs/model.md 6.1 and 13.2), and every run and design setting and the \
-         rest of the population.{}\n",
+         off by the owner's decision, docs/model.md 6.1 and 13.2, and the session length, held by lab #35: \
+         all three change the model's time scale), and every run and design setting and the rest of the \
+         population.{}\n",
         varied.len(),
         sample::EXCLUDED
             .iter()
@@ -1293,20 +1668,26 @@ fn summary_md(
                 1.0 + options.jitter
             ),
             Mode::Global => format!(
-                " Global mode draws a Latin hypercube over each number's range and draws categorical \
-                 assumptions uniformly. {}",
+                " Global mode draws a Latin hypercube over each number's range; {}. {}",
+                categorical_text(options.ranges),
                 ranges_text(options.ranges, varied, "`")
             ),
         }
     );
-    md.push_str("| Assumption | Default | Rule | Range |\n| --- | --- | --- | --- |\n");
+    md.push_str(
+        "\"Plausible class\" is the rule that gives each number its plausible range (lab #35): a positive \
+         scale gets default/1.5 to 1.5 x default, a share or weight in [0, 1] default +- 0.15 (clamped), the \
+         leave threshold -0.05 to 0.05, a population setting default/1.5 to 1.5 x default.\n\n\
+         | Assumption | Default | Plausible class | Rule | Range |\n| --- | --- | --- | --- | --- |\n",
+    );
     for v in varied {
         let (rule, range) = rule_text(options, v);
         let _ = writeln!(
             md,
-            "| `{}` | {} | {} | {} |",
+            "| `{}` | {} | {} | {} | {} |",
             short(v.info.path),
             default_text(v),
+            plausible_text(v),
             rule,
             range
         );
@@ -1317,8 +1698,18 @@ fn summary_md(
             "\n## Battery: {}\n\n{} sampled worlds, {} degenerate{}. \"Default\" is the default world's effect; \
              \"holds\" the share of sampled worlds where the check, fact or claim holds, over all and over \
              the non-degenerate worlds; \"sign\" the share whose effect lies on the default world's side of \
-             its neutral value (0, 1 for a ratio or for a ratio or share read as a mean); then the effect's median and 5% and 95% quantiles over \
-             all sampled worlds.\n",
+             its neutral value (0, 1 for a ratio or for a ratio or share read as a mean); then the effect's \
+             median and 5% and 95% quantiles over all sampled worlds. \"Seeds\" is the seeds per world. \
+             \"Failing\" counts the non-degenerate worlds where it fails; a failure is noise-compatible when \
+             the world's effect lies within two standard errors of its band, so that the interval of the \
+             effect +- 2 SE overlaps the band, and clear otherwise (docs/validation.md, 5.2). The SE is \
+             the seed SD over sqrt(seeds), the seed SD the SD of the per-seed effects within a world, pooled \
+             over the non-degenerate worlds with a value; a fact or claim fails within noise when every \
+             failing check that is not a known limit does. Without a seed SD (one seed) a failure is \
+             unclassed. One SD pooled over the worlds is inflated where a ratio's denominator nears 0 in \
+             some worlds, which overstates the noise-compatible failures across wide ranges \
+             (docs/validation.md, 5.3). \"Seed share\" is the squared SE over the variance of the worlds' \
+             effects: the part of their spread that seed noise alone would make.\n",
             b.battery,
             b.worlds,
             b.degenerate_worlds,
@@ -1329,13 +1720,22 @@ fn summary_md(
             }
         );
         md.push_str(
-            "| Item | Check | Bound | Default | Holds | Non-degenerate | Sign | Median | 5% | 95% |\n\
-             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+            "| Item | Check | Bound | Default | Holds | Non-degenerate | Sign | Seeds | Failing | \
+             Noise-compatible | Clear | Seed share | Median | 5% | 95% |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
         );
+        let unclassed = |f: &FailureCounts| {
+            if f.unclassified > 0 {
+                format!(" ({} unclassed)", f.unclassified)
+            } else {
+                String::new()
+            }
+        };
         for item in &b.items {
+            let f = &item.failures;
             let _ = writeln!(
                 md,
-                "| **{}** | {} | | {} | {} | {} | | | | |",
+                "| **{}** | {} | | {} | {} | {} | | {}{} | {}{} | {} | {} | | | | |",
                 item.id,
                 item.title,
                 if item.reference_holds {
@@ -1344,12 +1744,19 @@ fn summary_md(
                     "fails"
                 },
                 pct(item.holds_share),
-                pct(item.holds_share_nondegenerate)
+                pct(item.holds_share_nondegenerate),
+                item.seeds,
+                if item.noisy { " (noisy)" } else { "" },
+                f.failing,
+                unclassed(f),
+                f.noise_compatible,
+                f.clear
             );
             for c in &item.checks {
+                let f = &c.failures;
                 let _ = writeln!(
                     md,
-                    "| | {}{} | {} | {:.4} ({}) | {} | {} | {} | {} | {} | {} |",
+                    "| | {}{} | {} | {:.4} ({}) | {} | {} | {} | {} | {}{} | {} | {} | {} | {} | {} | {} |",
                     c.label,
                     if c.known_limit { " (known limit)" } else { "" },
                     c.bound,
@@ -1358,6 +1765,12 @@ fn summary_md(
                     pct(c.in_band_share),
                     pct(c.in_band_share_nondegenerate),
                     pct(c.same_sign_share),
+                    c.noise.seeds,
+                    f.failing,
+                    unclassed(f),
+                    f.noise_compatible,
+                    f.clear,
+                    fmt(c.noise.seed_share, 2),
                     fmt(c.median, 4),
                     fmt(c.q05, 4),
                     fmt(c.q95, 4)
@@ -1370,7 +1783,14 @@ fn summary_md(
                 "\n### Sensitivity: {}\n\nPer check, the five varied assumptions with the largest absolute \
                  partial rank correlation (PRCC) with the effect, or the largest absolute Spearman \
                  correlation where there are too few worlds for PRCC, over the non-degenerate worlds with a \
-                 value. Every assumption's values are in summary.json.\n",
+                 value. A PRCC marked * lies beyond two standard errors from 0, the SE being \
+                 1/sqrt(n - k - 2) for n worlds and k regression terms (Fisher's for a partial correlation \
+                 with k - 1 columns held fixed). With no association at all, about one assumption in 22 \
+                 (4.55%) lies beyond two standard errors by chance, so a lone mark is weak evidence. R2 is \
+                 that of the rank regression of the effect on every \
+                 varied assumption and the categorical dummies, plain and adjusted for the k terms: the \
+                 share of the effect's rank variance that additive monotone effects explain. Every \
+                 assumption's values are in summary.json.\n",
                 b.battery
             );
             for item in &b.items {
@@ -1380,13 +1800,36 @@ fn summary_md(
                     if let Some(note) = &s.note {
                         let _ = writeln!(md, "\n{note}.");
                     }
+                    if let Some(fit) = &s.rank_regression {
+                        let significant =
+                            s.all.iter().filter(|d| d.significant == Some(true)).count();
+                        // The two-sided chance that a standard normal lies beyond 2.
+                        let by_chance = 0.0455 * s.all.len() as f64;
+                        let _ = writeln!(
+                            md,
+                            "\nRank-regression R2 {} (adjusted {}, k = {}); PRCC SE {}, {} of {} assumptions \
+                             beyond 2 SE (about {} by chance alone).",
+                            fmt(fit.r2, 3),
+                            fmt(fit.adjusted_r2, 3),
+                            fit.terms,
+                            s.prcc_se.map_or("-".into(), |se| fmt(se, 3)),
+                            significant,
+                            s.all.len(),
+                            fmt(by_chance, 1)
+                        );
+                    }
                     md.push_str("\n| Assumption | PRCC | Spearman |\n| --- | --- | --- |\n");
                     for d in &s.top {
                         let _ = writeln!(
                             md,
-                            "| `{}` | {} | {} |",
+                            "| `{}` | {}{} | {} |",
                             d.assumption,
                             d.prcc.map_or("-".into(), |p| fmt(p, 3)),
+                            if d.significant == Some(true) {
+                                " *"
+                            } else {
+                                ""
+                            },
                             fmt(d.spearman, 3)
                         );
                     }
@@ -1432,6 +1875,7 @@ mod tests {
             mode: Mode::Global,
             worlds: 64,
             seeds: 2,
+            seeds_noisy: None,
             sample_seed: 2,
             battery: BatteryChoice::All,
             population: None,
@@ -1449,6 +1893,176 @@ mod tests {
         );
         options.out = Some(PathBuf::from("/elsewhere/run"));
         assert!(command_text(&options).ends_with(" --out /elsewhere/run"));
+        options.out = None;
+        options.ranges = Ranges::Plausible;
+        options.seeds_noisy = Some(4);
+        assert!(
+            command_text(&options).ends_with(
+                "--battery all --seeds-noisy 4 --ranges plausible --out exports/robustness/global-2-plausible"
+            ),
+            "{}",
+            command_text(&options)
+        );
+    }
+
+    fn options(mode: Mode, seeds: u64, seeds_noisy: Option<u64>) -> Options {
+        Options {
+            mode,
+            worlds: 4,
+            seeds,
+            seeds_noisy,
+            sample_seed: 1,
+            battery: BatteryChoice::All,
+            population: None,
+            days: None,
+            jitter: 0.25,
+            ranges: Ranges::Revised,
+            out: None,
+        }
+    }
+
+    /// `--seeds-noisy` gives the noisy facts and claims of lab #31 their own
+    /// seeds, per fact or claim, H7 in global mode only; every id it names
+    /// exists in the batteries.
+    #[test]
+    fn noisy_items_run_on_their_own_seeds() {
+        let ids: Vec<&str> = batteries(BatteryChoice::All)
+            .iter()
+            .flat_map(|b| b.items.iter().map(|i| i.id))
+            .collect();
+        for id in NOISY_LOCAL.iter().chain(&NOISY_GLOBAL_EXTRA) {
+            assert!(ids.contains(id), "{id}");
+        }
+        let local = options(Mode::Local, 2, Some(4));
+        let global = options(Mode::Global, 2, Some(4));
+        for id in &ids {
+            let expected_local = if NOISY_LOCAL.contains(id) { 4 } else { 2 };
+            assert_eq!(local.seeds_of(id).len(), expected_local, "{id}");
+            let expected_global = if NOISY_LOCAL.contains(id) || *id == "H7" {
+                4
+            } else {
+                2
+            };
+            assert_eq!(
+                global.seeds_of(id),
+                (1..=expected_global).collect::<Vec<u64>>(),
+                "{id}"
+            );
+        }
+        assert_eq!(local.seeds_of("H7").len(), 2);
+        assert_eq!(local.base_seeds(), vec![1, 2]);
+        assert!(local.noisy_differs());
+        // Without the flag every item runs on --seeds.
+        let plain = options(Mode::Global, 3, None);
+        assert!(!plain.noisy_differs());
+        assert!(ids.iter().all(|id| plain.seeds_of(id).len() == 3));
+        assert_eq!(seeds_text(&plain, ""), "seeds 1 to 3");
+        assert!(
+            seeds_text(&global, "").ends_with(
+                "1 to 4 for the noisy facts and claims (outrage-learning, harassment-exit, H5, V1, V3, \
+                 V4, V5, V9, V10, H7)"
+            ),
+            "{}",
+            seeds_text(&global, "")
+        );
+    }
+
+    fn check(effect: f32, per_seed: &[f32], bound: Bound) -> CheckRecord {
+        let (low, high) = open_ends(bound);
+        CheckRecord {
+            label: "synthetic",
+            effect,
+            direction: effect,
+            per_seed: per_seed.to_vec(),
+            bound,
+            bound_text: bound_text(bound),
+            in_band: effect > low && effect < high,
+            known_limit: false,
+        }
+    }
+
+    /// Synthetic per-seed data with a seed SD of 0.1 in every world: two
+    /// seeds give an SE of 0.1 / sqrt 2 = 0.0707, so a failure within 0.141
+    /// of the band is noise-compatible and one farther is clear.
+    #[test]
+    fn failure_classes_follow_the_seed_noise() {
+        // Pairs differing by 0.1 * sqrt 2 have a within-pair SD of 0.1.
+        let d = 0.1 * std::f32::consts::SQRT_2 / 2.0;
+        let band = Bound::Between(0.0, 1.0);
+        let worlds: Vec<CheckRecord> = [0.5, 0.9, -0.1, 1.13, -0.2, 1.5, f32::NAN]
+            .iter()
+            .map(|&m| check(m, &[m - d, m + d], band))
+            .collect();
+        let values: Vec<WorldCheck> = worlds.iter().map(world_check).collect();
+        let finite: Vec<WorldCheck> = values
+            .iter()
+            .filter(|v| !v.effect.is_nan())
+            .copied()
+            .collect();
+        let noise = seed_noise(&finite);
+        assert_eq!(noise.seeds, 2);
+        assert!((noise.seed_sd - 0.1).abs() < 1e-6, "{noise:?}");
+        assert!((noise.standard_error - 0.1 / 2f64.sqrt()).abs() < 1e-6);
+        let classes: Vec<Option<bool>> = values
+            .iter()
+            .map(|v| noise_compatible(v, noise.standard_error))
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                None,
+                None,
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+                None
+            ]
+        );
+        let mut counts = FailureCounts::default();
+        for (v, c) in values.iter().zip(&classes) {
+            if !v.in_band {
+                counts.add(*c);
+            }
+        }
+        assert_eq!(
+            counts,
+            FailureCounts {
+                failing: 5,
+                noise_compatible: 2,
+                clear: 2,
+                unclassified: 1
+            }
+        );
+        assert_eq!(failures_text(&counts), "5 (2, 2, 1 unclassed)");
+        // An open band: only its finite end counts.
+        let above = check(-0.1, &[-0.1 - d, -0.1 + d], Bound::Above(0.0));
+        assert_eq!(
+            noise_compatible(&world_check(&above), noise.standard_error),
+            Some(true)
+        );
+        // With one seed there is no seed SD, so no class.
+        let single: Vec<CheckRecord> = [0.5, 1.2].iter().map(|&m| check(m, &[m], band)).collect();
+        let single: Vec<WorldCheck> = single.iter().map(world_check).collect();
+        let none = seed_noise(&single);
+        assert!(none.seed_sd.is_nan());
+        assert_eq!(noise_compatible(&single[1], none.standard_error), None);
+        // Seed share: the squared SE over the variance of the world effects.
+        let between = stats::variance(
+            &finite
+                .iter()
+                .map(|v| f64::from(v.effect))
+                .collect::<Vec<_>>(),
+        );
+        assert!((noise.seed_share - noise.standard_error.powi(2) / between).abs() < 1e-9);
+        // Item level: within noise only when every failing check is.
+        assert_eq!(item_class([Some(true), Some(true)].into_iter()), Some(true));
+        assert_eq!(
+            item_class([Some(true), Some(false)].into_iter()),
+            Some(false)
+        );
+        assert_eq!(item_class([Some(true), None].into_iter()), None);
+        assert_eq!(item_class([None, Some(false)].into_iter()), Some(false));
     }
 
     /// The command's help lists exactly the varied set and the excluded

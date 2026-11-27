@@ -78,6 +78,7 @@ pub fn run_facts(
                 r.bound.text(),
                 means_text(r.passed).to_string(),
                 verdict(r.verdict, r.known_limit),
+                scale_text(r),
             ]);
         }
         all_results.extend(results.iter().cloned());
@@ -94,7 +95,8 @@ pub fn run_facts(
                 "95% interval",
                 "bound",
                 "means",
-                "verdict"
+                "verdict",
+                "SD used"
             ],
             &rows
         )
@@ -102,7 +104,9 @@ pub fn run_facts(
     outln!(
         "\n{}\n\nThe verdict judges the 95% interval of the per-seed effect: PASS inside the bound, FAIL \
          wholly outside, UNDECIDED across it; \"means\" judges the seed means alone. Known limits are \
-         reported, not required (docs/model.md, section 16).",
+         reported, not required (docs/model.md, section 16). {RATIO_CONVENTION} \"SD used\" is the \
+         standard deviation an effect in SDs divides by: the participants' spread at the experiment's \
+         start, the mean over the seeds.",
         tally(&all_results)
     );
     let dir = out.unwrap_or_else(|| report::default_out("facts"));
@@ -138,6 +142,18 @@ pub fn verdict(verdict: Verdict, known_limit: bool) -> String {
     } else {
         verdict.label().to_string()
     }
+}
+
+/// How every check computes a ratio effect, printed with the results.
+pub const RATIO_CONVENTION: &str = "Ratio convention: every ratio, relative change and elasticity \
+    effect is a ratio of seed means (the mean of one arm over the mean of the other, on paired seeds); its \
+    95% interval and its verdict are of the per-seed values, so the interval's centre, the mean of the \
+    per-seed ratios, can differ from the effect.";
+
+/// The standard deviation an effect in SDs was scaled by, as text, or `-`
+/// for every other effect.
+pub fn scale_text(r: &CheckResult) -> String {
+    r.scale.map_or_else(|| "-".into(), |sd| format!("{sd:.4}"))
 }
 
 /// Whether the seed means lie within the bound, as text.

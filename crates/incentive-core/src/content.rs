@@ -4,8 +4,8 @@ use serde::Serialize;
 
 mod post;
 
-pub use post::Post;
 pub(crate) use post::{AuthorProfile, EVASION_TOXICITY, NEUTRAL_INTENSITY, generate_post};
+pub use post::{NOTE_MIN_IMPRESSIONS, Post};
 
 /// Number of topics.
 pub const TOPIC_COUNT: usize = 6;
@@ -139,13 +139,17 @@ pub struct StyleProfile {
     pub truth: f32,
 }
 
+/// The base profiles of the six styles in [`Style::ALL`] order. Lab #32
+/// raised Outrage's truth from 0.60 to 0.66 and Clickbait's from 0.35 to
+/// 0.60, so misinformation makes about 2.5% of impressions under the
+/// integrity preset (docs/model.md, 4.1 and 13.1).
 #[rustfmt::skip]
 const BASE_PROFILES: [StyleProfile; STYLE_COUNT] = [
     StyleProfile { quality: 0.75, arousal: 0.25, outrage: 0.05, toxicity: 0.02, truth: 0.92 },
     StyleProfile { quality: 0.50, arousal: 0.55, outrage: 0.05, toxicity: 0.05, truth: 0.85 },
     StyleProfile { quality: 0.45, arousal: 0.30, outrage: 0.02, toxicity: 0.02, truth: 0.95 },
-    StyleProfile { quality: 0.30, arousal: 0.85, outrage: 0.85, toxicity: 0.35, truth: 0.60 },
-    StyleProfile { quality: 0.15, arousal: 0.75, outrage: 0.20, toxicity: 0.08, truth: 0.35 },
+    StyleProfile { quality: 0.30, arousal: 0.85, outrage: 0.85, toxicity: 0.35, truth: 0.66 },
+    StyleProfile { quality: 0.15, arousal: 0.75, outrage: 0.20, toxicity: 0.08, truth: 0.60 },
     StyleProfile { quality: 0.05, arousal: 0.80, outrage: 0.70, toxicity: 0.85, truth: 0.50 },
 ];
 

@@ -106,12 +106,15 @@ fn how_to_read(ui: &mut Ui) {
     ui.label(
         RichText::new(
             "It is a map of a toy model, not a forecast: it shows where designs succeed or fail \
-             in this model, and under its default assumptions about people. At those defaults \
+             in this model, and under its default assumptions about people. The designs were \
+             searched in the default world only; across other plausible worlds the model's main \
+             findings keep their direction, though their sizes move. At those defaults \
              the model charges for the time people spend but not for the interruption a \
-             notification makes, and every design on the front keeps notifications at 0.8 or \
-             more: on a feed worth its time the visits they bring raise wellbeing a little, \
-             while on feeds that waste most of the time spent they leave it unchanged or lower \
-             it. Creator payouts cost nothing in any score but net revenue, and every design on \
+             notification makes, and every design on the front keeps notifications at 0.95 or \
+             more: on feeds worth their time the visits they bring raise wellbeing a little, \
+             while on feeds that waste much of the time spent they leave it unchanged or lower \
+             it, and on some designs of either kind they raise harm. Creator payouts cost nothing \
+             in any score but net revenue, and every design on \
              the front pays creators, so designs that push payouts look better here than they \
              would be: open one and set them back to check (About lists what the model gets for \
              free).",
@@ -667,8 +670,8 @@ fn goodhart_view(ui: &mut Ui, data: &AtlasData) {
          saw. If they get worse while the first one climbs, chasing the number is doing harm: \
          Goodhart's law. The survey run is the subtler one: a survey answer mixes the person's \
          wellbeing with recent pleasure and habit, so a search can raise the answers partly \
-         through pleasure and habit; here it also raised wellbeing, while the toxic share \
-         doubled.",
+         through pleasure and habit; here it also raised wellbeing, while the toxic share more \
+         than tripled and the harm index rose.",
     );
     ui.add_space(4.0);
     for run in &data.goodhart {

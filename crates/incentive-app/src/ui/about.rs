@@ -9,39 +9,52 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 /// The model specification inside the repository.
 pub const MODEL_DOC: &str = "docs/model.md";
 
-/// The six stylized facts the model is checked against, with sources
+/// The seven stylized facts the model is checked against, with sources
 /// (docs/model.md, section 15).
 pub const FACTS: [(&str, &str); 7] = [
     (
         "Engagement ranking amplifies divisive content that people do not value. Against a \
          chronological feed, the engagement ranking shows more outrage, and what it shows is \
-         worth less to people on reflection.",
+         worth less to people on reflection. The extra outrage showed in every world tried; its \
+         size varied.",
         "Milli et al. (2025), an audit of Twitter's ranking, PNAS Nexus",
     ),
     (
         "Social reward teaches outrage. Under engagement ranking the share of outrage posts rises \
-         over time; when authors do not learn from likes, it does not.",
+         over time. Here authors also pick up the tone of what they read, and that drives most \
+         of the rise: when authors do not learn from likes, the share still rises by about two \
+         thirds as much, and without that contagion it rises by only a third as much, mostly \
+         learned from likes. How much of the rise comes from likes varies widely from world to \
+         world.",
         "Brady et al. (2021), Science Advances",
     ),
     (
         "A chronological feed cuts time spent, and over three months barely moves polarisation. \
          The same study found more content from untrustworthy sources in chronological feeds, \
-         and less incivility by tens of percent; this model gets the first direction wrong and \
-         cuts incivility far more.",
+         and less incivility by tens of percent. Switch the same people from a ranked feed to a \
+         chronological one here, as the study did, and both directions agree: about two thirds \
+         more misinformation and about a quarter less toxicity. Run as a separate platform from \
+         the start, as in Compare, a chronological feed shows less of both. The shifts in time \
+         and exposure survived most plausible worlds tried, the steady polarisation fewer than \
+         half.",
         "Guess et al. (2023), Facebook and Instagram in the 2020 US election, Science",
     ),
     (
-        "Forwarding limits slow viral spread: capping reshares shrinks the largest cascades.",
+        "Forwarding limits slow viral spread: capping reshares shrinks the largest cascades. It \
+         survived every plausible world tried.",
         "de Freitas Melo et al. (2019), WhatsApp's forwarding limits",
     ),
     (
-        "Harassment drives its targets away: more trolls, more vulnerable people leave.",
+        "Harassment drives its targets away: more trolls, more vulnerable people leave. It \
+         survived nearly every plausible world tried.",
         "Pew Research Center (2017), Online Harassment 2017",
     ),
     (
         "Leaving the platform makes people slightly happier. People who stay off a realistic \
          ranked feed for five weeks end up a little happier than those who stay on. The value \
-         the model puts on time was set so that it reproduces the size of this effect.",
+         the model puts on time was set so that it reproduces the size of this effect. Change \
+         other assumptions a little and the effect often misses that size: it sits on a knife \
+         edge.",
         "Allcott et al. (2025), quitting Facebook and Instagram before the 2020 US election, NBER",
     ),
     (
@@ -49,7 +62,8 @@ pub const FACTS: [(&str, &str); 7] = [
          without any notifications left how often people checked their phones and how long they \
          used them about where they were, and a week with alerts on left wellbeing unchanged. \
          Here a week without the platform's notifications cuts its users' time on it only \
-         moderately and leaves their wellbeing as it was.",
+         moderately and leaves their wellbeing as it was. It survived nearly every plausible \
+         world tried.",
         "Dekker et al. (2024), Media Psychology; Kushlev et al. (2016), CHI",
     ),
 ];
@@ -63,54 +77,62 @@ pub const DISCOVERIES: [(&str, &str); 7] = [
          Here bot farms file those marks too, against the other side's popular posts, so a strong \
          see-less penalty raises harm instead of lowering it. Switch the farms' brigading off \
          (world assumptions) and the same penalty lowers harm. A preference anyone can file is a \
-         target.",
+         target. It held in nearly every world tried where bot farms brigade.",
     ),
     (
         "What does a calmer feed cost?",
         "Ranking for quality and cross-group approval cuts harm by about four fifths for about a \
          sixth of the engagement. Authors learn to polish posts so they look better to the \
          quality classifier than they are, and the more polish fools it (world assumptions), the \
-         less harm the calm feed saves: at the strongest setting, less than half. Find the \
-         designs in between.",
+         less harm the calm feed saves, though even at the strongest setting it still saves over \
+         two thirds. Find the designs in between. The harm cut survived every plausible world \
+         tried; the engagement it costs depends mostly on how fast habits form.",
     ),
     (
         "Do notifications do people any good?",
-        "They bring engagement: at full strength, about a fifth more, and they keep more people \
+        "They bring engagement: at full strength, about a quarter more, and they keep more people \
          on the platform. That is weaker than in earlier versions of this lab, to match field \
          studies in which switching notifications off for a week barely changed how much people \
-         used their phones. Under the engagement ranking they bring no wellbeing at all. On the \
-         quality and bridging feed, where most of the time spent is worth it, they make people a \
-         little happier: now that time has a price (world assumptions: value of time), more time \
-         on a feed helps only if the feed is worth it.",
+         used their phones. Under the engagement ranking they leave people slightly worse off. \
+         On the quality and bridging feed, where most of the time spent is worth it, they make \
+         people a little happier: now that time has a price (world assumptions: value of time), \
+         more time on a feed helps only if the feed is worth it. The extra engagement survived \
+         every world tried; the slight loss of wellbeing did not always.",
     ),
     (
         "Does the engagement ranking's lead last?",
         "In the default world its lead holds over the year, but on fewer people: in the last \
-         three months about 52% of society use it, against 63% for quality and bridging. Make \
+         three months about half of society use it, against 63% for quality and bridging. Make \
          habits weaker, reputation matter more and harassment drive people away faster (world \
          assumptions: habit gain 0.01, reputation sensitivity 5, harassment exit 0.15), and the \
-         lead reverses: by the end of the year the calmer design draws more engagement.",
+         lead reverses: by the end of the year the calmer design draws more engagement. Whether \
+         it lasts depends mostly on how fast habits form and how much people follow the crowd.",
     ),
     (
         "Does stricter moderation work?",
         "Against toxicity, yes: at a threshold of 0.3 toxic impressions fall by about nineteen \
          twentieths, and authors' evasion barely dents that. But the classifier also removes \
-         about fourteen times as many innocent posts, about forty-five a day, and the harm \
-         index counts those: it falls by only about a fifth.",
+         about twelve times as many innocent posts, about forty-six a day, and the harm index \
+         counts those: it falls by only about a third. This trade-off survived every plausible \
+         world tried.",
     ),
     (
         "Can you trust the reports?",
         "Bot farms file about a third of all reports and see-less marks under the engagement \
          ranking, and most of them under quality and bridging. Weighing each report by how often \
          its reporter's earlier reports were upheld does not stop the filing but takes away much \
-         of its effect: under quality and bridging, harassment falls by about half.",
+         of its effect: under quality and bridging, harassment falls by about half. It survived \
+         nearly every plausible world tried, as long as bot farms file reports.",
     ),
     (
         "Does the survey tell the platform how people are doing?",
         "Not reliably: answers mix wellbeing with recent pleasure and habit. After three months \
-         and after a year alike, the survey ranks the engagement ranking above the chronological \
-         feed, calm by design, quality and bridging and the subscription, while the truth ranks \
-         it below all four, on the wellbeing of everyone who ever used the platform.",
+         the survey ranks the engagement ranking above the chronological feed, calm by design, \
+         quality and bridging and the subscription, and after a year above all but the \
+         subscription, which it puts level, while the truth ranks it below all four both times, \
+         on the wellbeing of everyone who ever used the platform. In about a third of the \
+         plausible worlds tried, where answers lean less on pleasure and habit, the year's survey \
+         no longer puts the engagement ranking above quality and bridging.",
     ),
 ];
 
@@ -221,7 +243,10 @@ pub fn show(ui: &mut Ui) {
                 ui,
                 "This is a toy model for building intuition, not a forecast of any real \
                  platform. Its people are simple, its effect sizes are starting values grounded \
-                 in a handful of studies, and it has no advertisers, regulators or competitors.",
+                 in a handful of studies, and it has no advertisers, regulators or competitors. \
+                 Checked against field studies it was not tuned on, it gets about half the results \
+                 right; tried in hundreds of worlds with other plausible assumptions, most of its \
+                 directions hold while many of its sizes move.",
             );
             paragraph(
                 ui,

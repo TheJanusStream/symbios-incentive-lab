@@ -23,6 +23,9 @@ pub(crate) struct Relation {
     pub is_target: bool,
     /// The item is at the reshare depth cap.
     pub share_capped: bool,
+    /// The impression carries the post's community note, by the viewer's
+    /// time of day (docs/model.md, 6.8).
+    pub noted: bool,
 }
 
 /// Everything 7.1 derives for one viewer and one post.
@@ -36,6 +39,9 @@ pub(crate) struct Signals {
     pub provocation: f32,
     /// Impulsive appeal, `A`.
     pub appeal: f32,
+    /// The social-proof part of `A`, as it stood when the signals were
+    /// computed; kept for the like decomposition (docs/model.md, 9.2).
+    pub social_proof: f32,
     /// Reflective value, `R`.
     pub reflective: f32,
     pub p_like: f32,
@@ -54,7 +60,6 @@ const LIKE_BIAS: f32 = -3.5;
 const LIKE_INTEREST: f32 = 0.6;
 const LIKE_IMPULSE: f32 = 1.2;
 const LIKE_REFLECTION: f32 = 1.5;
-const LIKE_OUTGROUP_HOSTILITY_CUT: f32 = 0.8;
 const REPLY_BIAS: f32 = -4.0;
 const REPLY_INTEREST: f32 = 0.4;
 const REPLY_PROVOCATION: f32 = 2.0;
@@ -105,7 +110,7 @@ pub(crate) fn signals(viewer: &Traits, post: &Post, rel: Relation, env: Behaviou
         + LIKE_IMPULSE * imp * appeal
         + LIKE_REFLECTION * (1.0 - imp) * reflective);
     if !same_group {
-        p_like *= 1.0 - LIKE_OUTGROUP_HOSTILITY_CUT * post.outrage;
+        p_like *= 1.0 - world.outgroup_like_cut * post.outrage;
     }
 
     let personal_follow = post.style == Style::Personal && rel.follows_author;
@@ -134,6 +139,7 @@ pub(crate) fn signals(viewer: &Traits, post: &Post, rel: Relation, env: Behaviou
         hostility,
         provocation,
         appeal,
+        social_proof,
         reflective,
         p_like,
         p_reply,
@@ -142,6 +148,62 @@ pub(crate) fn signals(viewer: &Traits, post: &Post, rel: Relation, env: Behaviou
         p_report,
         p_see_less,
         dwell,
+    }
+}
+
+/// The terms of the like probability's logit (docs/model.md, 7.1) for one
+/// impression, and the out-group multiplier applied after the logistic:
+/// `P_like = sig(bias + interest + arousal + hostility + social_proof +
+/// reflective) * multiplier`. The three impulsive terms split
+/// `1.2 * impulsivity * A` into its parts. Measurement only: [`signals`]
+/// computes `P_like` itself, and the terms sum to its logit up to rounding.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LikeTerms {
+    pub bias: f32,
+    pub interest: f32,
+    pub arousal: f32,
+    pub hostility: f32,
+    pub social_proof: f32,
+    pub reflective: f32,
+    /// `1 - outgroup_like_cut * outrage` for an out-group viewer, 1 for the
+    /// author's own group.
+    pub multiplier: f32,
+}
+
+impl LikeTerms {
+    /// The logit, the sum of the terms before the logistic.
+    #[cfg(test)]
+    pub(crate) fn logit(&self) -> f32 {
+        self.bias
+            + self.interest
+            + self.arousal
+            + self.hostility
+            + self.social_proof
+            + self.reflective
+    }
+}
+
+/// The like probability's terms for `viewer` seeing `post`, from the signals
+/// computed for that impression (docs/model.md, 7.1 and 9.2).
+pub(crate) fn like_terms(
+    viewer: &Traits,
+    post: &Post,
+    s: &Signals,
+    world: &WorldAssumptions,
+) -> LikeTerms {
+    let imp = viewer.impulsivity;
+    LikeTerms {
+        bias: LIKE_BIAS,
+        interest: LIKE_INTEREST * s.interest,
+        arousal: LIKE_IMPULSE * imp * world.arousal_appeal * post.arousal,
+        hostility: LIKE_IMPULSE * imp * world.outrage_appeal * s.hostility,
+        social_proof: LIKE_IMPULSE * imp * s.social_proof,
+        reflective: LIKE_REFLECTION * (1.0 - imp) * s.reflective,
+        multiplier: if s.same_group {
+            1.0
+        } else {
+            1.0 - world.outgroup_like_cut * post.outrage
+        },
     }
 }
 
@@ -208,7 +270,7 @@ fn share_probability(
         + SHARE_INTEREST * interest
         + SHARE_IMPULSE * imp * (post.arousal + hostility)
         + reflective);
-    let noted = if post.noted { 0.5 } else { 1.0 };
+    let noted = if rel.noted { 0.5 } else { 1.0 };
     base * (1.0 - design.share_friction * imp) * noted
 }
 
@@ -307,5 +369,78 @@ mod tests {
             (r(&base, &info) - r(&blind, &info) - base.reflective_quality_weight * quality).abs()
                 < 1e-5
         );
+    }
+
+    /// The like decomposition: its terms sum to the logit of `P_like`, and
+    /// the out-group multiplier turns the logistic into `P_like`, for both
+    /// groups, with like counts visible and hidden.
+    #[test]
+    fn the_like_terms_sum_to_the_logit() {
+        let mut config = Config::default();
+        let mut rng = rng::stream_rng(9, 0, 97, Stream::Population);
+        let mut viewer = draw_traits(&mut rng, Archetype::Partisan);
+        viewer.group = Group::A;
+        viewer.interests = [1.0 / 6.0; 6];
+        let mut checked = 0;
+        for visible in [true, false] {
+            config.design.like_counts_visible = visible;
+            let env = BehaviourEnv {
+                design: &config.design,
+                world: &config.world,
+            };
+            for style in Style::ALL {
+                for group in [Group::A, Group::B] {
+                    let mut post = post_of(style, group);
+                    post.likes_a = 40;
+                    let s = signals(&viewer, &post, Relation::default(), env);
+                    let t = like_terms(&viewer, &post, &s, &config.world);
+                    let p = sig(t.logit()) * t.multiplier;
+                    assert!((p - s.p_like).abs() < 1e-6, "{style:?} {group:?}");
+                    let appeal = t.arousal + t.hostility + t.social_proof;
+                    let expected = LIKE_IMPULSE * viewer.impulsivity * s.appeal;
+                    assert!((appeal - expected).abs() < 1e-5);
+                    assert_eq!(
+                        t.multiplier == 1.0,
+                        group == Group::A || post.outrage == 0.0
+                    );
+                    assert_eq!(t.social_proof == 0.0, !visible);
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 24);
+    }
+
+    /// The out-group cut on likes is a world assumption; at its default of
+    /// 0.8 it is the constant it replaced, bit for bit.
+    #[test]
+    fn the_outgroup_like_cut_is_a_world_assumption() {
+        let config = Config::default();
+        assert_eq!(config.world.outgroup_like_cut, 0.8);
+        let mut rng = rng::stream_rng(9, 0, 96, Stream::Population);
+        let mut viewer = draw_traits(&mut rng, Archetype::Partisan);
+        viewer.group = Group::A;
+        viewer.interests = [1.0 / 6.0; 6];
+        let post = post_of(Style::Outrage, Group::B);
+        let p = |cut: f32| {
+            let world = WorldAssumptions {
+                outgroup_like_cut: cut,
+                ..config.world.clone()
+            };
+            let env = BehaviourEnv {
+                design: &config.design,
+                world: &world,
+            };
+            signals(&viewer, &post, Relation::default(), env).p_like
+        };
+        // At a cut of 0 the multiplier is exactly 1, so `p(0.0)` is the
+        // logistic alone; the old code multiplied it by `1 - 0.8 * outrage`.
+        let base = p(0.0);
+        let old_constant: f32 = 0.8;
+        assert_eq!(
+            p(0.8).to_bits(),
+            (base * (1.0 - old_constant * post.outrage)).to_bits()
+        );
+        assert!(p(1.0) < p(0.8) && p(0.8) < p(0.0));
     }
 }

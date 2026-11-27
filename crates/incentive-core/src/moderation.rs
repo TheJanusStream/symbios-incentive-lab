@@ -19,8 +19,14 @@ pub(crate) const K_QUEUE: f32 = 20.0;
 const SEVERITY_WARNING: u8 = 1;
 const SEVERITY_SUSPENSION: u8 = 2;
 const SEVERITY_BAN: u8 = 4;
-/// Impressions a misleading post needs before raters notice it.
-const NOTE_MIN_IMPRESSIONS: u32 = 50;
+/// Chance, before the partisan factor, that a false post gets a community
+/// note (docs/model.md, 6.8): set so that the share of false posts noted
+/// matches the daily rule it replaced (lab #34, 13.2).
+pub(crate) const NOTE_CHANCE: f32 = 0.7;
+/// Median hours from a post's creation to the display of its note, and the
+/// log-scale spread of the lognormal delay (docs/model.md, 6.8 and 13.2).
+pub(crate) const NOTE_DELAY_MEDIAN_HOURS: f32 = 16.0;
+pub(crate) const NOTE_DELAY_SIGMA: f32 = 0.92;
 /// Re-entry chance factor of Trolls and of everyone else.
 const TROLL_REENTRY: f32 = 0.5;
 const OTHER_REENTRY: f32 = 0.05;
@@ -182,24 +188,52 @@ pub(crate) fn deliver_harassment(world: &mut World, ctx: &DayCtx, first_new: u32
     }
 }
 
-/// Phase 8: misleading posts with enough impressions may get a note; partisan
-/// posts are harder to note because raters from both groups must agree.
+/// The chance that a false post gets a community note: [`NOTE_CHANCE`]
+/// times the partisan factor `1 - 0.6 * outrage`, since a note needs raters
+/// from both groups to agree (docs/model.md, 6.8).
+pub(crate) fn note_chance(outrage: f32) -> f32 {
+    NOTE_CHANCE * (1.0 - 0.6 * outrage)
+}
+
+/// A note's delay in hours from a standard normal draw `z`: the lognormal
+/// of docs/model.md, 6.8, `exp(ln(median) + sigma * z)`.
+pub(crate) fn note_delay(z: f32) -> f32 {
+    (NOTE_DELAY_MEDIAN_HOURS.ln() + NOTE_DELAY_SIGMA * z).exp()
+}
+
+/// Decides, when it is written, whether each new false post gets a
+/// community note and when the note will be displayed (docs/model.md, 6.8).
+/// The draws come from the post's own note-timing stream, keyed on its
+/// author and ordinal, once per post: one uniform for the chance and, for a
+/// post that gets a note, one normal for its delay. Without community notes
+/// nothing is drawn.
+pub(crate) fn decide_notes(world: &mut World, ctx: &DayCtx, first_new: u32) {
+    if !ctx.config.design.community_notes {
+        return;
+    }
+    let seed = ctx.config.run.seed;
+    for post in world.posts.iter_mut().filter(|p| p.id >= first_new) {
+        if !post.is_misinformation() {
+            continue;
+        }
+        let mut rng = rng::stream_rng(seed, 0, post.draw_key(), Stream::NoteTiming);
+        if rng::chance(&mut rng, note_chance(post.outrage)) {
+            post.note_delay = Some(note_delay(rng::normal(&mut rng, 1.0)));
+        }
+    }
+}
+
+/// Phase 8: a post whose note's display time has come by the end of the day,
+/// while it had at least 50 impressions, counts as noted from then on, even
+/// if no impression carried the note yet (docs/model.md, 6.8). Impressions
+/// carry the note by their own time of day (6.8); this draws nothing.
 pub(crate) fn community_notes(world: &mut World, ctx: &DayCtx) {
     if !ctx.config.design.community_notes {
         return;
     }
     for post in world.posts.iter_mut() {
-        if post.noted
-            || post.removed
-            || !post.is_misinformation()
-            || post.impressions < NOTE_MIN_IMPRESSIONS
-        {
-            continue;
-        }
-        let mut rng = ctx.rng(post.draw_key(), Stream::Notes);
-        if rng::chance(&mut rng, 0.3 * (1.0 - 0.6 * post.outrage)) {
+        if !post.noted && post.note_shown(ctx.day, 24.0) {
             post.noted = true;
-            post.shares_at_note = post.human_shares();
             world.tally.notes += 1;
         }
     }
@@ -338,7 +372,7 @@ pub(crate) fn reentry_factor(is_troll: bool) -> f32 {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::content::{AuthorProfile, Group, Style, generate_post};
+    use crate::content::{AuthorProfile, Group, NOTE_MIN_IMPRESSIONS, Style, generate_post};
     use crate::init;
 
     fn small_config() -> Config {
@@ -766,31 +800,168 @@ mod tests {
         assert_eq!(scores(&config), kept);
     }
 
+    /// A post with truth 0.2, `impressions` impressions and a note due
+    /// `delay` hours after its creation on day 0.
+    fn noted_post(world: &mut World, impressions: u32, delay: f32) -> u32 {
+        let author = first_user(world);
+        let id = add_post(world, author, 0.1, 0.0);
+        if let Some(p) = world.posts.get_mut(id) {
+            p.truth = 0.2;
+            p.impressions = impressions;
+            p.note_delay = Some(delay);
+        }
+        id
+    }
+
     #[test]
-    fn a_note_keeps_the_human_shares_made_before_it() {
+    fn a_note_shows_from_its_display_time_on() {
+        let config = small_config();
+        let mut world = init::build_world(&config);
+        let id = noted_post(&mut world, 60, 30.0);
+        let post = world.posts.get(id).cloned().expect("post");
+        assert!(!post.note_shown(0, 23.9));
+        assert!(!post.note_shown(1, 5.99));
+        assert!(post.note_shown(1, 6.0));
+        assert!(post.note_shown(2, 0.0));
+        assert_eq!(post.age_hours(1, 6.0), 30.0);
+        let mut removed = post.clone();
+        removed.removed = true;
+        assert!(!removed.note_shown(2, 0.0));
+        let mut none = post;
+        none.note_delay = None;
+        assert!(!none.note_shown(2, 23.0));
+    }
+
+    #[test]
+    fn a_note_needs_fifty_impressions_at_display_time() {
         let mut config = small_config();
         config.design.community_notes = true;
         let mut world = init::build_world(&config);
-        let author = first_user(&world);
-        let id = add_post(&mut world, author, 0.1, 0.0);
+        let id = noted_post(&mut world, NOTE_MIN_IMPRESSIONS - 1, 2.0);
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        community_notes(&mut world, &ctx);
+        let post = world.posts.get(id).expect("post");
+        assert!(!post.note_shown(0, 12.0) && !post.noted);
         if let Some(p) = world.posts.get_mut(id) {
-            p.truth = 0.2;
-            p.impressions = 500;
-            p.shares = 9;
-            p.bot_shares = 3;
+            p.impressions = NOTE_MIN_IMPRESSIONS;
         }
-        let mut day = 0;
-        while !world.posts.get(id).is_some_and(|p| p.noted) {
-            community_notes(
-                &mut world,
-                &DayCtx {
-                    config: &config,
-                    day,
-                },
-            );
-            day += 1;
-            assert!(day < 200, "never noted");
+        let post = world.posts.get(id).expect("post");
+        assert!(post.note_shown(0, 2.0) && !post.note_shown(0, 1.9));
+        community_notes(&mut world, &ctx);
+        assert!(world.posts.get(id).is_some_and(|p| p.noted));
+        assert_eq!(world.tally.notes, 1);
+        community_notes(&mut world, &ctx);
+        assert_eq!(world.tally.notes, 1, "a post is noted once");
+    }
+
+    #[test]
+    fn the_end_of_day_marks_a_note_due_that_day_and_draws_nothing() {
+        let mut config = small_config();
+        config.design.community_notes = true;
+        let mut world = init::build_world(&config);
+        let late = noted_post(&mut world, 80, 40.0);
+        let ctx = |day| DayCtx {
+            config: &config,
+            day,
+        };
+        community_notes(&mut world, &ctx(0));
+        assert!(world.posts.get(late).is_some_and(|p| !p.noted));
+        community_notes(&mut world, &ctx(1));
+        let post = world.posts.get(late).expect("post");
+        assert!(post.noted);
+        assert_eq!(post.note_delay, Some(40.0), "the delay is drawn once");
+    }
+
+    /// A small world on day 0, with community notes on or off, after
+    /// everyone wrote their posts and the day's note decisions, with its
+    /// configuration.
+    fn decided(notes: bool) -> (World, Config) {
+        let mut config = small_config();
+        config.run.population_size = 400;
+        config.design.community_notes = notes;
+        let mut world = init::build_world(&config);
+        for person in &mut world.people {
+            person.state.today.opened = person.state.is_user;
         }
-        assert_eq!(world.posts.get(id).map(|p| p.shares_at_note), Some(6));
+        let ctx = DayCtx {
+            config: &config,
+            day: 0,
+        };
+        let first = world.posts.next_id();
+        crate::posting::write_posts(&mut world, &ctx);
+        // Every other post is made false, so the rule has enough to decide.
+        for p in world.posts.iter_mut().filter(|p| p.id % 2 == 1) {
+            p.truth = 0.3;
+        }
+        decide_notes(&mut world, &ctx, first);
+        (world, config)
+    }
+
+    #[test]
+    fn notes_are_decided_once_per_false_post_and_never_without_notes() {
+        let (off, _) = decided(false);
+        assert!(off.posts.iter().all(|p| p.note_delay.is_none()));
+        let (mut world, config) = decided(true);
+        let on: Vec<Post> = world.posts.iter().cloned().collect();
+        assert_eq!(off.posts.len(), on.len());
+        // Same posts either way: the decision draws on its own stream.
+        for (a, b) in off.posts.iter().zip(&on) {
+            assert_eq!((a.style, a.truth, a.quality), (b.style, b.truth, b.quality));
+        }
+        assert!(
+            on.iter()
+                .all(|p| p.is_misinformation() || p.note_delay.is_none())
+        );
+        let false_posts: Vec<&Post> = on.iter().filter(|p| p.is_misinformation()).collect();
+        let expected: f32 = false_posts.iter().map(|p| note_chance(p.outrage)).sum();
+        let got = false_posts
+            .iter()
+            .filter(|p| p.note_delay.is_some())
+            .count() as f32;
+        let sd = expected.sqrt().max(1.0);
+        assert!(false_posts.len() > 30, "{}", false_posts.len());
+        assert!(
+            (got - expected).abs() < 4.0 * sd,
+            "{got} against {expected}"
+        );
+        // Later days decide only for their own new posts, and the end of a
+        // day draws nothing: every delay stays as drawn.
+        let before: Vec<Option<f32>> = on.iter().map(|p| p.note_delay).collect();
+        for day in 1..3 {
+            let ctx = DayCtx {
+                config: &config,
+                day,
+            };
+            let next = world.posts.next_id();
+            decide_notes(&mut world, &ctx, next);
+            community_notes(&mut world, &ctx);
+        }
+        let after: Vec<Option<f32>> = world.posts.iter().map(|p| p.note_delay).collect();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn note_delays_follow_the_fitted_lognormal() {
+        assert!((note_delay(0.0) - NOTE_DELAY_MEDIAN_HOURS).abs() < 1e-4);
+        let mut rng = rng::stream_rng(9, 0, 0, Stream::NoteTiming);
+        let n = 40_000;
+        let delays: Vec<f32> = (0..n)
+            .map(|_| note_delay(rng::normal(&mut rng, 1.0)))
+            .collect();
+        let within = |h: f32| delays.iter().filter(|&&d| d <= h).count() as f32 / n as f32;
+        // The fit's quantiles (docs/model.md, 13.2): mu = ln 16, sigma 0.92.
+        for (hours, share) in [(4.0, 0.066), (6.0, 0.143), (16.0, 0.5), (36.0, 0.811)] {
+            let got = within(hours);
+            assert!((got - share).abs() < 0.01, "{hours} h: {got}");
+        }
+    }
+
+    #[test]
+    fn the_partisan_factor_scales_the_note_chance() {
+        assert!((note_chance(0.0) - NOTE_CHANCE).abs() < 1e-6);
+        assert!((note_chance(1.0) - 0.4 * NOTE_CHANCE).abs() < 1e-6);
     }
 }

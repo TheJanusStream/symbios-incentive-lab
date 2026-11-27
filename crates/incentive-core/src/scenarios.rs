@@ -427,18 +427,22 @@ const SCENARIOS: [Scenario; 5] = [
     Scenario {
         id: "misinformation-surge",
         title: "Misinformation surge",
-        briefing: "Bot farms flood the platform with clickbait, and people are more credulous than usual. \
-            Protect the people who are not even on your platform: raise non-users' informedness by at least \
-            0.03 above where it would be, within six months.",
+        briefing: "Bot farms flood the platform with false clickbait, and people are more credulous than \
+            usual. Protect the people who are not even on your platform: raise non-users' informedness by at \
+            least 0.025 above where it would be, within six months.",
         goals: &[Goal {
             metric: MetricId::InformednessNonUsers,
-            comparison: Comparison::AtLeastBaselinePlus(0.03),
-            description: "Non-users' informedness at least the baseline's plus 0.03",
+            comparison: Comparison::AtLeastBaselinePlus(0.025),
+            description: "Non-users' informedness at least the baseline's plus 0.025",
         }],
         setup: |c| {
             c.run.days = 180;
             c.world.credulity_scale = 1.6;
             c.population.bot_clickbait_share = 0.9;
+            // The farms post falsehoods: their posts' truth 0.25 lower, so
+            // their Clickbait is as false as all Clickbait was before
+            // lab #32 (docs/model.md, 13.5).
+            c.population.bot_truth_shift = -0.25;
         },
         known_solution: &[
             ("design.w_like", "0.5"),

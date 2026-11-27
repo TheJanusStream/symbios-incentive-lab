@@ -1,14 +1,14 @@
 //! Opening the app, the day's sessions and consuming a feed (docs/model.md,
 //! 6.1, 6.6, 7.1, 7.2 and 7.6).
 
-use crate::behaviour::{sig, weighted_quality};
+use crate::behaviour::{like_terms, sig, weighted_quality};
 use crate::config::{Config, FeedExperimentKind, WorldAssumptions};
 use crate::content::{Group, Style};
 use crate::inspector::{self, FeedExplanation, Inspector, ItemActions, ServedSession, SessionKind};
 use crate::network::{self, Reshare};
 use crate::ranking::{self, Candidate, FeedCtx, FeedKind, FeedScratch, Trending};
 use crate::rng::{self, Stream, StreamRng};
-use crate::world::{DayCtx, World};
+use crate::world::{DayCtx, World, partisan_band};
 
 /// Informedness lost per believed misinformation item, per unit of falsehood,
 /// and gained per good Informative item, per unit of interest-weighted
@@ -132,6 +132,10 @@ fn daily_item_limit(world: &World, v: usize) -> Option<usize> {
         .then_some(person.traits.time_budget as usize)
 }
 
+/// Hours in a day: a user's sessions get a time of day uniform over them
+/// (docs/model.md, 6.8).
+const HOURS_PER_DAY: f32 = 24.0;
+
 /// Runs every session of the day in ascending individual index. Each opener
 /// gets one ranked feed for the day, long enough for every session; the first
 /// session reads from its top, and each extra session continues down the list
@@ -159,6 +163,10 @@ pub(crate) fn run_sessions(
         let mut length = first + (habitual + notified) as usize * extra;
         if let Some(limit) = daily_limit {
             length = length.min(limit.max(first));
+        }
+        if ctx.config.design.community_notes {
+            let mut clock = ctx.rng(v as u64, Stream::SessionClock);
+            world.people[v].state.today.session_hour = HOURS_PER_DAY * rng::uniform(&mut clock);
         }
         let mut feed_rng = ctx.rng(v as u64, Stream::Feed);
         let feed_ctx = FeedCtx {
@@ -347,6 +355,7 @@ fn record_impression(
         posts,
         accounts,
         tally,
+        truth,
         ..
     } = world;
     let Some(post) = posts.get_mut(c.post) else {
@@ -366,6 +375,12 @@ fn record_impression(
 
     state.today.items += 1;
     state.today.dwell += s.dwell;
+    // An impression that carries the note marks the post noted, if the end
+    // of an earlier day has not already (docs/model.md, 6.8).
+    if c.relation.noted && !post.noted {
+        post.noted = true;
+        tally.notes += 1;
+    }
     post.impressions += 1;
     post.impressions_today += 1;
     post.dwell += s.dwell;
@@ -378,8 +393,13 @@ fn record_impression(
     tally.toxic_impressions += u32::from(post.is_toxic());
     tally.outrage_impressions += u32::from(post.outrage > 0.5);
     tally.misinformation_impressions += u32::from(post.is_misinformation());
+    if post.is_misinformation() {
+        tally.misinformation_by_style[style] += 1;
+        tally.misinformation_bot_impressions += u32::from(post.author_is_bot);
+    }
     state.today.toxic_items += u32::from(post.is_toxic());
     state.today.misinformation_items += u32::from(post.is_misinformation());
+    state.today.hostile_items += u32::from(post.style.is_hostile());
     state.today.same_group_items += u32::from(s.same_group);
     if let Some(threshold) = flag_threshold(ctx) {
         state.today.flagged_items +=
@@ -389,6 +409,23 @@ fn record_impression(
         tally.in_network_impressions += 1;
         tally.in_network_outgroup_impressions += u32::from(!s.same_group);
     }
+    // Truth-side measurement only (docs/model.md, 9.2): reach by the
+    // author's partisanship, impressions by a feed experiment's treated
+    // group, and the like probability's terms. Nothing reads them back.
+    if let Some(band) = partisan_band(&truth.partisanship_rank, author) {
+        state.today.partisan_half_items += u32::from(band.half);
+        state.today.extreme_items += u32::from(band.extreme);
+        state.today.middle_items += u32::from(band.middle);
+    }
+    if truth
+        .experiment
+        .as_ref()
+        .is_some_and(|e| e.feed_assigned(v))
+    {
+        post.assigned_impressions += 1;
+    }
+    let terms = like_terms(traits, post, s, assume);
+    tally.like_terms[usize::from(!s.same_group)].add(&terms, s.p_like);
 
     let liked = rng::chance(rng, s.p_like);
     actions.liked = liked;
@@ -468,7 +505,10 @@ fn record_impression(
             state
                 .today
                 .misinformation_shares
-                .push((post.truth, post.noted));
+                .push((post.truth, c.relation.noted));
+        }
+        if post.note_delay.is_some() && !c.relation.noted {
+            post.shares_at_note += 1;
         }
     }
     // The draw comes first, so a repeat report changes no later draw.
@@ -495,7 +535,7 @@ fn record_impression(
         tally.regret_items += 1;
     }
     if post.is_misinformation() {
-        let noted = if post.noted { 0.3 } else { 1.0 };
+        let noted = if c.relation.noted { 0.3 } else { 1.0 };
         if rng::chance(rng, traits.credulity * assume.credulity_scale * noted) {
             state.informedness =
                 (state.informedness - MISBELIEF_LOSS * (0.5 - post.truth)).clamp(0.0, 1.0);
@@ -785,6 +825,79 @@ mod tests {
         let liked = contact_change(0.9, true, 0.8, &assume);
         assert!((liked - (0.5 * contact - 0.8 * contact)).abs() < 1e-9);
         assert!(liked < 0.0);
+    }
+
+    /// The prevalence target of lab #32 (docs/model.md, 4.1 and 13.1): the
+    /// misinformation share is the misinformation impressions over all
+    /// impressions, and its diagnostic counts split it by style and pick
+    /// out the bots' part.
+    #[test]
+    fn the_misinformation_share_is_false_impressions_over_all() {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        let mut sim = Simulation::new(config).expect("valid");
+        let mut seen = 0;
+        for _ in 0..6 {
+            let m = sim.step().expect("a day");
+            let t = &sim.world().tally;
+            let by_style: u32 = t.misinformation_by_style.iter().sum();
+            assert_eq!(by_style, t.misinformation_impressions);
+            assert!(t.misinformation_bot_impressions <= t.misinformation_impressions);
+            let counted: f32 = Style::ALL
+                .iter()
+                .map(|&s| m.get(MetricId::misinformation_count(s)))
+                .sum();
+            assert_eq!(counted, t.misinformation_impressions as f32);
+            let share = t.misinformation_impressions as f32 / t.impressions as f32;
+            assert!((m.get(MetricId::MisinformationShare) - share).abs() < 1e-6);
+            assert_eq!(
+                m.get(MetricId::MisinformationCountBots),
+                t.misinformation_bot_impressions as f32
+            );
+            seen += t.misinformation_impressions;
+        }
+        assert!(seen > 0);
+    }
+
+    /// Each user who opens the app gets a time of day for the day's
+    /// sessions, uniform over 24 hours from the session-clock stream keyed on
+    /// the person and the day; without community notes nobody does.
+    #[test]
+    fn session_times_are_drawn_per_person_and_day_with_notes_only() {
+        let run = |notes: bool| {
+            let mut config = Config::default();
+            config.run.population_size = 300;
+            config.design.community_notes = notes;
+            let mut sim = Simulation::new(config.clone()).expect("valid");
+            let mut hours = Vec::new();
+            for day in 0..3 {
+                sim.step();
+                for (v, p) in sim.world().people.iter().enumerate() {
+                    let h = p.state.today.session_hour;
+                    if !notes || !p.state.today.opened {
+                        assert_eq!(h, 0.0);
+                        continue;
+                    }
+                    let mut clock = crate::rng::stream_rng(
+                        config.run.seed,
+                        day,
+                        v as u64,
+                        Stream::SessionClock,
+                    );
+                    assert_eq!(h, HOURS_PER_DAY * rng::uniform(&mut clock));
+                    assert!((0.0..HOURS_PER_DAY).contains(&h));
+                    hours.push(h);
+                }
+            }
+            hours
+        };
+        assert!(run(false).is_empty());
+        let hours = run(true);
+        assert!(hours.len() > 200, "{}", hours.len());
+        let mean = hours.iter().sum::<f32>() / hours.len() as f32;
+        assert!((mean - 12.0).abs() < 1.0, "{mean}");
+        let morning = hours.iter().filter(|&&h| h < 6.0).count() as f32 / hours.len() as f32;
+        assert!((morning - 0.25).abs() < 0.06, "{morning}");
     }
 
     #[test]

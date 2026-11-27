@@ -167,6 +167,79 @@ impl TruthState {
     }
 }
 
+/// Where a human author stands by the `partisanship` trait, ranked over the
+/// whole population (docs/model.md, 9.2): in the more partisan half, the
+/// most partisan tenth, the middle fifth (from 40% to 60%).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PartisanBand {
+    pub half: bool,
+    pub extreme: bool,
+    pub middle: bool,
+}
+
+/// The partisanship band of `author`, `None` for an author outside the
+/// population (a bot).
+pub(crate) fn partisan_band(partisanship_rank: &[u32], author: usize) -> Option<PartisanBand> {
+    let &rank = partisanship_rank.get(author)?;
+    let quantile = (f64::from(rank) + 0.5) / partisanship_rank.len() as f64;
+    Some(PartisanBand {
+        half: quantile >= 0.5,
+        extreme: quantile >= 0.9,
+        middle: (0.4..0.6).contains(&quantile),
+    })
+}
+
+/// Sums of the like probability's terms over one group of impressions
+/// (docs/model.md, 9.2): the impressions, the terms of the logit, the
+/// out-group multiplier and `P_like` itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LikeTermSums {
+    pub impressions: u32,
+    pub bias: f64,
+    pub interest: f64,
+    pub arousal: f64,
+    pub hostility: f64,
+    pub social_proof: f64,
+    pub reflective: f64,
+    pub multiplier: f64,
+    pub p_like: f64,
+}
+
+impl LikeTermSums {
+    /// Adds one impression's terms and like probability.
+    pub(crate) fn add(&mut self, t: &crate::behaviour::LikeTerms, p_like: f32) {
+        self.impressions += 1;
+        self.bias += f64::from(t.bias);
+        self.interest += f64::from(t.interest);
+        self.arousal += f64::from(t.arousal);
+        self.hostility += f64::from(t.hostility);
+        self.social_proof += f64::from(t.social_proof);
+        self.reflective += f64::from(t.reflective);
+        self.multiplier += f64::from(t.multiplier);
+        self.p_like += f64::from(p_like);
+    }
+}
+
+/// Today's diagnostics of how exposure shapes posting (docs/model.md, 7.5
+/// and 9.2). The causal part sums, over the people who wrote at least one
+/// post today, the chance that a post's style is hostile after a fully
+/// hostile previous-day feed (`e = 1`) and after a feed without a hostile
+/// item (`e = 0`), from each author's own style values; the observational
+/// part counts human posts, and the hostile ones among them, by whether the
+/// author's previous-day feed held a hostile item. Measurement only.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ContagionTally {
+    pub authors: u32,
+    pub chance_exposed: f64,
+    pub chance_unexposed: f64,
+    /// Summed per-author ratio of the two chances.
+    pub ratio_sum: f64,
+    pub exposed_posts: u32,
+    pub exposed_hostile: u32,
+    pub unexposed_posts: u32,
+    pub unexposed_hostile: u32,
+}
+
 /// Running totals of the current day, turned into metrics at its end.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DayTally {
@@ -262,10 +335,32 @@ pub(crate) struct DayTally {
     pub extreme_impressions: u64,
     pub middle_posts: u32,
     pub middle_impressions: u64,
+    /// The same, over the posts ending today that were never removed or
+    /// demoted (`partisan_half_reach_kept`, `extreme_reach_ratio_kept`).
+    pub partisan_half_kept_posts: u32,
+    pub partisan_half_kept_impressions: u64,
+    pub extreme_kept_posts: u32,
+    pub extreme_kept_impressions: u64,
+    pub middle_kept_posts: u32,
+    pub middle_kept_impressions: u64,
+    /// The like probability's terms over today's human impressions, by
+    /// same-group (`[0]`) and out-group (`[1]`) viewers (`like_*`).
+    pub like_terms: [LikeTermSums; 2],
     /// Human shares of the noted posts ending today, all of them and those
     /// made before the note (`noted_shares_before_note`).
     pub noted_shares: u32,
     pub noted_shares_before_note: u32,
+    /// Misinformation impressions today by the style of the post, bots'
+    /// posts included, and those of bot posts alone (docs/model.md, 9.2).
+    pub misinformation_by_style: [u32; STYLE_COUNT],
+    pub misinformation_bot_impressions: u32,
+    /// Posts with truth below 0.5 whose life ended today, bots' included,
+    /// and of them those that got a community note (docs/model.md, 6.8).
+    pub false_posts_ended: u32,
+    pub noted_false_posts_ended: u32,
+    /// The exposure diagnostics of today's style choices (docs/model.md,
+    /// 7.5).
+    pub contagion: ContagionTally,
     pub top_toxic_share: f32,
     pub top_truthful_share: f32,
 }

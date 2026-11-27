@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// The default subscription price, which is also the reference price of
 /// uptake: at it, the price factor of the subscription decision is 1
 /// (docs/model.md, 8.3).
-pub(crate) const REFERENCE_SUBSCRIPTION_PRICE: f32 = 1.87;
+pub(crate) const REFERENCE_SUBSCRIPTION_PRICE: f32 = 1.91;
 
 /// How bot farms run their accounts (docs/model.md, 3.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +146,10 @@ pub struct WorldAssumptions {
     /// Share of the reflective cost of outrage that its author's own group
     /// feels; the out-group feels all of it.
     pub in_group_outrage_cost: f32,
+    /// How much a post's outrage cuts the out-group's chance of liking it:
+    /// `P_like` of an out-group viewer is multiplied by
+    /// `1 - outgroup_like_cut * outrage` (docs/model.md, 7.1).
+    pub outgroup_like_cut: f32,
     /// Reflective cost of a Clickbait post.
     pub clickbait_penalty: f32,
     /// Spread of the styles' base quality around their mean: 1 keeps the
@@ -163,6 +167,12 @@ pub struct WorldAssumptions {
     /// Polarisation a strongly partisan viewer gains from seeing a calm
     /// out-group post, as a share of `contact_rate`.
     pub polarisation_backfire: f32,
+    /// How much what an author saw the day before shapes what they write:
+    /// `exposure_contagion * e` is added to the values of the hostile styles
+    /// (Outrage, Attack) in the author's style choice, where `e` is the
+    /// hostile share of the author's previous-day impressions, 0 without
+    /// any (docs/model.md, 7.5).
+    pub exposure_contagion: f32,
 }
 
 impl Default for WorldAssumptions {
@@ -202,10 +212,10 @@ impl Default for WorldAssumptions {
             ad_rate: 0.001,
             subscription_price: REFERENCE_SUBSCRIPTION_PRICE,
             subscription_hurdle: 0.5,
-            subscription_uptake: 0.0585,
+            subscription_uptake: 0.0695,
             subscription_elasticity: 1.0,
             ad_annoyance: 0.02,
-            living_income: 0.015,
+            living_income: 0.02,
             base_session_items: 20.0,
             recheck_rate: 0.0,
             notification_pull: 0.0,
@@ -216,6 +226,7 @@ impl Default for WorldAssumptions {
             polish_cost: 0.03,
             reflective_quality_weight: 0.8,
             in_group_outrage_cost: 0.8,
+            outgroup_like_cut: 0.8,
             clickbait_penalty: 0.3,
             style_quality_gap: 1.0,
             survey_impulsive_weight: 0.3,
@@ -223,6 +234,7 @@ impl Default for WorldAssumptions {
             bot_strategy: BotStrategy::Adaptive,
             bot_brigading: 1.0,
             polarisation_backfire: 0.0,
+            exposure_contagion: 0.28,
         }
     }
 }

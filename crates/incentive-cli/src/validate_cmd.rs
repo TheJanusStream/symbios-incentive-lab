@@ -13,7 +13,7 @@ use incentive_core::{
 use serde_json::json;
 
 use crate::error::CliError;
-use crate::facts_cmd::{interval_text, tally, verdict};
+use crate::facts_cmd::{RATIO_CONVENTION, interval_text, scale_text, tally, verdict};
 use crate::report::{self, table};
 use crate::runs;
 
@@ -87,6 +87,7 @@ pub fn run_validate(
     let mut doc = Vec::new();
     let mut judged = Vec::new();
     let mut doses = Vec::new();
+    let mut other_lines = Vec::new();
     for (v, pair) in selected.iter().zip(&starts) {
         let hi = histories(pair[0], v.fact);
         let he = histories(pair[1], v.engagement);
@@ -94,6 +95,11 @@ pub fn run_validate(
         let er = v.engagement.evaluate(&he);
         let raws = v.raw_changes(&hi);
         let er_raws = v.raw_changes(&he);
+        let others = v.others(&hi);
+        let er_others = v.others(&he);
+        for (o, e) in others.iter().zip(&er_others) {
+            other_lines.push(other_line(v.id, o, e));
+        }
         let mut checks = Vec::new();
         for (((r, e), raw), er_raw) in results.iter().zip(&er).zip(&raws).zip(&er_raws) {
             rows.push(vec![
@@ -105,11 +111,12 @@ pub fn run_validate(
                 r.bound.text(),
                 verdict(r.verdict, r.known_limit),
                 raw_text(raw),
+                scale_text(r),
                 format!("{:.4}", e.effect),
             ]);
             let _ = writeln!(
                 md_rows,
-                "| {} | {} | {:.4} | {:.4} | {} | {} | {} | {} | {:.4} ({}) |",
+                "| {} | {} | {:.4} | {:.4} | {} | {} | {} | {} | {} | {:.4} ({}) |",
                 v.id,
                 r.label,
                 r.effect,
@@ -118,6 +125,7 @@ pub fn run_validate(
                 r.bound.text(),
                 verdict(r.verdict, r.known_limit),
                 raw_text(raw),
+                scale_text(r),
                 e.effect,
                 interval_text(e, 4)
             );
@@ -145,6 +153,11 @@ pub fn run_validate(
             })
         });
         judged.extend(results.iter().cloned());
+        let others: Vec<_> = others
+            .iter()
+            .zip(&er_others)
+            .map(|(o, e)| json!({"label": o.label, "integrity": o, "engagement_ranking": e}))
+            .collect();
         doc.push(json!({
             "id": v.id,
             "title": v.fact.title,
@@ -153,6 +166,7 @@ pub fn run_validate(
             "design": v.design,
             "dose": dose,
             "checks": checks,
+            "other_measures": others,
         }));
     }
     out!(
@@ -167,6 +181,7 @@ pub fn run_validate(
                 "band",
                 "verdict",
                 "raw change",
+                "SD used",
                 "eng. ranking"
             ],
             &rows
@@ -178,6 +193,9 @@ pub fn run_validate(
     for line in &dose_lines {
         outln!("{line}");
     }
+    for line in &other_lines {
+        outln!("{line}");
+    }
 
     let dir = out.unwrap_or_else(|| report::default_out("validation"));
     report::ensure_dir(&dir)?;
@@ -186,6 +204,7 @@ pub fn run_validate(
         &json!({
             "run": {"seeds": run.seeds, "population": population, "days": days, "set": set, "only": only},
             "design": "integrity preset, judged; engagement ranking, a sensitivity",
+            "ratio_convention": RATIO_CONVENTION,
             "checks": doc,
         }),
     )?;
@@ -200,6 +219,7 @@ pub fn run_validate(
             &md_rows,
             &closing,
             &dose_lines,
+            &other_lines,
         ),
     )?;
     outln!("wrote {}", dir.display());
@@ -232,13 +252,25 @@ fn raw_text(raw: &RawChange) -> String {
     format!("{:.4} (sd {:.4})", raw.effect, raw.spread)
 }
 
-/// The closing line: the facts' tally, with the verdicts' meaning.
+/// The closing line: the facts' tally, with the verdicts' meaning and the
+/// ratio convention.
 fn closing_text(judged: &[CheckResult]) -> String {
     format!(
         "{} The verdict judges the 95% interval of the per-seed effect under the integrity preset: PASS \
          inside the band, FAIL wholly outside, UNDECIDED across it. Known limits are reported, not required. \
-         The engagement ranking's effect is a sensitivity, not judged.",
+         The engagement ranking's effect is a sensitivity, not judged. {RATIO_CONVENTION} \
+         \"SD used\" is the standard deviation an effect in SDs divides by: the participants' spread at \
+         the experiment's start, the mean over the seeds.",
         tally(judged)
+    )
+}
+
+/// One line per other measure of a check's quantity: reported, not judged.
+fn other_line(id: &str, o: &RawChange, e: &RawChange) -> String {
+    format!(
+        "Other measure of {id} (not judged): {}: {:.4} (95% interval of the per-seed values {:.4} to {:.4}) \
+         under integrity, {:.4} under the engagement ranking.",
+        o.label, o.effect, o.interval.low, o.interval.high, e.effect
     )
 }
 
@@ -268,6 +300,7 @@ fn markdown(
     rows: &str,
     closing: &str,
     dose_lines: &[String],
+    other_lines: &[String],
 ) -> String {
     let mut md = String::from("# Out-of-sample validation\n\n");
     let intro = format!(
@@ -296,14 +329,21 @@ fn markdown(
     );
     let _ = writeln!(md, "{}\n", wrap(intro.trim_end(), "", ""));
     md.push_str(
-        "| id | check | effect | sd | 95% interval | band | verdict | raw change | engagement ranking |\n\
-         | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+        "| id | check | effect | sd | 95% interval | band | verdict | raw change | SD used | engagement ranking |\n\
+         | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
     );
     md.push_str(rows);
     let _ = writeln!(md, "\n{}\n", wrap(closing, "", ""));
     if !dose_lines.is_empty() {
         md.push_str("## Doses\n\n");
         for line in dose_lines {
+            let _ = writeln!(md, "{}", wrap(line, "- ", "  "));
+        }
+        md.push('\n');
+    }
+    if !other_lines.is_empty() {
+        md.push_str("## Other measures, not judged\n\n");
+        for line in other_lines {
             let _ = writeln!(md, "{}", wrap(line, "- ", "  "));
         }
         md.push('\n');
@@ -376,6 +416,35 @@ mod tests {
             wrapped.split_whitespace().filter(|w| *w != "-").count(),
             text.split_whitespace().count()
         );
+    }
+
+    /// The SD an effect in SDs divides by is printed beside it, `-` for
+    /// other effects, and the closing text states the ratio convention.
+    #[test]
+    fn the_sd_used_and_the_ratio_convention_are_printed() {
+        use incentive_core::{Bound, MeanInterval, Verdict};
+        let result = |scale| CheckResult {
+            label: "test",
+            effect: 0.1,
+            spread: 0.01,
+            threshold: 0.0,
+            bound: Bound::Between(0.0, 1.0),
+            interval: MeanInterval::of([0.09f32, 0.1, 0.11].into_iter()),
+            passed: true,
+            verdict: Verdict::Pass,
+            known_limit: false,
+            scale,
+        };
+        assert_eq!(scale_text(&result(Some(0.08123))), "0.0812");
+        assert_eq!(scale_text(&result(None)), "-");
+        let closing = closing_text(&[result(Some(0.08))]);
+        assert!(closing.contains(RATIO_CONVENTION));
+        assert!(closing.contains("ratio of seed means"));
+        assert!(closing.contains("SD used"));
+        let json = serde_json::to_value(result(Some(0.08))).unwrap_or_default();
+        assert!(json.get("scale").is_some());
+        let json = serde_json::to_value(result(None)).unwrap_or_default();
+        assert!(json.get("scale").is_none());
     }
 
     #[test]

@@ -219,6 +219,10 @@ pub enum FeedExperimentKind {
         /// The score penalty, in `[0, 10]`.
         penalty: f32,
     },
+    /// Gives the treated viewers the chronological feed of their in-network
+    /// posts (docs/model.md, 6.2) instead of the feed the design gives them:
+    /// a holdback from ranking on the follow graph the ranked feed built.
+    Chronological,
 }
 
 /// A per-person feed experiment (docs/model.md, 13.2): over the last `days`
@@ -334,6 +338,10 @@ pub struct PopulationSettings {
     pub bot_boosts: u32,
     /// Share of bot posts that are Clickbait; the rest are Outrage.
     pub bot_clickbait_share: f32,
+    /// Added to the truth of every bot post, after its draws, and clamped to
+    /// [0, 1]: below 0 the farms post more falsehoods than their styles'
+    /// profiles give (docs/model.md, 3.5). The default of 0 changes nothing.
+    pub bot_truth_shift: f32,
     /// Posts per bot per day.
     pub bot_posts_per_day: u32,
 }
@@ -345,6 +353,7 @@ impl Default for PopulationSettings {
             bot_share: 0.05,
             bot_boosts: 8,
             bot_clickbait_share: 0.5,
+            bot_truth_shift: 0.0,
             bot_posts_per_day: 1,
         }
     }
@@ -432,7 +441,7 @@ impl Config {
                 FeedExperimentKind::FewerSameGroup { penalty } => {
                     check_float("run.feed_experiment.kind.penalty", penalty, 0.0, 10.0)?;
                 }
-                FeedExperimentKind::NoReshares => {}
+                FeedExperimentKind::NoReshares | FeedExperimentKind::Chronological => {}
             }
         }
         let p = &self.population;
@@ -443,7 +452,8 @@ impl Config {
             p.bot_clickbait_share,
             0.0,
             1.0,
-        )
+        )?;
+        check_float("population.bot_truth_shift", p.bot_truth_shift, -1.0, 1.0)
     }
 
     /// Parses a configuration from JSON; missing fields take their defaults.
@@ -607,6 +617,11 @@ mod tests {
         );
         let text = r#"{"run": {"feed_experiment": {"kind": "no_reshares"}}}"#;
         assert!(Config::from_json(text).is_ok());
+        let text = r#"{"run": {"feed_experiment": {"kind": "chronological"}}}"#;
+        let f = Config::from_json(text)
+            .ok()
+            .and_then(|c| c.run.feed_experiment);
+        assert_eq!(f.map(|f| f.kind), Some(FeedExperimentKind::Chronological));
         let text =
             r#"{"run": {"feed_experiment": {"kind": {"fewer_same_group": {"penalty": 0.3}}}}}"#;
         assert!(Config::from_json(text).is_ok());

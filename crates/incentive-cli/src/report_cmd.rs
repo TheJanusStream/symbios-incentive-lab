@@ -220,8 +220,8 @@ const CHECKING_EFFECTS: &[MetricId] = &[
     MetricId::BotEngagementShare,
     MetricId::RegrettedShare,
 ];
-/// Twice the default subscription price of 1.87 (8.3, 13.2).
-const DOUBLE_PRICE: &[&str] = &["world.subscription_price=3.74"];
+/// Twice the default subscription price of 1.91 (8.3, 13.2).
+const DOUBLE_PRICE: &[&str] = &["world.subscription_price=3.82"];
 const PRICE_EFFECTS: &[MetricId] = &[
     MetricId::SubscriberShare,
     MetricId::AdRevenue,
@@ -663,7 +663,7 @@ const COMPARISONS: &[Named] = &[
         ratio: true,
     },
     Named {
-        label: "The subscription price doubled (`subscription_price` 3.74 against 1.87)",
+        label: "The subscription price doubled (`subscription_price` 3.82 against 1.91)",
         a: PLAIN_ER,
         b: Side {
             preset: ER,

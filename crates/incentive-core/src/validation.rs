@@ -16,10 +16,15 @@
 //!   on the same seed, so the effect is measured on the same people, as fact
 //!   6 measures it. Per-day measures and shares compare as relative changes,
 //!   changes in standard deviations as differences.
+//! - V5 copies Twitter's holdback (lab #33): a random share of the regular
+//!   users reads the chronological feed of their in-network posts for the
+//!   last 90 days, real against placebo on the follow graph the ranked feed
+//!   built, measured on the treated.
 //! - The other checks pair the design with its comparison design (V4 share
-//!   friction 0.3 against 0, V5 against the chronological feed, V9
-//!   `ads_share` 0.5 against 1), or read one run (V6, V7, V8), over the
-//!   summary window of a full-size run, as the headline claims do.
+//!   friction 0.3 against 0, V9 `ads_share` 0.5 against 1), or read one run
+//!   (V6, V7, V8), over the summary window of a full-size run, as the
+//!   headline claims do. V6 and V8 pool their counts over the window
+//!   (`Measure::Pooled`) instead of averaging daily ratios.
 //! - The doses of V1 and V3 are manipulation checks, not outcomes: each was
 //!   calibrated at the default world under the integrity preset, at full
 //!   size on 8 seeds, before any outcome check was read, and is fixed here
@@ -29,6 +34,13 @@
 //!   model's spread of informedness across participants is small, so changes
 //!   in its SDs come out large), the difference of the means behind a
 //!   relative change or a ratio, and the level behind a descriptive ratio.
+//!   An effect in SDs also reports the SD it divides by
+//!   ([`CheckResult::scale`](crate::CheckResult::scale)).
+//! - Some checks carry other measures of the same quantity beside it
+//!   ([`Validation::others`]): reported, never judged.
+//! - Every ratio, relative change and elasticity is a ratio of seed means
+//!   (the mean of one arm over the mean of the other, on paired seeds); its
+//!   95% interval and verdict are of the per-seed values.
 
 use serde::Serialize;
 
@@ -54,6 +66,9 @@ pub const V2_LATER_DAYS: u32 = 28;
 pub const V3_DAYS: u32 = 42;
 /// V10's days, the field's three months (Guess et al. 2023b).
 pub const V10_DAYS: u32 = 90;
+/// V5's days on the chronological feed, the last 90 of the run (lab #33;
+/// Huszar et al. measured their holdback over a span of months).
+pub const V5_DAYS: u32 = 90;
 /// V4's share friction, against 0 (Pennycook et al. 2021: the prompt's dose
 /// does not map, so only the direction is tested).
 pub const V4_FRICTION: f32 = 0.3;
@@ -108,6 +123,7 @@ pub struct Validation {
     /// fixed by the design.
     pub dose: Option<Dose>,
     raws: &'static [Raw],
+    others: &'static [Raw],
 }
 
 /// A dose: the lever value fixed in the battery and the manipulation check
@@ -207,6 +223,26 @@ impl Validation {
             .collect()
     }
 
+    /// Other measures of the checks' quantities, reported beside them and
+    /// never judged (V5's reach without posts later removed or demoted, V6's
+    /// and V8's means of daily ratios, the measure before lab #39), from
+    /// histories indexed `[variant][seed]` (of either design); empty for
+    /// most checks.
+    pub fn others(&self, histories: &[Vec<Vec<DailyMetrics>>]) -> Vec<RawChange> {
+        self.others
+            .iter()
+            .map(|r| {
+                let (effect, spread, interval) = measured(r.measure, r.effect, histories);
+                RawChange {
+                    label: r.label,
+                    effect,
+                    spread,
+                    interval,
+                }
+            })
+            .collect()
+    }
+
     /// The configurations of the judged fact's variants for one seed with
     /// the dose set to `value` instead of [`Dose::value`]: for calibrating
     /// the dose. Without a dose, the variants as they are.
@@ -223,7 +259,7 @@ impl Validation {
                 match &mut f.kind {
                     FeedExperimentKind::FewerSameGroup { penalty } => *penalty = value,
                     FeedExperimentKind::HideFlagged { threshold } => *threshold = value,
-                    FeedExperimentKind::NoReshares => {}
+                    FeedExperimentKind::NoReshares | FeedExperimentKind::Chronological => {}
                 }
             }
         }
@@ -291,10 +327,8 @@ fn v4<const ER: bool, const FRICTION: bool>(c: &mut Config) {
     c.design.share_friction = if FRICTION { V4_FRICTION } else { 0.0 };
 }
 
-/// The chronological feed, as fact 3 sets it: the base design with a
-/// chronological feed, the same arm for both designs under test.
-fn chronological(c: &mut Config) {
-    c.design.chronological = true;
+fn v5<const ER: bool, const PLACEBO: bool>(c: &mut Config) {
+    feed::<ER>(c, FeedExperimentKind::Chronological, V5_DAYS, PLACEBO);
 }
 
 fn v7<const ER: bool>(c: &mut Config) {
@@ -316,6 +350,18 @@ const fn paired(label: &'static str, id: MetricId, effect: Effect, low: f32, hig
     check(label, Measure::Last(id), Judge::Band { effect, low, high })
 }
 
+/// A band check on the paired runs, its effect in standard deviations of
+/// the participants' values at the start, held by `scale`.
+const fn paired_sd(
+    label: &'static str,
+    id: MetricId,
+    scale: MetricId,
+    low: f32,
+    high: f32,
+) -> Check {
+    paired(label, id, DIFF, low, high).with_scale(scale)
+}
+
 const REL: Effect = Effect::Relative { a: 0, b: 1 };
 const DIFF: Effect = Effect::Difference { a: 0, b: 1 };
 const MEAN: Effect = Effect::Mean { a: 0 };
@@ -330,10 +376,10 @@ const fn summary(label: &'static str, id: MetricId, effect: Effect, low: f32, hi
 }
 
 const V1_CHECKS: &[Check] = &[
-    paired(
+    paired_sd(
         "polarisation change of the treated, real minus placebo, in SDs",
         MetricId::FeedExperimentPolarisation,
-        DIFF,
+        MetricId::FeedExperimentPolarisationSd,
         -0.12,
         0.12,
     ),
@@ -361,17 +407,17 @@ const V1_CHECKS: &[Check] = &[
 ];
 
 const V2_CHECKS: &[Check] = &[
-    paired(
+    paired_sd(
         "break group's affective polarisation change, break minus placebo, in SDs",
         MetricId::BreakPolarisation,
-        DIFF,
+        MetricId::BreakPolarisationSd,
         -0.14,
         0.02,
     ),
-    paired(
+    paired_sd(
         "break group's informedness change, break minus placebo, in SDs",
         MetricId::BreakInformedness,
-        DIFF,
+        MetricId::BreakInformednessSd,
         -0.30,
         -0.05,
     ),
@@ -412,6 +458,7 @@ const V3_CHECKS: &[Check] = &[
         },
         known_limit: true,
         neutral: None,
+        scale: None,
     },
 ];
 
@@ -423,45 +470,105 @@ const V4_CHECKS: &[Check] = &[summary(
     0.25,
 )];
 
+/// The ranked arm over the chronological arm: V5's placebo (`1`, kept on
+/// the ranked feed) over its real run (`0`, on the chronological feed).
+const RANKED_OVER_CHRONOLOGICAL: Effect = Effect::Ratio { a: 1, b: 0 };
+
 const V5_CHECKS: &[Check] = &[
-    summary(
-        "reach per post of the more partisan half of authors, ranked / chronological",
-        MetricId::PartisanHalfReach,
-        Effect::Ratio { a: 0, b: 1 },
+    paired(
+        "the treated's daily impressions of the more partisan half of authors, ranked (placebo) / \
+            chronological (real)",
+        MetricId::FeedExperimentPartisanHalfImpressions,
+        RANKED_OVER_CHRONOLOGICAL,
         1.0,
         5.0,
     ),
     check(
-        "amplification of the most partisan tenth over that of the middle fifth",
-        Measure::Summary(MetricId::ExtremeReachRatio),
+        "the treated's impressions of the most partisan tenth over the middle fifth, ranked (placebo) / \
+            chronological (real)",
+        Measure::Last(MetricId::FeedExperimentExtremeMiddleRatio),
         Judge::RatioBelow {
-            a: 0,
-            b: 1,
+            a: 1,
+            b: 0,
             ratio: 1.1,
         },
     ),
 ];
 
-// V6, V7 and V8 read a ratio or a share as a mean of one run, so their
-// neutral value is 1, not the mean's natural 0: equal shares, every share
-// before the note, equal share rates.
+/// A ratio of two pooled ratios over the summary window.
+const fn pooled(num: MetricId, den: MetricId, over_num: MetricId, over_den: MetricId) -> Measure {
+    Measure::Pooled {
+        num,
+        den,
+        over: Some((over_num, over_den)),
+    }
+}
+
+/// A ratio pooled over the summary window.
+const fn pooled_share(num: MetricId, den: MetricId) -> Measure {
+    Measure::Pooled {
+        num,
+        den,
+        over: None,
+    }
+}
+
+/// V6's first measure: the out-group share of in-network impressions over
+/// that of in-network candidates, pooled.
+const V6_RANKING: Measure = pooled(
+    MetricId::InNetworkOutgroupImpressionCount,
+    MetricId::InNetworkImpressionCount,
+    MetricId::InNetworkOutgroupCandidateCount,
+    MetricId::InNetworkCandidateCount,
+);
+/// V6's second: the out-group share of likes on in-network impressions over
+/// that of in-network impressions, pooled.
+const V6_LIKES: Measure = pooled(
+    MetricId::InNetworkOutgroupLikeCount,
+    MetricId::InNetworkLikeCount,
+    MetricId::InNetworkOutgroupImpressionCount,
+    MetricId::InNetworkImpressionCount,
+);
+/// V8's measure: human shares per impression of Outrage posts over those of
+/// the non-hostile styles, pooled.
+const V8_RATE: Measure = pooled(
+    MetricId::OutrageStyleShareCount,
+    MetricId::OutrageStyleImpressionCount,
+    MetricId::CalmStyleShareCount,
+    MetricId::CalmStyleImpressionCount,
+);
+
+/// A band check on a mean of variant 0's measure, whose neutral value is 1.
+const fn mean_of_ratio(label: &'static str, measure: Measure, low: f32, high: f32) -> Check {
+    check(
+        label,
+        measure,
+        Judge::Band {
+            effect: MEAN,
+            low,
+            high,
+        },
+    )
+    .with_neutral(1.0)
+}
+
+// V6, V7 and V8 read a ratio or a share of one run, so their neutral value
+// is 1, not the mean's natural 0: equal shares, every share before the note,
+// equal share rates. V6 and V8 pool their counts over the summary window
+// (lab #39); V7 still averages its daily shares.
 const V6_CHECKS: &[Check] = &[
-    summary(
-        "out-group share of in-network impressions over that of in-network candidates",
-        MetricId::OutgroupRankingRatio,
-        MEAN,
+    mean_of_ratio(
+        "out-group share of in-network impressions over that of in-network candidates, pooled",
+        V6_RANKING,
         0.85,
         1.00,
-    )
-    .with_neutral(1.0),
-    summary(
-        "out-group share of likes over that of in-network impressions",
-        MetricId::OutgroupLikeRatio,
-        MEAN,
+    ),
+    mean_of_ratio(
+        "out-group share of likes over that of in-network impressions, pooled",
+        V6_LIKES,
         0.75,
         0.97,
-    )
-    .with_neutral(1.0),
+    ),
 ];
 
 const V7_CHECKS: &[Check] = &[summary(
@@ -473,14 +580,12 @@ const V7_CHECKS: &[Check] = &[summary(
 )
 .with_neutral(1.0)];
 
-const V8_CHECKS: &[Check] = &[summary(
-    "shares per impression of Outrage posts over the non-hostile styles",
-    MetricId::OutrageShareRatio,
-    MEAN,
+const V8_CHECKS: &[Check] = &[mean_of_ratio(
+    "shares per impression of Outrage posts over the non-hostile styles, pooled",
+    V8_RATE,
     1.3,
     3.0,
-)
-.with_neutral(1.0)];
+)];
 
 const V9_CHECKS: &[Check] = &[summary(
     "elasticity of time spent to ad load, ads_share 0.5 against 1",
@@ -509,17 +614,17 @@ const V10_CHECKS: &[Check] = &[
         -0.5,
         -0.01,
     ),
-    paired(
+    paired_sd(
         "polarisation change of the treated, real minus placebo, in SDs",
         MetricId::FeedExperimentPolarisation,
-        DIFF,
+        MetricId::FeedExperimentPolarisationSd,
         -0.1,
         0.1,
     ),
-    paired(
+    paired_sd(
         "informedness change of the treated, real minus placebo, in SDs",
         MetricId::FeedExperimentInformedness,
-        DIFF,
+        MetricId::FeedExperimentInformednessSd,
         -0.5,
         0.0,
     ),
@@ -613,12 +718,12 @@ impl<const ER: bool> Battery<ER> {
             reference: "Huszar et al. (2022), PNAS 119(1)",
             variants: &[
                 Variant {
-                    label: "ranked feed",
-                    apply: design::<ER>,
+                    label: "real: the treated on the chronological feed",
+                    apply: v5::<ER, false>,
                 },
                 Variant {
-                    label: "chronological",
-                    apply: chronological,
+                    label: "placebo: the treated kept on the ranked feed",
+                    apply: v5::<ER, true>,
                 },
             ],
             checks: V5_CHECKS,
@@ -720,7 +825,8 @@ static VALIDATIONS: [Validation; 10] = [
             sources down-ranked: like-minded share of exposures 53.7% -> 36.2%; uncivil content 3.15% -> 2.81% \
             (-11% relative); misinformation repeat offenders 0.76% -> 0.55%; time spent \"no significant \
             effect ... (-0.02 s.d., 95% confidence interval: -0.050, 0.004)\"; attitudes: \"We can \
-            confidently rule out effects of ±0.12 s.d. or more on each of these outcomes\".",
+            confidently rule out effects of ±0.12 s.d. or more on each of these outcomes\". The attitudes \
+            are reported in s.d. only, with no raw change.",
         design: "Feed experiment fewer_same_group over the last 90 days, share 0.2 of the regular users, real \
             against placebo on the same seed, measured on the treated.",
         dose: Some(Dose {
@@ -753,6 +859,7 @@ static VALIDATIONS: [Validation; 10] = [
                 true,
             ),
         ],
+        others: &[],
     },
     Validation {
         id: "V2",
@@ -763,7 +870,8 @@ static VALIDATIONS: [Validation; 10] = [
             \"a 23 percent reduction relative to the Control group mean\". Allcott et al. (2024), six weeks: \
             affective polarization Facebook -0.031 SD (95% CI -0.062, -0.000); Facebook news knowledge -0.098 \
             SD; reductions \"of 23% and 15% in average time spent over the postdeactivation period for \
-            Facebook and Instagram\".",
+            Facebook and Instagram\". Polarization and knowledge are reported in SDs of the control group \
+            only, with no raw change.",
         design: "Deactivation of 35 days at share 0.2 of the regular users, break against placebo on the same \
             seed, measured on the break group at the break's end (the run's end); later use from a second \
             pair whose break ends 28 days before the run's end, over those 28 days.",
@@ -788,6 +896,7 @@ static VALIDATIONS: [Validation; 10] = [
                 true,
             ),
         ],
+        others: &[],
     },
     Validation {
         id: "V3",
@@ -819,6 +928,7 @@ static VALIDATIONS: [Validation; 10] = [
                 true,
             ),
         ],
+        others: &[],
     },
     Validation {
         id: "V4",
@@ -837,6 +947,7 @@ static VALIDATIONS: [Validation; 10] = [
             DIFF,
             false,
         )],
+        others: &[],
     },
     Validation {
         id: "V5",
@@ -844,22 +955,55 @@ static VALIDATIONS: [Validation; 10] = [
         engagement: &ENGAGEMENT[4],
         source: "Huszar et al. (2022), Twitter's holdback: \"all parties enjoy an amplification effect\"; \
             more partisan US news sources amplified more than the centre; far-left and far-right parties: no \
-            evidence of extra amplification over moderates.",
-        design: "The design against the chronological feed (the base design with a chronological feed, as \
-            fact 3's), full runs, over the summary window; authors ranked by the partisanship trait.",
+            evidence of extra amplification over moderates. Amplification is the reach in the ranked group \
+            over that in the holdback group on the chronological feed.",
+        design: "Feed experiment chronological over the last 90 days (lab #33): share 0.2 of the regular \
+            users read the chronological feed of their in-network posts, on the follow graph the ranked \
+            feed built; real against placebo on the same seed, measured on the treated; impressions per \
+            treated viewer and day, pooled over the group and the days; authors ranked by the partisanship \
+            trait. Amplification is the placebo (ranked) over the real run (chronological).",
         dose: None,
         raws: &[
             raw(
-                "reach per post of the more partisan half, ranked minus chronological",
-                MetricId::PartisanHalfReach,
-                Effect::Difference { a: 0, b: 1 },
-                false,
+                "daily impressions of the more partisan half per treated viewer, ranked minus chronological",
+                MetricId::FeedExperimentPartisanHalfImpressions,
+                Effect::Difference { a: 1, b: 0 },
+                true,
             ),
             raw(
-                "reach ratio of the most partisan tenth to the middle fifth, ranked minus chronological",
-                MetricId::ExtremeReachRatio,
-                Effect::Difference { a: 0, b: 1 },
-                false,
+                "impressions of the most partisan tenth over the middle fifth, ranked minus chronological",
+                MetricId::FeedExperimentExtremeMiddleRatio,
+                Effect::Difference { a: 1, b: 0 },
+                true,
+            ),
+        ],
+        others: &[
+            raw(
+                "the more partisan half's daily impressions, ranked / chronological, without posts \
+                    removed or demoted",
+                MetricId::FeedExperimentPartisanHalfImpressionsKept,
+                RANKED_OVER_CHRONOLOGICAL,
+                true,
+            ),
+            raw(
+                "the most partisan tenth over the middle fifth, ranked / chronological, without posts \
+                    removed or demoted",
+                MetricId::FeedExperimentExtremeMiddleRatioKept,
+                RANKED_OVER_CHRONOLOGICAL,
+                true,
+            ),
+            raw(
+                "the treated's daily impressions of all posts, ranked / chronological",
+                MetricId::FeedExperimentImpressions,
+                RANKED_OVER_CHRONOLOGICAL,
+                true,
+            ),
+            raw(
+                "the treated's daily impressions of all posts, ranked / chronological, without posts \
+                    removed or demoted",
+                MetricId::FeedExperimentImpressionsKept,
+                RANKED_OVER_CHRONOLOGICAL,
+                true,
             ),
         ],
     },
@@ -871,18 +1015,36 @@ static VALIDATIONS: [Validation; 10] = [
             28.5% seen, 24.9% clicked\"; liberals 23% -> 22% seen -> 20% clicked, conservatives 34% -> 33% -> \
             29%.",
         design: "One full run of the design, the out-group shares of the in-network stages over the summary \
-            window.",
+            window, each pooled from the window's counts.",
         dose: None,
         raws: &[
+            Raw {
+                label: "out-group share of in-network impressions, pooled",
+                measure: pooled_share(
+                    MetricId::InNetworkOutgroupImpressionCount,
+                    MetricId::InNetworkImpressionCount,
+                ),
+                effect: MEAN,
+            },
+            Raw {
+                label: "out-group share of likes on in-network impressions, pooled",
+                measure: pooled_share(
+                    MetricId::InNetworkOutgroupLikeCount,
+                    MetricId::InNetworkLikeCount,
+                ),
+                effect: MEAN,
+            },
+        ],
+        others: &[
             raw(
-                "out-group share of in-network impressions",
-                MetricId::InNetworkOutgroupImpressions,
+                "out-group impressions over candidates as a mean of daily ratios (before lab #39)",
+                MetricId::OutgroupRankingRatio,
                 MEAN,
                 false,
             ),
             raw(
-                "out-group share of likes on in-network impressions",
-                MetricId::InNetworkOutgroupLikes,
+                "out-group likes over impressions as a mean of daily ratios (before lab #39)",
+                MetricId::OutgroupLikeRatio,
                 MEAN,
                 false,
             ),
@@ -904,6 +1066,7 @@ static VALIDATIONS: [Validation; 10] = [
             MEAN,
             false,
         )],
+        others: &[],
     },
     Validation {
         id: "V8",
@@ -914,10 +1077,19 @@ static VALIDATIONS: [Validation; 10] = [
             moral-emotional words \"increased their diffusion by a factor of 20% for each additional word\". \
             Direction built into the model, magnitude not tuned.",
         design: "One full run of the design, human shares per impression of Outrage posts over those of \
-            Informative, Entertaining and Personal posts, over the summary window.",
+            Informative, Entertaining and Personal posts, over the summary window, pooled from the window's \
+            counts.",
         dose: None,
-        raws: &[raw(
-            "Outrage share rate ratio",
+        raws: &[Raw {
+            label: "human shares per impression of Outrage posts, pooled",
+            measure: pooled_share(
+                MetricId::OutrageStyleShareCount,
+                MetricId::OutrageStyleImpressionCount,
+            ),
+            effect: MEAN,
+        }],
+        others: &[raw(
+            "Outrage share rate ratio as a mean of daily ratios (before lab #39)",
             MetricId::OutrageShareRatio,
             MEAN,
             false,
@@ -940,6 +1112,7 @@ static VALIDATIONS: [Validation; 10] = [
             Effect::Difference { a: 0, b: 1 },
             false,
         )],
+        others: &[],
     },
     Validation {
         id: "V10",
@@ -948,7 +1121,7 @@ static VALIDATIONS: [Validation; 10] = [
         source: "Guess et al. (2023b), abstract: removing reshares \"substantially decreases the amount of \
             political news, including content from untrustworthy sources\"; \"decreases overall clicks and \
             reactions\"; \"clear decreases in news knowledge within the sample\"; \"does not significantly \
-            affect political polarization\". Directions only.",
+            affect political polarization\". Directions only; no raw change is reported.",
         design: "Feed experiment no_reshares over the last 90 days, share 0.2 of the regular users, real \
             against placebo on the same seed, measured on the treated.",
         dose: None,
@@ -973,6 +1146,7 @@ static VALIDATIONS: [Validation; 10] = [
                 true,
             ),
         ],
+        others: &[],
     },
 ];
 
@@ -1023,6 +1197,17 @@ mod tests {
             .collect();
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].0, "V3");
+        // Exactly the effects in standard deviations carry their scale.
+        for v in all {
+            for c in v.fact.checks {
+                assert_eq!(
+                    c.scale.is_some(),
+                    c.label.ends_with("in SDs"),
+                    "{}",
+                    c.label
+                );
+            }
+        }
         // A ratio or a share read as a mean has the neutral 1 (V6, V7, V8);
         // every other check keeps its effect's natural neutral.
         for v in all {
@@ -1071,6 +1256,7 @@ mod tests {
                     V3_DAYS,
                 ),
                 ("V10", FeedExperimentKind::NoReshares, V10_DAYS),
+                ("V5", FeedExperimentKind::Chronological, V5_DAYS),
             ] {
                 let c = v(id);
                 for (arm, placebo) in [(0, false), (1, true)] {
@@ -1107,11 +1293,6 @@ mod tests {
                 (c[0].design.share_friction, c[1].design.share_friction),
                 (0.3, 0.0)
             );
-            let c = v("V5");
-            assert_eq!(c[0].design, design(er));
-            let mut chronological = base.design.clone();
-            chronological.chronological = true;
-            assert_eq!(c[1].design, chronological);
             for id in ["V6", "V8"] {
                 assert_eq!(v(id)[0].design, design(er), "{id}");
             }
@@ -1121,7 +1302,7 @@ mod tests {
             let c = v("V9");
             assert_eq!((c[0].design.ads_share, c[1].design.ads_share), (0.5, 1.0));
             // Nothing else changes: the run, the population and the world.
-            for c in v("V9").iter().chain(&v("V5")) {
+            for c in &v("V9") {
                 assert_eq!(c.world, base.world);
                 assert_eq!(c.population, base.population);
                 assert!(c.run.feed_experiment.is_none() && c.run.deactivation.is_none());
@@ -1189,7 +1370,17 @@ mod tests {
                 }
                 let raws = v.raw_changes(&histories);
                 assert_eq!(raws.len(), fact.checks.len());
-                if matches!(v.id, "V1" | "V2" | "V3" | "V10") {
+                for other in v.others(&histories) {
+                    assert!(other.effect.is_finite(), "{}: {other:?}", v.id);
+                }
+                // An effect in standard deviations reports the one it used.
+                for (c, d) in fact.checks.iter().zip(&details) {
+                    assert_eq!(c.scale.is_some(), d.result.scale.is_some());
+                    if let Some(sd) = d.result.scale {
+                        assert!(sd.is_finite() && sd > 0.0, "{}: {sd}", v.id);
+                    }
+                }
+                if matches!(v.id, "V1" | "V2" | "V3" | "V5" | "V10") {
                     for d in &details {
                         assert!(d.result.effect.is_finite(), "{}: {:?}", v.id, d.result);
                     }

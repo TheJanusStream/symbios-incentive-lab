@@ -115,7 +115,7 @@ const BOT_STRATEGIES: &[ChoiceInfo] = &[
 use ParamGroup as G;
 
 #[rustfmt::skip]
-pub(super) const PARAMS: [ParamInfo; 97] = [
+pub(super) const PARAMS: [ParamInfo; 99] = [
     design("design.w_like", "Like weight", G::Ranking, range(0.0, 3.0, 0.1),
         "How much the feed favours posts it predicts you will like, the core signal of engagement-ranked feeds."),
     design("design.w_reply", "Reply weight", G::Ranking, range(0.0, 3.0, 0.1),
@@ -224,6 +224,8 @@ pub(super) const PARAMS: [ParamInfo; 97] = [
         "How fast hostile authors learn how far they can push: sanctions make them milder, hostile posts that pay make them harsher."),
     world("world.deterrence", "Deterrence", G::Learning, range(0.0, 2.0, 0.05),
         "How much strikes, suspensions and bans put people off the kind of post that drew them, beyond losing the post."),
+    world("world.exposure_contagion", "Exposure contagion", G::Learning, range(0.0, 1.0, 0.01),
+        "How much seeing hostile posts makes people write them: the hostile share of what an author saw the day before raises the appeal of Outrage and Attack in what they write today."),
     world("world.habit_gain", "Habit gain", G::Habit, range(0.0, 0.3, 0.01),
         "How fast engaging sessions turn opening the app into a habit."),
     world("world.stop_bias", "Stopping tendency", G::Habit, range(-5.0, 0.0, 0.1),
@@ -300,6 +302,8 @@ pub(super) const PARAMS: [ParamInfo; 97] = [
         "How much people value, on reflection, well-made posts on topics they care about."),
     world("world.in_group_outrage_cost", "In-group outrage cost", G::Values, range(0.0, 1.0, 0.05),
         "How much hostility toward the other group costs its own side on reflection; at zero, partisans endorse the outrage they enjoy."),
+    world("world.outgroup_like_cut", "Out-group like cut", G::Values, range(0.0, 1.0, 0.05),
+        "How much a post's hostility puts off the other group from liking it; at zero, people like hostile posts about their own side as readily as any other."),
     world("world.clickbait_penalty", "Clickbait penalty", G::Values, range(0.0, 1.0, 0.05),
         "How much people regret, on reflection, posts that promised more than they gave."),
     world("world.style_quality_gap", "Style quality gap", G::Values, range(0.0, 1.5, 0.05),

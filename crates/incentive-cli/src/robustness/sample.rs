@@ -10,9 +10,10 @@
 //!   range; those whose default is 0 (mechanisms off) and the categorical
 //!   ones keep their defaults.
 //! - Global: a Latin hypercube over each varied continuous assumption's
-//!   range; categorical assumptions are drawn uniformly. The ranges are
-//!   chosen by [`Ranges`]: as documented, or revised by the rule of lab #31
-//!   ([`range_for`]).
+//!   range; categorical assumptions are drawn uniformly, except under the
+//!   plausible ranges, which hold them at their defaults. The ranges are
+//!   chosen by [`Ranges`]: as documented, revised by the rule of lab #31, or
+//!   plausible by the rule of lab #35 ([`range_for`], [`PLAUSIBLE_RULES`]).
 
 use clap::ValueEnum;
 use incentive_core::{Config, ConfigError, FieldValue, ParamInfo, ParamKind, params};
@@ -20,14 +21,18 @@ use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use serde::Serialize;
 
-/// World assumptions that keep their defaults: the checking-habit trio and the
-/// interruption cost, off by the owner's decision because they change the
-/// model's time scale (docs/model.md, 6.1 and 13.2).
-pub const EXCLUDED: [&str; 4] = [
+/// World assumptions that keep their defaults in every mode: the
+/// checking-habit trio and the interruption cost, off by the owner's decision
+/// because they change the model's time scale (docs/model.md, 6.1 and 13.2),
+/// and the session length `base_session_items`, held for the same reason by
+/// the decision of lab #35: it sets how many items a visit holds, the time
+/// scale every per-impression rate was calibrated at.
+pub const EXCLUDED: [&str; 5] = [
     "world.recheck_rate",
     "world.notification_pull",
     "world.extra_session_share",
     "world.interruption_cost",
+    "world.base_session_items",
 ];
 
 /// The population settings that vary beside the world assumptions (lab #31):
@@ -106,16 +111,35 @@ pub const TEXT_DEFAULTS: [(&str, f64); 7] = [
     ("world.living_income", 1.0),
 ];
 
-/// Which global ranges to use.
+/// Judgement ranges that replace the revised rule's range (lab #35):
+/// `leave_threshold`, whose default calibration set to 0, gets -0.1 to 0.1,
+/// two thirds each way of the text default's 0.15 (0.15 lost two thirds of
+/// the users a year on the rescaled stay utility, docs/model.md 13.1);
+/// `outgroup_like_cut`, a world assumption since lab #36, explores its whole
+/// catalogue range, 0 to 1; `exposure_contagion` (lab #38) explores from off
+/// to twice its calibrated default of 0.28, 0 to 0.56.
+pub const JUDGEMENT_RANGES: [(&str, f64, f64); 3] = [
+    ("world.leave_threshold", -0.1, 0.1),
+    ("world.outgroup_like_cut", 0.0, 1.0),
+    ("world.exposure_contagion", 0.0, 0.56),
+];
+
+/// Which global ranges to use: [`DOCUMENTED_RANGES`], the revised ranges of
+/// [`range_for`], or the plausible ranges of [`PlausibleRule`] and
+/// [`PLAUSIBLE_RULES`]. The variants' own docs are the command's help, so
+/// they stay plain text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Ranges {
-    /// Section 11's ranges as documented before lab #31 ([`DOCUMENTED_RANGES`]),
-    /// clipped to the catalogue; the catalogue range where it gave none.
+    /// Section 11's ranges as documented before lab #31, clipped to the
+    /// catalogue; the catalogue range where it gave none.
     Documented,
-    /// The revised ranges of lab #31's rule ([`range_for`]), as section 11 now
-    /// lists them.
+    /// The ranges to explore: lab #31's rule with the judgement ranges of
+    /// lab #35, as section 11 now lists them.
     Revised,
+    /// Plausible ranges around the defaults, by lab #35's rule; categorical
+    /// assumptions keep their defaults.
+    Plausible,
 }
 
 impl Ranges {
@@ -124,8 +148,111 @@ impl Ranges {
         match self {
             Self::Documented => "documented",
             Self::Revised => "revised",
+            Self::Plausible => "plausible",
         }
     }
+}
+
+/// The rule that gives a varied number its plausible range (lab #35).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlausibleRule {
+    /// A positive scale (a strength, cost, rate, per-day or per-event chance,
+    /// price or noise; `stop_bias`, a negative scale, by its magnitude):
+    /// default/1.5 to 1.5 x default.
+    Scale,
+    /// A share or weight on a scale of 0 to 1 (a fraction of something, or a
+    /// mixing weight): default - 0.15 to default + 0.15, clamped.
+    Share,
+    /// `leave_threshold`: -0.05 to 0.05.
+    LeaveThreshold,
+    /// A population setting ([`POPULATION`]): default/1.5 to 1.5 x default.
+    Population,
+}
+
+impl PlausibleRule {
+    /// Short text for tables.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Scale => "positive scale: default/1.5 to 1.5 x default",
+            Self::Share => "share or weight in [0, 1]: default +- 0.15",
+            Self::LeaveThreshold => "leave threshold: -0.05 to 0.05",
+            Self::Population => "population setting: default/1.5 to 1.5 x default",
+        }
+    }
+}
+
+/// Every varied number's plausible rule, in catalogue order. A rate or a
+/// chance per day or per event is a scale, even when 1 bounds it: its size
+/// comes from calibration in units of time or events, and a shift of 0.15
+/// would multiply a small one many times. A share or weight is a fraction
+/// of something (a cost, a skill, a count, a survey answer) or a mixing
+/// weight, whose meaning is on the scale of 0 to 1 itself.
+pub const PLAUSIBLE_RULES: [(&str, PlausibleRule); 53] = {
+    use PlausibleRule::{LeaveThreshold as L, Population as P, Scale as S, Share as W};
+    [
+        ("world.outrage_appeal", S),
+        ("world.arousal_appeal", S),
+        ("world.social_proof", W),
+        ("world.harassment_harm", S),
+        ("world.comparison_cost", S),
+        ("world.regret_cost", S),
+        ("world.time_cost", S),
+        ("world.wrongful_sanction_cost", S),
+        ("world.learning_rate", S),
+        ("world.imitation_rate", S),
+        ("world.choice_temperature", S),
+        ("world.evasion_rate", S),
+        ("world.evasion_decay", S),
+        ("world.evasion_cost", W),
+        ("world.classifier_retraining", S),
+        ("world.intensity_rate", S),
+        ("world.deterrence", S),
+        ("world.exposure_contagion", S),
+        ("world.habit_gain", S),
+        ("world.stop_bias", S),
+        ("world.churn_base", S),
+        ("world.leave_threshold", L),
+        ("world.harassment_exit", S),
+        ("world.join_base", S),
+        ("world.reputation_sensitivity", S),
+        ("world.account_cost_deterrence", W),
+        ("world.homophily", W),
+        ("world.polarisation_rate", S),
+        ("world.contact_rate", S),
+        ("world.spillover_rate", S),
+        ("world.credulity_scale", S),
+        ("world.polarisation_backfire", W),
+        ("world.ad_rate", S),
+        ("world.subscription_price", S),
+        ("world.subscription_hurdle", S),
+        ("world.subscription_uptake", S),
+        ("world.subscription_elasticity", S),
+        ("world.ad_annoyance", S),
+        ("world.living_income", S),
+        ("population.archetype_shares.troll", P),
+        ("population.bot_share", P),
+        ("world.bot_farm_floor", W),
+        ("world.bot_brigading", S),
+        ("world.polish_gain", S),
+        ("world.polish_cost", S),
+        ("world.reflective_quality_weight", S),
+        ("world.in_group_outrage_cost", W),
+        ("world.outgroup_like_cut", W),
+        ("world.clickbait_penalty", S),
+        ("world.style_quality_gap", S),
+        ("world.quality_signal_noise", S),
+        ("world.survey_impulsive_weight", W),
+        ("world.survey_habit_weight", W),
+    ]
+};
+
+/// The plausible rule of a path, if [`PLAUSIBLE_RULES`] lists it.
+pub fn plausible_rule(path: &str) -> Option<PlausibleRule> {
+    PLAUSIBLE_RULES
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|&(_, r)| r)
 }
 
 /// Where a global range comes from.
@@ -149,6 +276,13 @@ pub enum RangeSource {
     /// Default/2 to 2 x default, clipped to the catalogue: a population
     /// setting.
     Population,
+    /// A judgement range of lab #35 or #38 ([`JUDGEMENT_RANGES`]).
+    Judgement,
+    /// A plausible range by its rule, clipped to the catalogue.
+    Plausible(PlausibleRule),
+    /// No plausible rule: the default alone (no varied number is left
+    /// unclassified; a test checks it).
+    Unclassified,
 }
 
 impl RangeSource {
@@ -161,6 +295,9 @@ impl RangeSource {
             Self::Scaled => "docs 11 scaled by 13.1's factor",
             Self::DefaultThirds => "default/3 to 3 x default",
             Self::Population => "default/2 to 2 x default",
+            Self::Judgement => "judgement (labs #35 and #38)",
+            Self::Plausible(rule) => rule.label(),
+            Self::Unclassified => "unclassified: the default alone",
         }
     }
 }
@@ -168,19 +305,20 @@ impl RangeSource {
 /// The global range of a continuous assumption with this default and
 /// catalogue range, and where it comes from. Documented: section 11's
 /// documented range clipped to the catalogue, or the catalogue range where
-/// it gave none. Revised, the rule fixed before the robustness runs (lab
-/// #31):
+/// it gave none. Revised, the rule fixed before the robustness runs
+/// (lab #31), with the judgement ranges of lab #35:
 ///
+/// - an assumption of [`JUDGEMENT_RANGES`] gets its judgement range;
 /// - a documented range written for a text default that 13.1 records as
 ///   changed by calibration ([`TEXT_DEFAULTS`]) is scaled by the same factor
-///   as the default, code default over text default (a default calibrated
-///   to 0, `leave_threshold`, scales its range to that single value);
+///   as the default, code default over text default;
 /// - any other documented range is kept;
 /// - an assumption without a documented range gets default/3 to 3 x
 ///   default.
 ///
 /// Both clip to the catalogue range, and the population settings
-/// ([`POPULATION`]) get default/2 to 2 x default in both.
+/// ([`POPULATION`]) get default/2 to 2 x default in both. Plausible: the
+/// range of the assumption's [`PlausibleRule`], clipped to the catalogue.
 pub fn range_for(
     path: &str,
     ranges: Ranges,
@@ -189,9 +327,30 @@ pub fn range_for(
 ) -> ((f64, f64), RangeSource) {
     let clip = |lo: f64, hi: f64| (lo.max(catalogue.0), hi.min(catalogue.1));
     let ordered = |a: f64, b: f64| (a.min(b), a.max(b));
+    if ranges == Ranges::Plausible {
+        let Some(rule) = plausible_rule(path) else {
+            return ((default, default), RangeSource::Unclassified);
+        };
+        let (lo, hi) = match rule {
+            PlausibleRule::Scale | PlausibleRule::Population => {
+                ordered(shortest(default / 1.5), shortest(default * 1.5))
+            }
+            PlausibleRule::Share => (
+                shortest((default - 0.15).max(0.0)),
+                shortest((default + 0.15).min(1.0)),
+            ),
+            PlausibleRule::LeaveThreshold => (-0.05, 0.05),
+        };
+        return (clip(lo, hi), RangeSource::Plausible(rule));
+    }
     if POPULATION.contains(&path) {
         let (lo, hi) = ordered(default / 2.0, default * 2.0);
         return (clip(lo, hi), RangeSource::Population);
+    }
+    if ranges == Ranges::Revised
+        && let Some(&(_, lo, hi)) = JUDGEMENT_RANGES.iter().find(|(p, ..)| *p == path)
+    {
+        return (clip(lo, hi), RangeSource::Judgement);
     }
     let documented = DOCUMENTED_RANGES
         .iter()
@@ -244,6 +403,9 @@ pub enum Kind {
         choices: &'static [incentive_core::ChoiceInfo],
         /// The default choice's index.
         default: usize,
+        /// Whether global mode draws it uniformly; the plausible ranges hold
+        /// it at its default.
+        drawn: bool,
     },
 }
 
@@ -262,12 +424,12 @@ impl Varied {
         matches!(self.kind, Kind::Continuous { default, .. } if default != 0.0)
     }
 
-    /// Whether global mode varies it: categorical, or continuous with a
-    /// range wider than one value.
+    /// Whether global mode varies it: categorical and drawn, or continuous
+    /// with a range wider than one value.
     pub fn spans(&self) -> bool {
         match self.kind {
             Kind::Continuous { global, .. } => global.1 > global.0,
-            Kind::Categorical { .. } => true,
+            Kind::Categorical { drawn, .. } => drawn,
         }
     }
 }
@@ -306,7 +468,11 @@ pub fn varied(ranges: Ranges) -> Result<Vec<Varied>, ConfigError> {
                         .iter()
                         .position(|c| current.as_str() == Some(c.id))
                         .unwrap_or(0);
-                    Kind::Categorical { choices, default }
+                    Kind::Categorical {
+                        choices,
+                        default,
+                        drawn: ranges != Ranges::Plausible,
+                    }
                 }
                 _ => unreachable!("filtered to ranges and choices"),
             };
@@ -392,8 +558,17 @@ pub fn sample(varied: &[Varied], plan: Plan, worlds: usize, sample_seed: u64) ->
                             })
                             .collect()
                     }
-                    Kind::Categorical { choices, .. } => (0..worlds)
-                        .map(|_| Value::Choice(rng.random_range(0..choices.len())))
+                    Kind::Categorical {
+                        choices,
+                        default,
+                        drawn,
+                    } => (0..worlds)
+                        .map(|_| {
+                            // One draw per world, used or not, as for a
+                            // continuous range of one value.
+                            let c = rng.random_range(0..choices.len());
+                            Value::Choice(if drawn { c } else { default })
+                        })
                         .collect(),
                 })
                 .collect();
@@ -450,9 +625,9 @@ mod tests {
 
     #[test]
     fn the_varied_set_excludes_the_checking_habits_and_adds_two_population_settings() {
-        for ranges in [Ranges::Documented, Ranges::Revised] {
+        for ranges in [Ranges::Documented, Ranges::Revised, Ranges::Plausible] {
             let v = all(ranges);
-            assert_eq!(v.len(), 53);
+            assert_eq!(v.len(), 54);
             for path in EXCLUDED {
                 assert!(v.iter().all(|x| x.info.path != path), "{path}");
             }
@@ -588,15 +763,187 @@ mod tests {
         let (range, src) = global_of(&revised, "world.ad_rate").expect("continuous");
         assert_eq!(src, RangeSource::DefaultThirds);
         assert!((range.0 - 0.001 / 3.0).abs() < 1e-9 && (range.1 - 0.003).abs() < 1e-9);
-        // living_income: 0.015 / 3 = 0.005 is the catalogue's floor.
+        // living_income: 0.02 / 3 to 3 x 0.02, above the catalogue's floor of 0.005.
         let (range, _) = global_of(&revised, "world.living_income").expect("continuous");
-        assert!((range.0 - 0.005).abs() < 1e-9 && (range.1 - 0.045).abs() < 1e-9);
-        // leave_threshold's default was calibrated to 0: its range is 0 alone.
-        let leave = revised
+        assert!((range.0 - 0.02 / 3.0).abs() < 1e-6 && (range.1 - 0.06).abs() < 1e-6);
+        // Judgement ranges replace the rule's (lab #35).
+        assert_eq!(
+            global_of(&revised, "world.leave_threshold"),
+            Some(((-0.1, 0.1), RangeSource::Judgement))
+        );
+        assert_eq!(
+            global_of(&revised, "world.outgroup_like_cut"),
+            Some(((0.0, 1.0), RangeSource::Judgement))
+        );
+        // exposure_contagion: off to twice its default (lab #38).
+        assert_eq!(
+            global_of(&revised, "world.exposure_contagion"),
+            Some(((0.0, 0.56), RangeSource::Judgement))
+        );
+    }
+
+    /// `base_session_items` is held at its default in every mode and range
+    /// set, as the checking habits are; `leave_threshold` varies in global
+    /// mode only: -0.1 to 0.1 revised, -0.05 to 0.05 plausible, and stays at
+    /// its default of 0 in local mode.
+    #[test]
+    fn session_length_is_held_and_the_leave_threshold_has_judgement_ranges() {
+        assert!(EXCLUDED.contains(&"world.base_session_items"));
+        assert!(!EXCLUDED.contains(&"world.outgroup_like_cut"));
+        for ranges in [Ranges::Documented, Ranges::Revised, Ranges::Plausible] {
+            let v = all(ranges);
+            assert!(v.iter().all(|x| x.info.path != "world.base_session_items"));
+            assert!(v.iter().any(|x| x.info.path == "world.outgroup_like_cut"));
+            for plan in [Plan::Local { jitter: 0.25 }, Plan::Global] {
+                for world in sample(&v, plan, 16, 7) {
+                    let c = world_config(&v, &world).expect("valid");
+                    assert_eq!(
+                        c.world.base_session_items,
+                        Config::default().world.base_session_items
+                    );
+                }
+            }
+        }
+        assert_eq!(default_of("world.leave_threshold"), 0.0);
+        let expected = [
+            (Ranges::Documented, (-0.5, 0.5)),
+            (Ranges::Revised, (-0.1, 0.1)),
+            (Ranges::Plausible, (-0.05, 0.05)),
+        ];
+        for (ranges, range) in expected {
+            let v = all(ranges);
+            assert_eq!(
+                global_of(&v, "world.leave_threshold").map(|r| r.0),
+                Some(range)
+            );
+            let i = v
+                .iter()
+                .position(|x| x.info.path == "world.leave_threshold")
+                .expect("listed");
+            let local = sample(&v, Plan::Local { jitter: 0.25 }, 30, 2);
+            assert!(local.iter().all(|w| w[i] == Value::Number(0.0)));
+            let global: Vec<f64> = sample(&v, Plan::Global, 30, 2)
+                .iter()
+                .map(|w| number(w[i]))
+                .collect();
+            assert!(global.iter().all(|x| *x >= range.0 && *x <= range.1));
+            assert!(global.iter().any(|x| *x < 0.0) && global.iter().any(|x| *x > 0.0));
+        }
+    }
+
+    /// Every varied number has exactly one plausible rule, in catalogue
+    /// order; shares lie on a scale of 0 to 1, the leave threshold and the
+    /// population settings have their own rules, and every other number is a
+    /// scale with a nonzero default.
+    #[test]
+    fn every_varied_number_has_a_plausible_rule() {
+        let v = all(Ranges::Plausible);
+        let continuous: Vec<&str> = v
             .iter()
-            .find(|x| x.info.path == "world.leave_threshold")
+            .filter(|x| matches!(x.kind, Kind::Continuous { .. }))
+            .map(|x| x.info.path)
+            .collect();
+        let listed: Vec<&str> = PLAUSIBLE_RULES.iter().map(|(p, _)| *p).collect();
+        assert_eq!(listed, continuous);
+        for x in &v {
+            match x.kind {
+                Kind::Continuous {
+                    default,
+                    catalogue,
+                    source,
+                    ..
+                } => {
+                    let rule = plausible_rule(x.info.path).expect("classified");
+                    assert_eq!(source, RangeSource::Plausible(rule), "{}", x.info.path);
+                    match rule {
+                        PlausibleRule::Share => assert!(
+                            catalogue.0 >= 0.0
+                                && catalogue.1 <= 1.0
+                                && (0.0..=1.0).contains(&default),
+                            "{}",
+                            x.info.path
+                        ),
+                        PlausibleRule::Scale => assert!(default != 0.0, "{}", x.info.path),
+                        PlausibleRule::LeaveThreshold => {
+                            assert_eq!(x.info.path, "world.leave_threshold");
+                        }
+                        PlausibleRule::Population => {
+                            assert!(POPULATION.contains(&x.info.path));
+                        }
+                    }
+                }
+                Kind::Categorical { drawn, .. } => {
+                    assert!(!drawn, "the plausible ranges hold {}", x.info.path);
+                    assert!(!x.spans());
+                }
+            }
+        }
+        let count = |r: PlausibleRule| PLAUSIBLE_RULES.iter().filter(|(_, x)| *x == r).count();
+        assert_eq!(count(PlausibleRule::LeaveThreshold), 1);
+        assert_eq!(count(PlausibleRule::Population), POPULATION.len());
+        assert_eq!(count(PlausibleRule::Share), 10);
+        assert_eq!(count(PlausibleRule::Scale), 40);
+        // Unlisted paths fall back to the default alone.
+        assert_eq!(
+            range_for("world.nothing", Ranges::Plausible, 2.0, (0.0, 5.0)),
+            ((2.0, 2.0), RangeSource::Unclassified)
+        );
+    }
+
+    /// The plausible rule on examples of each class, with the clamps.
+    #[test]
+    fn plausible_ranges_follow_their_rule() {
+        let v = all(Ranges::Plausible);
+        let range = |path: &str| global_of(&v, path).expect("continuous").0;
+        let close = |a: (f64, f64), b: (f64, f64)| {
+            assert!(
+                (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6,
+                "{a:?} against {b:?}"
+            );
+        };
+        // Scales: default/1.5 to 1.5 x default.
+        close(range("world.outrage_appeal"), (0.8, 1.8));
+        close(range("world.time_cost"), (0.04, 0.09));
+        close(range("world.exposure_contagion"), (0.28 / 1.5, 0.42));
+        // A negative scale keeps its order.
+        close(range("world.stop_bias"), (-3.75, -2.5 / 1.5));
+        // Shares: default +- 0.15, clamped to [0, 1] and the catalogue.
+        close(range("world.social_proof"), (0.15, 0.45));
+        close(range("world.survey_habit_weight"), (0.0, 0.25));
+        close(range("world.polarisation_backfire"), (0.0, 0.15));
+        close(range("world.outgroup_like_cut"), (0.65, 0.95));
+        close(range("world.homophily"), (0.55, 0.85));
+        // Population settings: default/1.5 to 1.5 x default.
+        close(range("population.archetype_shares.troll"), (0.02, 0.045));
+        close(range("population.bot_share"), (0.05 / 1.5, 0.075));
+        close(range("world.leave_threshold"), (-0.05, 0.05));
+        // Catalogue clamps apply to every rule.
+        assert_eq!(
+            range_for("world.social_proof", Ranges::Plausible, 0.95, (0.0, 1.0)).0,
+            (0.8, 1.0)
+        );
+        assert_eq!(
+            range_for("world.learning_rate", Ranges::Plausible, 0.4, (0.0, 0.5)).0,
+            (shortest(0.4 / 1.5), 0.5)
+        );
+        // Global draws stay inside, and bot_strategy keeps its default.
+        let i = v
+            .iter()
+            .position(|x| x.info.path == "world.bot_strategy")
             .expect("listed");
-        assert!(!leave.spans());
+        let Kind::Categorical { default, .. } = v[i].kind else {
+            panic!("categorical");
+        };
+        for world in sample(&v, Plan::Global, 40, 3) {
+            assert_eq!(world[i], Value::Choice(default));
+            for (x, value) in v.iter().zip(&world) {
+                if let Kind::Continuous { global, .. } = x.kind {
+                    let value = number(*value);
+                    assert!(value >= global.0 && value <= global.1, "{}", x.info.path);
+                }
+            }
+            assert!(world_config(&v, &world).expect("valid").validate().is_ok());
+        }
     }
 
     /// The population settings: default/2 to 2 x default in global mode,
@@ -656,9 +1003,10 @@ mod tests {
         }
     }
 
-    /// Section 11's table: assumption names, Default cells and Range cells,
-    /// by row.
-    fn section_11() -> Vec<(Vec<String>, Vec<String>, Vec<String>)> {
+    /// Section 11's table: assumption names, and the Default, Range and
+    /// Plausible cells, by row.
+    #[allow(clippy::type_complexity)]
+    fn section_11() -> Vec<(Vec<String>, Vec<String>, Vec<String>, Vec<String>)> {
         let text = include_str!("../../../../docs/model.md");
         let section = text
             .split("## 11. World assumptions")
@@ -675,7 +1023,7 @@ mod tests {
                     .filter_map(|n| n.split('`').nth(1).map(|n| format!("world.{n}")))
                     .collect();
                 let split = |c: &str| c.split(", ").map(str::to_string).collect();
-                (names, split(cells[2]), split(cells[3]))
+                (names, split(cells[2]), split(cells[3]), split(cells[4]))
             })
             .collect()
     }
@@ -714,7 +1062,7 @@ mod tests {
     #[test]
     fn section_11_lists_the_revised_ranges() {
         let mut parsed = 0;
-        for (names, _, ranges) in section_11() {
+        for (names, _, ranges, _) in section_11() {
             if ranges.len() != names.len() {
                 continue;
             }
@@ -732,8 +1080,52 @@ mod tests {
                 parsed += 1;
             }
         }
-        // The 50 documented ranges and the four the rule adds.
-        assert_eq!(parsed, DOCUMENTED_RANGES.len() + 4);
+        // The 50 documented ranges, the four the rule adds, and the
+        // judgement ranges of outgroup_like_cut and exposure_contagion.
+        assert_eq!(parsed, DOCUMENTED_RANGES.len() + 6);
+    }
+
+    /// Section 11's Plausible column lists the plausible ranges: each one
+    /// matches the rule; the held assumptions read "held" and `bot_strategy`
+    /// its default, the only choice the plausible ranges sample.
+    #[test]
+    fn section_11_lists_the_plausible_ranges() {
+        let v = all(Ranges::Plausible);
+        let mut parsed = 0;
+        let mut rows = 0;
+        for (names, _, _, cells) in section_11() {
+            rows += 1;
+            assert_eq!(cells.len(), names.len(), "{names:?}: {cells:?}");
+            for (path, cell) in names.iter().zip(&cells) {
+                if EXCLUDED.contains(&path.as_str()) {
+                    assert_eq!(cell, "held", "{path}");
+                    continue;
+                }
+                let x = v
+                    .iter()
+                    .find(|x| x.info.path == path)
+                    .unwrap_or_else(|| panic!("{path} varies"));
+                match x.kind {
+                    Kind::Categorical {
+                        choices, default, ..
+                    } => assert_eq!(cell, choices[default].id, "{path}"),
+                    Kind::Continuous { global, .. } => {
+                        let (lo, hi) = parse_range(cell)
+                            .unwrap_or_else(|| panic!("{path}: a range, not {cell}"));
+                        let close = |a: f64, b: f64| (a - b).abs() <= 1e-3 * b.abs().max(1e-6);
+                        assert!(
+                            close(lo, global.0) && close(hi, global.1),
+                            "{path}: table {lo}-{hi}, rule {global:?}"
+                        );
+                        parsed += 1;
+                    }
+                }
+            }
+        }
+        assert!(rows > 20);
+        // Every varied number except the population settings, which
+        // section 11 does not list.
+        assert_eq!(parsed, PLAUSIBLE_RULES.len() - POPULATION.len());
     }
 
     /// Each scaled range against its 13.1 factor: the text defaults are
@@ -750,7 +1142,7 @@ mod tests {
             .and_then(|s| s.split("\n### ").next())
             .expect("13.1");
         let mut text_defaults = Vec::new();
-        for (names, defaults, _) in section_11() {
+        for (names, defaults, ..) in section_11() {
             for (path, cell) in names.iter().zip(&defaults) {
                 let Ok(listed) = cell.parse::<f64>() else {
                     continue;
@@ -781,6 +1173,10 @@ mod tests {
             assert_eq!(cells[4].parse::<f64>().ok(), Some(code), "{name}");
             let catalogue = catalogue_of(path);
             let (revised, source) = range_for(path, Ranges::Revised, code, catalogue);
+            if JUDGEMENT_RANGES.iter().any(|(p, ..)| *p == path) {
+                assert_eq!(source, RangeSource::Judgement, "{name}");
+                continue;
+            }
             match DOCUMENTED_RANGES.iter().find(|(p, ..)| *p == path) {
                 Some(&(_, lo, hi)) => {
                     let f = code / text_default;

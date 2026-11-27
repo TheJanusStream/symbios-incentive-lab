@@ -99,7 +99,9 @@ runs 120 days on seed 1, shows the tab, saves one PNG of the window and exits. T
 
 The runner is the `incentive` binary of `crates/incentive-cli`. Build it in release mode and call it from the
 repository root; every command prints a table and writes its files to `exports/` (ignored by git) unless `--out`
-names another folder.
+names another folder. Build it on its own, with `-p incentive-cli`: a workspace-wide build unifies shared dependencies'
+features with the app's and changes the last bits of some draws, so its runs drift from the calibration record
+(section 12 of [docs/model.md](docs/model.md)).
 
 ```text
 cargo build --release -p incentive-cli
@@ -124,13 +126,13 @@ $ target/release/incentive compare --a engagement-maximiser --b quality-bridging
     --metrics engagement_index,harm_index,benefit_index,toxic_share,survey_satisfaction
 A = engagement-maximiser, B = quality-bridging: 8 paired seeds, N = 2000, 365 days
 
-metric                     view       A        B    B - A  95% low  95% high
--------------------  ----------  ------  -------  -------  -------  --------  -
-Engagement index          index  0.1532   0.1271  -0.0262  -0.0306   -0.0217  *
-Harm index                index  0.4078  0.0825~  -0.3253  -0.3552   -0.2955  *
-Benefit index             index  0.4068   0.4345   0.0278   0.0218    0.0338  *
-Toxic impressions         truth  0.1778   0.0040  -0.1738  -0.1961   -0.1515  *
-Survey satisfaction  observable  0.5441   0.5380  -0.0061  -0.0098   -0.0024  *
+metric                     view        A       B    B - A  95% low  95% high
+-------------------  ----------  -------  ------  -------  -------  --------  -
+Engagement index          index   0.1521  0.1267  -0.0254  -0.0286   -0.0222  *
+Harm index                index  0.3534~  0.0614  -0.2920  -0.3227   -0.2613  *
+Benefit index             index   0.4047  0.4360   0.0313   0.0209    0.0417  *
+Toxic impressions         truth   0.2089  0.0039  -0.2050  -0.2446   -0.1653  *
+Survey satisfaction  observable   0.5438  0.5369  -0.0069  -0.0124   -0.0014  *
 ```
 
 A trailing `~` marks a metric that is still moving inside its summary window: its least-squares change across the
@@ -158,12 +160,12 @@ same seeds, and every goal is judged on the paired seeds. `--solution` runs the 
 $ target/release/incentive scenario engagement-trap --set design.w_reply=0 --set design.w_see_less=5 \
     --seeds 1..4 --population 600 --days 120
 goal                                                             you  baseline  threshold   margin  95% low  95% high
-------------------------------------------------------------  ------  --------  ---------  -------  -------  --------  ----
-Keep at least 85% of the baseline's engagement index          0.1564    0.1589     0.1351  +0.0213  +0.0129   +0.0298  PASS
-At most half the baseline's toxic impression share            0.1338   0.1642~     0.0821  -0.0517  -0.0981   -0.0053  FAIL
-At most twice the baseline's wrongful removals and demotions   1.014     0.972      1.944  +0.9306  +0.5873   +1.2738  PASS
+------------------------------------------------------------  ------  --------  ---------  -------  -------  --------  ---------
+Keep at least 85% of the baseline's engagement index          0.1599    0.1643     0.1396  +0.0203  +0.0078   +0.0328       PASS
+At most half the baseline's toxic impression share            0.1303    0.1913     0.0956  -0.0347  -0.0979   +0.0285  UNDECIDED
+At most twice the baseline's wrongful removals and demotions   1.111     1.215      2.431  +1.3194  +1.1137   +1.5252       PASS
 
-Scenario not passed: 1 goal(s) failed, 0 undecided.
+Scenario not passed: 0 goal(s) failed, 1 undecided (more seeds may decide them).
 ```
 
 The margin is how far each seed's run lies on the passing side of the threshold set by its own baseline, with a 95%
@@ -218,8 +220,8 @@ toxic share and wrongful sanctions, then for engagement, harm and benefit each l
 interactions and each lever's Shapley share of the difference, all in the direction from A to B with 95% intervals:
 
 ```text
-target/release/incentive factorial --a engagement-maximiser --b front-40.json --days 365 --population 2000 \
-    --levers notification_intensity,w_reply,w_bridging,review_capacity,payout_share,account_cost
+target/release/incentive factorial --a engagement-maximiser --b front-32.json --days 365 --population 2000 \
+    --levers notification_intensity,w_bridging,w_dwell,w_like,payout_share,predictor_quality
 ```
 
 A main effect is the mean change when one lever goes from A's value to B's, over every setting of the others; an
@@ -234,7 +236,7 @@ by its generation number or `last`. The file keeps the search's base configurati
 `--days 365 --population 2000` to `compare` or `factorial` to run it at full size:
 
 ```text
-target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 40 > front-40.json
+target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 32 > front-32.json
 ```
 
 ### Robustness across worlds
@@ -251,28 +253,49 @@ the seed means lies in its band; a fact or claim holds when every check that is 
 ```text
 target/release/incentive robustness --mode local --worlds 100 --seeds 2
 target/release/incentive robustness --mode global --worlds 200 --battery headline --sample-seed 3
+target/release/incentive robustness --mode global --ranges plausible --worlds 200 --seeds 2 --seeds-noisy 4
 ```
 
 Which world assumptions vary, and how:
 
-- Varied, 53 assumptions: the 51 world assumptions of the parameter catalogue (`world.*`, listed by
-  `incentive robustness --help` and in the output) except the checking habits (`recheck_rate`, `notification_pull`,
-  `extra_session_share`) and `interruption_cost`, which are off by the owner's decision and change the model's time
-  scale (sections 6.1 and 13.2), and two population settings, the troll share (`archetype_shares.troll`, relative,
-  normalised with the other archetypes' shares when the population is drawn) and the bot share (`bot_share`). Run and
-  design settings and the rest of the population never vary.
+- Varied, 54 assumptions: the 52 world assumptions of the parameter catalogue (`world.*`, listed by
+  `incentive robustness --help` and in the output) except the held ones, and two population settings, the troll share
+  (`archetype_shares.troll`, relative, normalised with the other archetypes' shares when the population is drawn) and
+  the bot share (`bot_share`). Run and design settings and the rest of the population never vary.
+- Held at their defaults in every mode: the checking habits (`recheck_rate`, `notification_pull`,
+  `extra_session_share`) and `interruption_cost`, off by the owner's decision (sections 6.1 and 13.2), and the
+  session length `base_session_items`, held by lab #35 for the same reason: all of them change the time scale at
+  which every per-impression rate was calibrated.
 - `--mode local`: each varied number with a nonzero default is multiplied by U(1 - jitter, 1 + jitter) (`--jitter`,
   default 0.25) and clamped to its catalogue range. Assumptions whose default is 0 (mechanisms off:
   `leave_threshold`, `polarisation_backfire`) and the categorical `bot_strategy` keep their defaults.
-- `--mode global`: a Latin hypercube over each varied number's range; `bot_strategy` is drawn uniformly.
-  `--ranges revised` (the default) takes the ranges of section 11 of [docs/model.md](docs/model.md), revised by the
-  rule of lab #31: a range written for a text default that calibration changed (13.1) is scaled by the same factor
-  as the default (`classifier_retraining`, `intensity_rate`, `habit_gain`, `polarisation_rate`, `contact_rate`, and
-  `leave_threshold`, whose default went to 0, so it keeps it); an assumption without a documented range gets
-  default/3 to 3 x default (`ad_rate`, `ad_annoyance`, `subscription_hurdle`, `living_income`); the troll share and
-  the bot share get default/2 to 2 x default; all clamped to the catalogue. `--ranges documented` samples section
-  11's ranges as documented before the revision, clipped to the catalogue range, and the catalogue range where none
-  was documented, so both can be reported; its folder ends in `-documented`.
+- `--mode global`: a Latin hypercube over each varied number's range, from one of three range sets, all listed in
+  section 11 of [docs/model.md](docs/model.md):
+  - `--ranges revised` (the default), the ranges to explore: section 11's documented ranges, revised by the rule of
+    lab #31: a range written for a text default that calibration changed (13.1) is scaled by the same factor as the
+    default (`classifier_retraining`, `intensity_rate`, `habit_gain`, `polarisation_rate`, `contact_rate`); an
+    assumption without a documented range gets default/3 to 3 x default (`ad_rate`, `ad_annoyance`,
+    `subscription_hurdle`, `living_income`); the troll share and the bot share get default/2 to 2 x default. Three
+    ranges are set by judgement: `leave_threshold` -0.1 to 0.1 (its default 0 stays in local mode) and
+    `outgroup_like_cut` 0 to 1 (lab #35), and `exposure_contagion` 0 to 0.56, from off to twice its default
+    (lab #38). `bot_strategy` is drawn uniformly.
+  - `--ranges plausible`, lab #35's plausible ranges around the code's defaults: default/1.5 to 1.5 x default for a
+    positive scale (strengths, costs, rates, chances per day or per event, prices, noise, and `stop_bias` by its
+    magnitude); default +- 0.15, clamped, for a share or weight in [0, 1] (`social_proof`, `evasion_cost`,
+    `account_cost_deterrence`, `homophily`, `polarisation_backfire`, `bot_farm_floor`, `in_group_outrage_cost`,
+    `outgroup_like_cut`, `survey_impulsive_weight`, `survey_habit_weight`); -0.05 to 0.05 for `leave_threshold`;
+    default/1.5 to 1.5 x default for the troll share and the bot share. `bot_strategy` keeps its default. The rule of
+    every varied number is listed in code (`PLAUSIBLE_RULES` in `robustness/sample.rs`, whose test checks that none
+    is missing) and in the output's rule table ("Plausible class"). The folder ends in `-plausible`.
+  - `--ranges documented`: section 11's ranges as documented before lab #31, clipped to the catalogue range, and the
+    catalogue range where none was documented; the folder ends in `-documented`.
+
+  All three clamp to the catalogue range.
+- `--seeds-noisy N`: the noisy facts and claims run on seeds 1 to N, the rest and the baseline on 1 to `--seeds`.
+  Noisy are those whose seed share exceeded 0.4 in lab #31's runs (docs/validation.md, section 8, recommendation 4):
+  fact 2 (`outrage-learning`), fact 5 (`harassment-exit`), H5, V1, V3, V4, V5, V9 and V10, and in global mode also
+  H7. A fact's variants run on the same seeds for all its checks, so a whole fact or claim is noisy, not one check.
+  Without the flag every item runs on `--seeds`.
 - World 0 is always the default world, the reference; the summaries count the K sampled worlds. `--worlds 0` runs the
   default world alone, so `--mode local --jitter 0 --worlds 0 --seeds 8` gives the batteries' default values.
 
@@ -288,17 +311,29 @@ arm of several facts and claims) run once. The folder (default `exports/robustne
 - `summary.md` and `summary.json`: per check, fact and claim, the share of sampled worlds where it holds, over all and
   over the non-degenerate worlds, the share whose effect lies on the default world's side of its neutral value (0, 1
   for a ratio or for a ratio or share read as a mean, as in V6, V7 and V8), and the median and 5% and 95% quantiles
-  of the effect.
+  of the effect; the seeds per world; and the failure classes of section 5.2 of
+  [docs/validation.md](docs/validation.md): of the non-degenerate worlds where a check fails, those whose effect
+  lies within two standard errors of its band (noise-compatible: the interval of the effect +- 2 SE overlaps the
+  band) and the clear failures. The SE is the seed SD over the square root of the seeds, the seed SD the SD of the
+  per-seed effects within a world, pooled over the non-degenerate worlds with a value. A fact or claim fails within
+  noise in a world when every failing check that is not a known limit does. With one seed there is no seed SD and a
+  failure is unclassed. Each check also gets its seed share, the squared SE over the variance of the worlds'
+  effects.
 
 Global mode adds each check's sensitivity over the non-degenerate worlds: the Spearman rank correlation and the
 partial rank correlation (PRCC: ranks, then the correlation of the residuals after regressing out the other
 assumptions and the categorical choices) of every varied number with the effect, the top five by absolute value, and
-the median effect per `bot_strategy`. PRCC needs more usable worlds than the varied assumptions plus 10 (63); with
-fewer, the summary gives Spearman alone and says so; an assumption held to one value (`leave_threshold` under the
-revised ranges) is left out of both. At full size with two seeds and all three batteries a world takes about 24
-seconds on 8 CPUs for its 56 distinct runs (28 distinct arms on two seeds, measured on two worlds); with the facts and
-the claims alone it took about 17 seconds for 32 distinct runs (the facts have 10 distinct arms and the claims 7),
-and the validation battery adds 12 arms the others do not share. The default world runs in every command.
+the median effect per `bot_strategy`. A PRCC is marked significant (`*`, `significant` in the JSON) when its absolute
+value exceeds two standard errors, the SE being 1/sqrt(n - k - 2) for n worlds and k regression terms (Fisher's
+standard error for a partial correlation with k - 1 columns held fixed); each check also gets the R2 of the rank
+regression of its effect on every varied number and the categorical dummies, plain and adjusted for the k terms.
+PRCC and R2 need more usable worlds than the varied assumptions plus 10 (63); with fewer, the summary gives Spearman
+alone and says so; an assumption held to one value is left out of both. At full size with two seeds and all three
+batteries a world took about 24 seconds on 8 CPUs for its 56 distinct runs (28 distinct arms on two seeds, measured
+on two worlds); with `--seeds-noisy 4` it takes about 45 seconds for 94 distinct runs (measured on two worlds of the
+plausible ranges, 2026-11-27). With the facts and the claims alone it took about 17 seconds for 32 distinct runs (the
+facts have 10 distinct arms and the claims 7), and the validation battery adds 12 arms the others do not share. The
+default world runs in every command.
 
 ### Exploring the design space
 
@@ -325,10 +360,10 @@ search's, as `confirmed` for each design and `confirm_seeds` in its settings (fi
 printed tables show them side by side in the `c.` columns.
 
 The Atlas tab embeds four files in `crates/incentive-app/assets/atlas/`. They were made with these commands, one at a
-time, which regenerate them byte for byte: about 16 minutes on 8 CPUs in all, the confirmation on seeds 9 to 16
-included (about 2 minutes for each Goodhart search and 6 each for the map and the Pareto front). Raise `--generations`,
-`--batch`, `--seeds`, `--population` or `--days` to regenerate them at a larger scale (the app needs a rebuild to embed
-new files):
+time, which regenerate them byte for byte: about 29 minutes on 8 CPUs in all with the desktop under other load (a load
+average of about 13, 2026-11-27), the confirmation on seeds 9 to 16 included (about 4 minutes for each Goodhart search
+and 10 to 11 each for the map and the Pareto front). Raise `--generations`, `--batch`, `--seeds`, `--population` or
+`--days` to regenerate them at a larger scale (the app needs a rebuild to embed new files):
 
 ```text
 taskset -c 0-7 nice -n 19 target/release/incentive explore goodhart --proxy engagement_index \

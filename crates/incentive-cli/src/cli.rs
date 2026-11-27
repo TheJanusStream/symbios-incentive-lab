@@ -157,7 +157,9 @@ pub enum Command {
         /// Individuals per run.
         #[arg(long, default_value_t = 2000)]
         population: u32,
-        /// Days per run.
+        /// Days per run (fact 3 moves people to a chronological feed for the
+        /// last 90 days and needs more than 90: pick the other facts with
+        /// --fact for a shorter run).
         #[arg(long, default_value_t = 365)]
         days: u32,
         /// Assignments applied to every arm before the arm's own change,
@@ -180,8 +182,8 @@ pub enum Command {
     /// Every check runs under the integrity preset and is judged there, as
     /// the stylized facts are; the same check under the engagement ranking is
     /// reported beside it as a sensitivity, not judged. The experiments (V1,
-    /// V2, V3, V10) treat a random 0.2 of the regular users and pair each real
-    /// run with its placebo on the same seed; V4, V5 and V9 pair the design
+    /// V2, V3, V5, V10) treat a random 0.2 of the regular users and pair each
+    /// real run with its placebo on the same seed; V4 and V9 pair the design
     /// with their comparison design; V6, V7 and V8 read one run. Each check
     /// reports its effect with the standard deviation across seeds, the 95%
     /// interval, the band, the verdict and the raw (unscaled) change; V1 and
@@ -194,8 +196,8 @@ pub enum Command {
         /// Individuals per run (the battery's full size is 2,000).
         #[arg(long, default_value_t = 2000)]
         population: u32,
-        /// Days per run (the battery's full size is 365; V1 and V10 need more
-        /// than 90).
+        /// Days per run (the battery's full size is 365; V1, V5 and V10 need
+        /// more than 90).
         #[arg(long, default_value_t = 365)]
         days: u32,
         /// Assignments applied to every arm before the arm's own change,
@@ -216,42 +218,58 @@ pub enum Command {
     /// world assumptions (local) and sensitivity across their ranges
     /// (global).
     ///
-    /// Varied, 53 assumptions: 51 world assumptions, outrage_appeal,
+    /// Varied, 54 assumptions: 52 world assumptions, outrage_appeal,
     /// arousal_appeal, social_proof, harassment_harm, comparison_cost,
     /// regret_cost, time_cost, wrongful_sanction_cost, learning_rate,
     /// imitation_rate, choice_temperature, evasion_rate, evasion_decay,
     /// evasion_cost, classifier_retraining, intensity_rate, deterrence,
-    /// habit_gain, stop_bias, churn_base, leave_threshold, harassment_exit,
-    /// join_base, reputation_sensitivity, account_cost_deterrence, homophily,
+    /// exposure_contagion (lab #38), habit_gain, stop_bias, churn_base,
+    /// leave_threshold, harassment_exit, join_base, reputation_sensitivity,
+    /// account_cost_deterrence, homophily,
     /// polarisation_rate, contact_rate, spillover_rate, credulity_scale,
     /// polarisation_backfire, ad_rate, subscription_price, subscription_hurdle,
     /// subscription_uptake, subscription_elasticity, ad_annoyance,
-    /// living_income, base_session_items, bot_farm_floor, bot_strategy
-    /// (categorical), bot_brigading, polish_gain, polish_cost,
-    /// reflective_quality_weight, in_group_outrage_cost, clickbait_penalty,
+    /// living_income, bot_farm_floor, bot_strategy (categorical),
+    /// bot_brigading, polish_gain, polish_cost, reflective_quality_weight,
+    /// in_group_outrage_cost, outgroup_like_cut, clickbait_penalty,
     /// style_quality_gap, quality_signal_noise, survey_impulsive_weight,
     /// survey_habit_weight; and two population settings, the troll share
     /// archetype_shares.troll (normalised with the other archetypes' shares
     /// when the population is drawn) and bot_share. Kept at their defaults:
     /// recheck_rate, notification_pull, extra_session_share and
     /// interruption_cost (off by the owner's decision, docs/model.md 6.1 and
-    /// 13.2), and every run and design setting and the rest of the
-    /// population.
+    /// 13.2), base_session_items (the session length, held by lab #35 for the
+    /// same reason: like the checking habits it sets the time scale at which
+    /// every per-impression rate was calibrated), and every run and design
+    /// setting and the rest of the population.
     ///
     /// Local: each varied number with a nonzero default is multiplied by
     /// U(1 - jitter, 1 + jitter) and clamped to its catalogue range; those
     /// whose default is 0 (leave_threshold, polarisation_backfire) and
     /// bot_strategy keep their defaults. Global: a Latin hypercube over each
-    /// number's range, and bot_strategy drawn uniformly. The revised ranges
+    /// number's range, and bot_strategy drawn uniformly, except under the
+    /// plausible ranges, which keep it at its default. The revised ranges
     /// (the default) follow lab #31's rule, as docs/model.md section 11 lists
     /// them: a documented range written for a text default that calibration
     /// changed (13.1) is scaled by the same factor as the default; an
     /// assumption without a documented range gets default/3 to 3 x default;
-    /// the population settings get default/2 to 2 x default; all clamped to
-    /// the catalogue. The documented ranges are section 11's before that
-    /// revision, clipped to the catalogue, with the catalogue range where it
-    /// gave none. World 0 is always the default world, the reference; the
-    /// summary counts the sampled worlds.
+    /// the population settings get default/2 to 2 x default; judgement
+    /// gives leave_threshold -0.1 to 0.1 and outgroup_like_cut 0 to 1
+    /// (lab #35) and exposure_contagion 0 to 0.56 (lab #38); all clamped to
+    /// the catalogue. The plausible ranges (lab #35, section 11's Plausible
+    /// column) give a positive scale default/1.5 to 1.5 x default, a share or
+    /// weight in [0, 1] default +- 0.15 (clamped), leave_threshold -0.05 to
+    /// 0.05 and the population settings default/1.5 to 1.5 x default. The
+    /// documented ranges are section 11's before lab #31, clipped to the
+    /// catalogue, with the catalogue range where it gave none. World 0 is
+    /// always the default world, the reference; the summary counts the
+    /// sampled worlds.
+    ///
+    /// The noisy facts and claims, whose seed share exceeded 0.4 in lab #31
+    /// (outrage-learning, harassment-exit, H5, V1, V3, V4, V5, V9, V10, and
+    /// H7 in global mode), run on --seeds-noisy seeds; noisiness is per fact
+    /// or claim, since a fact's variants run on the same seeds for all its
+    /// checks.
     Robustness {
         /// How worlds are sampled.
         #[arg(long, value_enum, default_value = "local")]
@@ -263,6 +281,9 @@ pub enum Command {
         /// Seeds 1 to this, paired across variants and the same in every world.
         #[arg(long, default_value_t = 2)]
         seeds: u64,
+        /// Seeds 1 to this for the noisy facts and claims (default: --seeds).
+        #[arg(long)]
+        seeds_noisy: Option<u64>,
         /// Seed of the world sampling.
         #[arg(long, default_value_t = 1)]
         sample_seed: u64,
@@ -270,8 +291,9 @@ pub enum Command {
         /// validation checks, or all three.
         #[arg(long, value_enum, default_value = "all")]
         battery: crate::robustness::BatteryChoice,
-        /// Global mode: the revised ranges of lab #31's rule, or section
-        /// 11's ranges as documented before it.
+        /// Global mode: the ranges to explore (revised by lab #31's rule,
+        /// with lab #35's judgement ranges), the plausible ranges of lab #35,
+        /// or section 11's ranges as documented before lab #31.
         #[arg(long, value_enum, default_value = "revised")]
         ranges: crate::robustness::sample::Ranges,
         /// Individuals per run (default: each battery's full size, 2,000).
@@ -284,8 +306,8 @@ pub enum Command {
         #[arg(long, default_value_t = 0.25)]
         jitter: f64,
         /// Output directory (default: the repository's
-        /// `exports/robustness/<mode>-<sample-seed>`, with -documented for
-        /// global mode on the documented ranges).
+        /// `exports/robustness/<mode>-<sample-seed>`, with -documented or
+        /// -plausible for global mode on those ranges).
         #[arg(long)]
         out: Option<PathBuf>,
     },

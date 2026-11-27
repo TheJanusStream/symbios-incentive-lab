@@ -113,7 +113,9 @@ pub(crate) fn replace_banned(world: &mut World, ctx: &DayCtx) {
 
 /// Bots write their posts (part of phase 3). Adaptive bots polish them when
 /// the design reads the quality signal, other bots never do; each post draws
-/// from its own stream, keyed on the bot account and its post ordinal.
+/// from its own stream, keyed on the bot account and its post ordinal. A
+/// nonzero `population.bot_truth_shift` moves each post's truth after its
+/// draws (docs/model.md, 3.5).
 pub(crate) fn write_posts(world: &mut World, ctx: &DayCtx) {
     let uniform_topics = [1.0 / TOPIC_COUNT as f32; TOPIC_COUNT];
     let pop = &ctx.config.population;
@@ -148,7 +150,7 @@ pub(crate) fn write_posts(world: &mut World, ctx: &DayCtx) {
                 Style::Outrage
             };
             let id = world.posts.next_id();
-            let post = generate_post(
+            let mut post = generate_post(
                 &mut rng,
                 id,
                 ctx.day,
@@ -157,6 +159,10 @@ pub(crate) fn write_posts(world: &mut World, ctx: &DayCtx) {
                 &uniform_topics,
                 &ctx.config.world,
             );
+            // A rule, not a draw: at the default of 0 the post is untouched.
+            if pop.bot_truth_shift != 0.0 {
+                post.truth = (post.truth + pop.bot_truth_shift).clamp(0.0, 1.0);
+            }
             world.posts.push(post);
             world.accounts.recent_posts[account as usize].push(id);
             world.tally.bot_posts += 1;

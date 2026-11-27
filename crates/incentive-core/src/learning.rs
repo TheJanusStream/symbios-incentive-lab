@@ -6,7 +6,7 @@ use crate::content::STYLE_COUNT;
 use crate::moderation;
 use crate::person::{POLISH_LEARNING_SHARE, PersonState};
 use crate::rng::{self, Stream};
-use crate::world::{DayCtx, DayTally, World};
+use crate::world::{DayCtx, DayTally, World, partisan_band};
 
 /// Share of the day's most-viewed posts that the discourse metrics look at.
 const TOP_POST_SHARE: f32 = 0.05;
@@ -70,6 +70,9 @@ fn collect_post_day(world: &mut World, ctx: &DayCtx) {
         if post.day + lifetime == ctx.day + 1 {
             world.tally.largest_cascade = world.tally.largest_cascade.max(post.human_shares());
             count_ending_post(&mut world.tally, &world.truth.partisanship_rank, post);
+            if let Some(e) = world.truth.experiment.as_mut() {
+                e.count_ending_post(&world.truth.partisanship_rank, post);
+            }
         }
     }
     viewed.sort_by_key(|v| std::cmp::Reverse(v.0));
@@ -87,29 +90,45 @@ fn collect_post_day(world: &mut World, ctx: &DayCtx) {
 
 /// Adds a post at the end of its life to the descriptive truth tallies
 /// (docs/model.md, 9.2): its lifetime human impressions by its human
-/// author's partisanship, and, for a noted post, its human shares before and
-/// after the note. Measurement only: it draws nothing and changes nothing
+/// author's partisanship, for a noted post its human shares before and after
+/// the note, and whether a false post got a note. Measurement only: it draws nothing and changes nothing
 /// else.
 fn count_ending_post(tally: &mut DayTally, partisanship_rank: &[u32], post: &Post) {
+    if post.is_misinformation() {
+        tally.false_posts_ended += 1;
+        tally.noted_false_posts_ended += u32::from(post.noted);
+    }
     if post.noted {
         tally.noted_shares += post.human_shares();
         tally.noted_shares_before_note += post.shares_at_note;
     }
-    let Some(&rank) = partisanship_rank.get(post.author as usize) else {
+    let Some(band) = partisan_band(partisanship_rank, post.author as usize) else {
         return;
     };
-    let quantile = (f64::from(rank) + 0.5) / partisanship_rank.len() as f64;
     let impressions = u64::from(post.impressions);
-    if quantile >= 0.5 {
+    let kept = !post.removed && !post.demoted;
+    if band.half {
         tally.partisan_half_posts += 1;
         tally.partisan_half_impressions += impressions;
+        if kept {
+            tally.partisan_half_kept_posts += 1;
+            tally.partisan_half_kept_impressions += impressions;
+        }
     }
-    if quantile >= 0.9 {
+    if band.extreme {
         tally.extreme_posts += 1;
         tally.extreme_impressions += impressions;
-    } else if (0.4..0.6).contains(&quantile) {
+        if kept {
+            tally.extreme_kept_posts += 1;
+            tally.extreme_kept_impressions += impressions;
+        }
+    } else if band.middle {
         tally.middle_posts += 1;
         tally.middle_impressions += impressions;
+        if kept {
+            tally.middle_kept_posts += 1;
+            tally.middle_kept_impressions += impressions;
+        }
     }
 }
 
@@ -488,5 +507,63 @@ mod tests {
         let bot = count(&post, 10, 99);
         assert_eq!(bot.partisan_half_posts + bot.middle_posts, 0);
         assert_eq!((bot.noted_shares, bot.noted_shares_before_note), (10, 7));
+    }
+
+    /// Reach both ways: a post never removed or demoted counts in the kept
+    /// tallies too; a removed or demoted one only in the tallies that
+    /// include it.
+    #[test]
+    fn kept_reach_leaves_out_removed_and_demoted_posts() {
+        let config = Config::default();
+        let mut rng = rng::stream_rng(1, 0, 0, Stream::PostDraw);
+        let profile = AuthorProfile::plain(Group::A, 0.5, 0.5);
+        let post = generate_post(
+            &mut rng,
+            0,
+            0,
+            &profile,
+            Style::Outrage,
+            &[1.0 / 6.0; 6],
+            &config.world,
+        );
+        let ranks: Vec<u32> = (0..10).collect();
+        let mut tally = DayTally::default();
+        for (author, impressions, removed, demoted) in [
+            (9, 30, false, false),
+            (9, 20, true, false),
+            (8, 10, false, true),
+            (5, 7, false, false),
+            (4, 3, true, false),
+        ] {
+            let mut p = post.clone();
+            p.author = author;
+            p.impressions = impressions;
+            p.removed = removed;
+            p.demoted = demoted;
+            count_ending_post(&mut tally, &ranks, &p);
+        }
+        assert_eq!(
+            (tally.partisan_half_posts, tally.partisan_half_impressions),
+            (4, 67)
+        );
+        assert_eq!(
+            (
+                tally.partisan_half_kept_posts,
+                tally.partisan_half_kept_impressions
+            ),
+            (2, 37)
+        );
+        assert_eq!((tally.extreme_posts, tally.extreme_impressions), (2, 50));
+        assert_eq!(
+            (tally.extreme_kept_posts, tally.extreme_kept_impressions),
+            (1, 30)
+        );
+        // Author 8 sits at the 85th percentile: in the half, in neither the
+        // tenth nor the middle fifth.
+        assert_eq!((tally.middle_posts, tally.middle_impressions), (2, 10));
+        assert_eq!(
+            (tally.middle_kept_posts, tally.middle_kept_impressions),
+            (1, 7)
+        );
     }
 }

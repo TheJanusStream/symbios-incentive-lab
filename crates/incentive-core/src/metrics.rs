@@ -104,7 +104,7 @@ metrics! {
     SeeLess, "see_less", "See-less marks", Count, Platform, Observable, "\"Show me less\" marks today.";
     AutoRemovals, "auto_removals", "Automated removals", Count, Platform, Observable, "Posts the classifier removed today.";
     HumanRemovals, "human_removals", "Human removals", Count, Platform, Observable, "Posts human reviewers removed today.";
-    Notes, "notes", "Community notes", Count, Platform, Observable, "Notes attached today.";
+    Notes, "notes", "Community notes", Count, Platform, Observable, "Community notes that took effect today: shown on a post for the first time, or due by the day's end on a post with at least 50 impressions.";
     Revenue, "revenue", "Revenue", Money, Platform, Observable, "Ad and subscription revenue today.";
     AdRevenue, "ad_revenue", "Ad revenue", Money, Platform, Observable, "Revenue from the ads people saw today.";
     SubscriptionRevenue, "subscription_revenue", "Subscription revenue", Money, Platform, Observable, "Revenue from subscriptions today.";
@@ -190,6 +190,69 @@ metrics! {
     NotedSharesBeforeNote, "noted_shares_before_note", "Shares before the note", Share, Harm, Truth, "Share of the human shares of noted posts ending today that were made before the note; a diagnostic.";
     OutrageShareRatio, "outrage_share_ratio", "Outrage share rate ratio", Decimal, Content, Truth, "Human shares per impression of Outrage posts over those of Informative, Entertaining and Personal posts, today; a diagnostic.";
     SharedTruth, "shared_truth", "Truth of shares", Score, Harm, Truth, "Mean truth of the posts people shared today; a diagnostic.";
+    BreakWellbeingSd, "break_wellbeing_sd", "Break group: wellbeing SD", Decimal, Participants, Truth, "Standard deviation of all participants' wellbeing at the start of a deactivation experiment, the scale of its wellbeing changes; only on the last day of a run that sets one up.";
+    BreakPolarisationSd, "break_polarisation_sd", "Break group: polarisation SD", Decimal, Participants, Truth, "Standard deviation of all participants' affective polarisation at the start of a deactivation experiment, the scale of its polarisation change; only on the last day of a run that sets one up.";
+    BreakInformednessSd, "break_informedness_sd", "Break group: informedness SD", Decimal, Participants, Truth, "Standard deviation of all participants' informedness at the start of a deactivation experiment, the scale of its informedness change; only on the last day of a run that sets one up.";
+    NotificationsOffTimeSd, "notifications_off_time_sd", "Notifications-off: time SD", Decimal, Participants, Truth, "Standard deviation of the participants' baseline daily time on the platform, the scale of a notifications-off experiment's time change; only on the last day of a run that sets one up.";
+    NotificationsOffSessionsSd, "notifications_off_sessions_sd", "Notifications-off: sessions SD", Decimal, Participants, Truth, "Standard deviation of the participants' baseline sessions a day, the scale of a notifications-off experiment's sessions change; only on the last day of a run that sets one up.";
+    NotificationsOffWellbeingSd, "notifications_off_wellbeing_sd", "Notifications-off: wellbeing SD", Decimal, Participants, Truth, "Standard deviation of the participants' wellbeing at the start of a notifications-off experiment, the scale of its wellbeing change; only on the last day of a run that sets one up.";
+    FeedExperimentPolarisationSd, "feed_experiment_polarisation_sd", "Feed experiment: polarisation SD", Decimal, Participants, Truth, "Standard deviation of all participants' affective polarisation at the start of a feed experiment, the scale of its polarisation change; only on the last day of a run that sets one up.";
+    FeedExperimentInformednessSd, "feed_experiment_informedness_sd", "Feed experiment: informedness SD", Decimal, Participants, Truth, "Standard deviation of all participants' informedness at the start of a feed experiment, the scale of its informedness change; only on the last day of a run that sets one up.";
+    FeedExperimentWellbeingSd, "feed_experiment_wellbeing_sd", "Feed experiment: wellbeing SD", Decimal, Participants, Truth, "Standard deviation of all participants' wellbeing at the start of a feed experiment, the scale of its wellbeing change; only on the last day of a run that sets one up.";
+    FeedExperimentPartisanHalfImpressions, "feed_experiment_partisan_half_impressions", "Feed experiment: partisan half's impressions", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by authors in the more partisan half by the partisanship trait, pooled over a feed experiment's treated group and days. Only on the last day of a run that sets one up.";
+    FeedExperimentExtremeImpressions, "feed_experiment_extreme_impressions", "Feed experiment: most partisan tenth's impressions", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by the most partisan tenth of authors, pooled over a feed experiment's treated group and days. Only on the last day of a run that sets one up.";
+    FeedExperimentMiddleImpressions, "feed_experiment_middle_impressions", "Feed experiment: middle fifth's impressions", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by the middle fifth of authors by partisanship (40% to 60%), pooled over a feed experiment's treated group and days. Only on the last day of a run that sets one up.";
+    FeedExperimentImpressions, "feed_experiment_impressions", "Feed experiment: impressions", Decimal, Participants, Truth, "Impressions per treated viewer and day, pooled over a feed experiment's treated group and days. Only on the last day of a run that sets one up.";
+    FeedExperimentExtremeMiddleRatio, "feed_experiment_extreme_middle_ratio", "Feed experiment: most partisan over middle", Decimal, Participants, Truth, "A feed experiment's treated group's impressions of posts by the most partisan tenth of authors over those of the middle fifth, pooled over its days. Only on the last day of a run that sets one up.";
+    FeedExperimentPartisanHalfImpressionsKept, "feed_experiment_partisan_half_impressions_kept", "Feed experiment: partisan half's impressions, kept", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by authors in the more partisan half by the partisanship trait, pooled over a feed experiment's treated group and days. Posts removed or demoted by the end of their life are left out. Only on the last day of a run that sets one up.";
+    FeedExperimentExtremeImpressionsKept, "feed_experiment_extreme_impressions_kept", "Feed experiment: most partisan tenth's impressions, kept", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by the most partisan tenth of authors, pooled over a feed experiment's treated group and days. Posts removed or demoted by the end of their life are left out. Only on the last day of a run that sets one up.";
+    FeedExperimentMiddleImpressionsKept, "feed_experiment_middle_impressions_kept", "Feed experiment: middle fifth's impressions, kept", Decimal, Participants, Truth, "Impressions per treated viewer and day of posts by the middle fifth of authors by partisanship (40% to 60%), pooled over a feed experiment's treated group and days. Posts removed or demoted by the end of their life are left out. Only on the last day of a run that sets one up.";
+    FeedExperimentImpressionsKept, "feed_experiment_impressions_kept", "Feed experiment: impressions, kept", Decimal, Participants, Truth, "Impressions per treated viewer and day, pooled over a feed experiment's treated group and days. Posts removed or demoted by the end of their life are left out. Only on the last day of a run that sets one up.";
+    FeedExperimentExtremeMiddleRatioKept, "feed_experiment_extreme_middle_ratio_kept", "Feed experiment: most partisan over middle, kept", Decimal, Participants, Truth, "A feed experiment's treated group's impressions of posts by the most partisan tenth of authors over those of the middle fifth, pooled over its days. Posts removed or demoted by the end of their life are left out. Only on the last day of a run that sets one up.";
+    PartisanHalfReachKept, "partisan_half_reach_kept", "Reach of the more partisan half, kept", Decimal, Discourse, Truth, "Mean lifetime human impressions of the posts ending today by authors in the more partisan half, over the posts never removed or demoted; a diagnostic.";
+    ExtremeReachRatioKept, "extreme_reach_ratio_kept", "Reach of the most partisan, kept", Decimal, Discourse, Truth, "Mean reach of the posts ending today by the most partisan tenth of authors over that of the middle fifth, over the posts never removed or demoted; a diagnostic.";
+    InNetworkCandidateCount, "in_network_candidate_count", "In-network candidates", Count, Discourse, Truth, "In-network candidates gathered for today's feeds; a count for pooled diagnostics.";
+    InNetworkOutgroupCandidateCount, "in_network_outgroup_candidate_count", "Out-group in-network candidates (count)", Count, Discourse, Truth, "Of those, the posts by the viewer's out-group; a count for pooled diagnostics.";
+    InNetworkImpressionCount, "in_network_impression_count", "In-network impressions", Count, Discourse, Truth, "Today's impressions of in-network items; a count for pooled diagnostics.";
+    InNetworkOutgroupImpressionCount, "in_network_outgroup_impression_count", "Out-group in-network impressions (count)", Count, Discourse, Truth, "Of those, the impressions of posts by the viewer's out-group; a count for pooled diagnostics.";
+    InNetworkLikeCount, "in_network_like_count", "Likes on in-network impressions", Count, Discourse, Truth, "Today's likes on in-network impressions; a count for pooled diagnostics.";
+    InNetworkOutgroupLikeCount, "in_network_outgroup_like_count", "Out-group in-network likes (count)", Count, Discourse, Truth, "Of those, the likes on posts by the viewer's out-group; a count for pooled diagnostics.";
+    OutrageStyleShareCount, "outrage_style_share_count", "Human shares of Outrage posts", Count, Content, Truth, "Human shares of Outrage posts today; a count for pooled diagnostics.";
+    OutrageStyleImpressionCount, "outrage_style_impression_count", "Impressions of Outrage posts", Count, Content, Truth, "Impressions of Outrage posts today; a count for pooled diagnostics.";
+    CalmStyleShareCount, "calm_style_share_count", "Human shares of calm posts", Count, Content, Truth, "Human shares of Informative, Entertaining and Personal posts today; a count for pooled diagnostics.";
+    CalmStyleImpressionCount, "calm_style_impression_count", "Impressions of calm posts", Count, Content, Truth, "Impressions of Informative, Entertaining and Personal posts today; a count for pooled diagnostics.";
+    LikeBiasSame, "like_bias_same", "Like logit: bias, same-group", Decimal, Discourse, Truth, "Mean bias of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeInterestSame, "like_interest_same", "Like logit: interest term, same-group", Decimal, Discourse, Truth, "Mean interest term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeArousalSame, "like_arousal_same", "Like logit: arousal term, same-group", Decimal, Discourse, Truth, "Mean arousal term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeHostilitySame, "like_hostility_same", "Like logit: in-group hostility term, same-group", Decimal, Discourse, Truth, "Mean in-group hostility term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeSocialProofSame, "like_social_proof_same", "Like logit: social-proof term, same-group", Decimal, Discourse, Truth, "Mean social-proof term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeReflectiveSame, "like_reflective_same", "Like logit: reflective term, same-group", Decimal, Discourse, Truth, "Mean reflective term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
+    LikeBiasOut, "like_bias_out", "Like logit: bias, out-group", Decimal, Discourse, Truth, "Mean bias of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeInterestOut, "like_interest_out", "Like logit: interest term, out-group", Decimal, Discourse, Truth, "Mean interest term of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeArousalOut, "like_arousal_out", "Like logit: arousal term, out-group", Decimal, Discourse, Truth, "Mean arousal term of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeHostilityOut, "like_hostility_out", "Like logit: in-group hostility term, out-group", Decimal, Discourse, Truth, "Mean in-group hostility term of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeSocialProofOut, "like_social_proof_out", "Like logit: social-proof term, out-group", Decimal, Discourse, Truth, "Mean social-proof term of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeReflectiveOut, "like_reflective_out", "Like logit: reflective term, out-group", Decimal, Discourse, Truth, "Mean reflective term of the like probability's logit (7.1) over today's impressions by out-group viewers; a diagnostic.";
+    LikeOutgroupMultiplier, "like_outgroup_multiplier", "Like: out-group multiplier", Decimal, Discourse, Truth, "Mean out-group multiplier of the like probability, 1 - outgroup_like_cut * outrage (7.1), over today's impressions by out-group viewers; a diagnostic.";
+    LikeProbabilitySame, "like_probability_same", "Like probability, same-group", Score, Discourse, Truth, "Mean like probability over today's impressions by same-group viewers; a diagnostic.";
+    LikeProbabilityOut, "like_probability_out", "Like probability, out-group", Score, Discourse, Truth, "Mean like probability over today's impressions by out-group viewers; a diagnostic.";
+    MisinformationCountInformative, "misinformation_count_informative", "Misinformation impressions: Informative", Count, Harm, Truth, "Impressions today of Informative posts with truth below 0.5; a count for pooled diagnostics.";
+    MisinformationCountEntertaining, "misinformation_count_entertaining", "Misinformation impressions: Entertaining", Count, Harm, Truth, "Impressions today of Entertaining posts with truth below 0.5; a count for pooled diagnostics.";
+    MisinformationCountPersonal, "misinformation_count_personal", "Misinformation impressions: Personal", Count, Harm, Truth, "Impressions today of Personal posts with truth below 0.5; a count for pooled diagnostics.";
+    MisinformationCountOutrage, "misinformation_count_outrage", "Misinformation impressions: Outrage", Count, Harm, Truth, "Impressions today of Outrage posts with truth below 0.5, bots' included; a count for pooled diagnostics.";
+    MisinformationCountClickbait, "misinformation_count_clickbait", "Misinformation impressions: Clickbait", Count, Harm, Truth, "Impressions today of Clickbait posts with truth below 0.5, bots' included; a count for pooled diagnostics.";
+    MisinformationCountAttack, "misinformation_count_attack", "Misinformation impressions: Attack", Count, Harm, Truth, "Impressions today of Attack posts with truth below 0.5; a count for pooled diagnostics.";
+    MisinformationCountBots, "misinformation_count_bots", "Misinformation impressions: bot posts", Count, Harm, Truth, "Impressions today of bot posts with truth below 0.5, of either style; a count for pooled diagnostics.";
+    FalsePostsEnded, "false_posts_ended", "False posts ending", Count, Harm, Truth, "Posts with truth below 0.5 whose life ended today, bots' included; a count for pooled diagnostics.";
+    NotedFalsePostsEnded, "noted_false_posts_ended", "Noted false posts ending", Count, Harm, Truth, "Of the false posts whose life ended today, those that got a community note; a count for pooled diagnostics.";
+    ContagionAuthors, "contagion_authors", "Contagion: authors", Count, Content, Truth, "People who wrote at least one post today, the base of the causal exposure diagnostic (7.5); a count for pooled diagnostics.";
+    ContagionChanceExposed, "contagion_chance_exposed", "Contagion: hostile chance after a hostile feed", Decimal, Content, Truth, "Summed over today's authors, the chance that a post's style is hostile after a fully hostile previous-day feed, from each author's style values (7.5); a sum for pooled diagnostics.";
+    ContagionChanceUnexposed, "contagion_chance_unexposed", "Contagion: hostile chance after a calm feed", Decimal, Content, Truth, "Summed over today's authors, the chance that a post's style is hostile after a previous-day feed without a hostile item, from each author's style values (7.5); a sum for pooled diagnostics.";
+    ContagionRatioSum, "contagion_ratio_sum", "Contagion: summed per-author risk ratio", Decimal, Content, Truth, "Summed over today's authors, each author's ratio of the two chances above; a sum for pooled diagnostics.";
+    ExposedPostCount, "exposed_post_count", "Posts after a feed with hostile items", Count, Content, Truth, "Human posts today whose authors' previous-day feed held at least one Outrage or Attack post; a count for pooled diagnostics.";
+    ExposedHostilePostCount, "exposed_hostile_post_count", "Hostile posts after a feed with hostile items", Count, Content, Truth, "Of those, the Outrage and Attack posts; a count for pooled diagnostics.";
+    UnexposedPostCount, "unexposed_post_count", "Posts after a feed without hostile items", Count, Content, Truth, "Human posts today whose authors' previous-day feed held items but no Outrage or Attack post; a count for pooled diagnostics.";
+    UnexposedHostilePostCount, "unexposed_hostile_post_count", "Hostile posts after a feed without hostile items", Count, Content, Truth, "Of those, the Outrage and Attack posts; a count for pooled diagnostics.";
 }
 
 /// Number of metrics.
@@ -279,6 +342,25 @@ impl MetricId {
                 | MetricId::FeedExperimentFlaggedShare
                 | MetricId::FeedExperimentPolarisationRaw
                 | MetricId::FeedExperimentInformednessRaw
+                | MetricId::BreakWellbeingSd
+                | MetricId::BreakPolarisationSd
+                | MetricId::BreakInformednessSd
+                | MetricId::NotificationsOffTimeSd
+                | MetricId::NotificationsOffSessionsSd
+                | MetricId::NotificationsOffWellbeingSd
+                | MetricId::FeedExperimentPolarisationSd
+                | MetricId::FeedExperimentInformednessSd
+                | MetricId::FeedExperimentWellbeingSd
+                | MetricId::FeedExperimentPartisanHalfImpressions
+                | MetricId::FeedExperimentExtremeImpressions
+                | MetricId::FeedExperimentMiddleImpressions
+                | MetricId::FeedExperimentImpressions
+                | MetricId::FeedExperimentExtremeMiddleRatio
+                | MetricId::FeedExperimentPartisanHalfImpressionsKept
+                | MetricId::FeedExperimentExtremeImpressionsKept
+                | MetricId::FeedExperimentMiddleImpressionsKept
+                | MetricId::FeedExperimentImpressionsKept
+                | MetricId::FeedExperimentExtremeMiddleRatioKept
         )
     }
 
@@ -300,6 +382,50 @@ impl MetricId {
                 | MetricId::NotedSharesBeforeNote
                 | MetricId::OutrageShareRatio
                 | MetricId::SharedTruth
+                | MetricId::PartisanHalfReachKept
+                | MetricId::ExtremeReachRatioKept
+                | MetricId::InNetworkCandidateCount
+                | MetricId::InNetworkOutgroupCandidateCount
+                | MetricId::InNetworkImpressionCount
+                | MetricId::InNetworkOutgroupImpressionCount
+                | MetricId::InNetworkLikeCount
+                | MetricId::InNetworkOutgroupLikeCount
+                | MetricId::OutrageStyleShareCount
+                | MetricId::OutrageStyleImpressionCount
+                | MetricId::CalmStyleShareCount
+                | MetricId::CalmStyleImpressionCount
+                | MetricId::LikeBiasSame
+                | MetricId::LikeInterestSame
+                | MetricId::LikeArousalSame
+                | MetricId::LikeHostilitySame
+                | MetricId::LikeSocialProofSame
+                | MetricId::LikeReflectiveSame
+                | MetricId::LikeBiasOut
+                | MetricId::LikeInterestOut
+                | MetricId::LikeArousalOut
+                | MetricId::LikeHostilityOut
+                | MetricId::LikeSocialProofOut
+                | MetricId::LikeReflectiveOut
+                | MetricId::LikeOutgroupMultiplier
+                | MetricId::LikeProbabilitySame
+                | MetricId::LikeProbabilityOut
+                | MetricId::MisinformationCountInformative
+                | MetricId::MisinformationCountEntertaining
+                | MetricId::MisinformationCountPersonal
+                | MetricId::MisinformationCountOutrage
+                | MetricId::MisinformationCountClickbait
+                | MetricId::MisinformationCountAttack
+                | MetricId::MisinformationCountBots
+                | MetricId::FalsePostsEnded
+                | MetricId::NotedFalsePostsEnded
+                | MetricId::ContagionAuthors
+                | MetricId::ContagionChanceExposed
+                | MetricId::ContagionChanceUnexposed
+                | MetricId::ContagionRatioSum
+                | MetricId::ExposedPostCount
+                | MetricId::ExposedHostilePostCount
+                | MetricId::UnexposedPostCount
+                | MetricId::UnexposedHostilePostCount
         )
     }
 
@@ -318,6 +444,19 @@ impl MetricId {
             MetricId::PostShareOutrage,
             MetricId::PostShareClickbait,
             MetricId::PostShareAttack,
+        ];
+        BY_STYLE[style.index()]
+    }
+
+    /// The diagnostic count of a style's misinformation impressions.
+    pub fn misinformation_count(style: Style) -> MetricId {
+        const BY_STYLE: [MetricId; STYLE_COUNT] = [
+            MetricId::MisinformationCountInformative,
+            MetricId::MisinformationCountEntertaining,
+            MetricId::MisinformationCountPersonal,
+            MetricId::MisinformationCountOutrage,
+            MetricId::MisinformationCountClickbait,
+            MetricId::MisinformationCountAttack,
         ];
         BY_STYLE[style.index()]
     }

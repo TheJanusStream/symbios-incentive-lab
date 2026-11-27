@@ -88,12 +88,26 @@ pub struct Post {
     pub struck: bool,
     /// Demoted by the classifier.
     pub demoted: bool,
-    /// Has a community note.
+    /// Its community note has been displayed: the note's display time has
+    /// passed while the post had at least 50 impressions (docs/model.md,
+    /// 6.8). Whether a given impression carries the note depends on the
+    /// viewer's time of day ([`Post::note_shown`]).
     pub noted: bool,
-    /// Human shares when the note was attached; 0 for a post without a
-    /// note. Kept for the truth metric `noted_shares_before_note`.
+    /// Hours from the post's creation, at the start of its day, to the
+    /// display of its community note; `None` for a post that gets none
+    /// (docs/model.md, 6.8).
+    #[serde(skip)]
+    pub note_delay: Option<f32>,
+    /// Human shares made from impressions that did not carry the post's
+    /// note, counted only for a post with a note coming; kept for the truth
+    /// metric `noted_shares_before_note`.
     #[serde(skip)]
     pub shares_at_note: u32,
+    /// Human impressions by viewers assigned to a feed experiment's treated
+    /// group, in a placebo run too; a truth-side count for the experiment's
+    /// reach without posts later removed or demoted (docs/model.md, 9.2).
+    #[serde(skip)]
+    pub assigned_impressions: u32,
     /// The toxicity classifier's score of the post, `flag` of docs/model.md,
     /// 6.7, which the platform computes when it screens the post
     /// (observable); `None` for a post it did not screen.
@@ -166,6 +180,24 @@ impl Post {
         self.truth < MISINFORMATION_THRESHOLD
     }
 
+    /// Hours from the post's creation, at the start of its day, to `hour`
+    /// o'clock on `day`.
+    pub fn age_hours(&self, day: u32, hour: f32) -> f32 {
+        day.saturating_sub(self.day) as f32 * 24.0 + hour
+    }
+
+    /// Whether an impression at `hour` o'clock on `day` carries the post's
+    /// community note (docs/model.md, 6.8): the post has a note whose
+    /// display time has come, and it has at least
+    /// [`NOTE_MIN_IMPRESSIONS`] impressions.
+    pub fn note_shown(&self, day: u32, hour: f32) -> bool {
+        !self.removed
+            && self.impressions >= NOTE_MIN_IMPRESSIONS
+            && self
+                .note_delay
+                .is_some_and(|delay| self.age_hours(day, hour) >= delay)
+    }
+
     /// Whether the post is toxic.
     pub fn is_toxic(&self) -> bool {
         self.toxicity > TOXIC_THRESHOLD
@@ -203,6 +235,10 @@ impl Post {
         self.human_shares_today = 0;
     }
 }
+
+/// Impressions a misleading post needs before its community note is
+/// displayed (docs/model.md, 6.8).
+pub const NOTE_MIN_IMPRESSIONS: u32 = 50;
 
 /// What a post generator needs to know about its author.
 #[derive(Clone, Copy, Debug)]
@@ -352,7 +388,9 @@ pub(crate) fn generate_post(
         struck: false,
         demoted: false,
         noted: false,
+        note_delay: None,
         shares_at_note: 0,
+        assigned_impressions: 0,
         classifier_score: None,
         reviewed: false,
         sanction_severity: 0,
