@@ -84,9 +84,8 @@ pub(crate) fn integrity_ranking(d: &mut DesignLevers) {
 /// either). It is the design with the highest full-size engagement among
 /// the 64 front designs of the current Pareto atlas and this preset as v0.3
 /// left it, run at today's defaults. The latest searches did not reach it:
-/// their most engaging front design at full size, 53, has less engagement
-/// (by 0.007, with a 95% interval of -0.013 to -0.001 that narrowly
-/// excludes 0).
+/// their most engaging front design at full size, 63, has less engagement
+/// (by 0.009, with a 95% interval of -0.014 to -0.004).
 /// `incentive explore` leaves it out of its initial designs, so the atlas
 /// stays reproducible.
 fn max_engagement(d: &mut DesignLevers) {
@@ -205,12 +204,11 @@ const PRESETS: [Preset; 8] = [
             than the engagement ranking's: nine times the human moderators act on reports, weighted by each \
             reporter's record, but strikes carry no sanctions and blocking does not work. It pays 15% of revenue \
             to creators per view and shows half the ad load. It comes from a search, not from any real platform, \
-            so it shows what maximising engagement looks like in this model: about 70% more engagement than the \
-            engagement ranking, with as much harm or slightly more, the same toxic share and slightly higher \
-            wellbeing for its users. It also wastes less of people's time and keeps more of them on the platform. \
-            Designs the searches found give up some of its engagement for far less harm: one has about 90% of \
-            its engagement and little more than half its harm, another nearly 80% of it and under a quarter of \
-            its harm.",
+            so it shows what maximising engagement looks like in this model: about two thirds more engagement \
+            than the engagement ranking, with slightly less harm, a little less toxicity and higher wellbeing for \
+            its users. It also wastes less of people's time and keeps more of them on the platform. Designs the \
+            searches found give up some of its engagement for far less harm: one has about 85% of its engagement \
+            and less than half its harm, another nearly three quarters of it and under a third of its harm.",
         apply: max_engagement,
     },
 ];

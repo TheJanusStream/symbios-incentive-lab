@@ -341,7 +341,38 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].paired.pairs, 2);
         assert_eq!(check.window, 3, "a short run is summarised whole");
-        assert!(rows[0].paired.mean_a > rows[0].paired.mean_b);
+        // Each mean is that of its own design's runs, seed by seed. Which
+        // design engages more over three days of 200 people is seed noise,
+        // so the test checks the pairing, not the model: the designs differ,
+        // so swapped arms would show.
+        let value = |c: &Config| {
+            let mut c = c.clone();
+            c.run.tracked_agents = 0;
+            Simulation::new(c)
+                .expect("valid")
+                .run_to_end()
+                .get(MetricId::EngagementIndex)
+        };
+        let (a1, b1, a2, b2) = (
+            value(&jobs[0]),
+            value(&jobs[1]),
+            value(&jobs[2]),
+            value(&jobs[3]),
+        );
+        assert!(
+            ((a1 + a2) / 2.0 - rows[0].paired.mean_a).abs() < 1e-5,
+            "{:?}",
+            rows[0]
+        );
+        assert!(
+            ((b1 + b2) / 2.0 - rows[0].paired.mean_b).abs() < 1e-5,
+            "{:?}",
+            rows[0]
+        );
+        assert!(
+            (a1 + a2 - b1 - b2).abs() > 1e-4,
+            "the designs differ: {a1} {a2} {b1} {b2}"
+        );
     }
 
     #[test]

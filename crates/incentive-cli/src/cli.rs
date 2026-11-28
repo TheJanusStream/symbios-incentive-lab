@@ -267,9 +267,10 @@ pub enum Command {
     ///
     /// The noisy facts and claims, whose seed share exceeded 0.4 in lab #31
     /// (outrage-learning, harassment-exit, H5, V1, V3, V4, V5, V9, V10, and
-    /// H7 in global mode), run on --seeds-noisy seeds; noisiness is per fact
-    /// or claim, since a fact's variants run on the same seeds for all its
-    /// checks.
+    /// H7 in global mode), run on --seeds-noisy seeds, and the noisiest of
+    /// them, V3, V5 and V9, whose seed shares stayed above 0.5 at 4 seeds
+    /// (lab #43), on --seeds-noisiest seeds; noisiness is per fact or claim,
+    /// since a fact's variants run on the same seeds for all its checks.
     Robustness {
         /// How worlds are sampled.
         #[arg(long, value_enum, default_value = "local")]
@@ -284,6 +285,10 @@ pub enum Command {
         /// Seeds 1 to this for the noisy facts and claims (default: --seeds).
         #[arg(long)]
         seeds_noisy: Option<u64>,
+        /// Seeds 1 to this for the noisiest checks, V3, V5 and V9 (default:
+        /// --seeds-noisy).
+        #[arg(long)]
+        seeds_noisiest: Option<u64>,
         /// Seed of the world sampling.
         #[arg(long, default_value_t = 1)]
         sample_seed: u64,

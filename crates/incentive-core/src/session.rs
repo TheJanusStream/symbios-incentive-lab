@@ -397,6 +397,10 @@ fn record_impression(
         tally.misinformation_by_style[style] += 1;
         tally.misinformation_bot_impressions += u32::from(post.author_is_bot);
     }
+    if post.is_toxic() {
+        tally.toxic_by_style[style] += 1;
+        tally.toxic_bot_impressions += u32::from(post.author_is_bot);
+    }
     state.today.toxic_items += u32::from(post.is_toxic());
     state.today.misinformation_items += u32::from(post.is_misinformation());
     state.today.hostile_items += u32::from(post.style.is_hostile());
@@ -855,6 +859,37 @@ mod tests {
                 t.misinformation_bot_impressions as f32
             );
             seen += t.misinformation_impressions;
+        }
+        assert!(seen > 0);
+    }
+
+    /// The decomposition of lab #40 (docs/model.md, 4.1 and 13.1): the toxic
+    /// share is the toxic impressions over all impressions, and its
+    /// diagnostic counts split it by style and pick out the bots' part.
+    #[test]
+    fn the_toxic_counts_split_the_toxic_impressions() {
+        let mut config = Config::default();
+        config.run.population_size = 300;
+        let mut sim = Simulation::new(config).expect("valid");
+        let mut seen = 0;
+        for _ in 0..6 {
+            let m = sim.step().expect("a day");
+            let t = &sim.world().tally;
+            let by_style: u32 = t.toxic_by_style.iter().sum();
+            assert_eq!(by_style, t.toxic_impressions);
+            assert!(t.toxic_bot_impressions <= t.toxic_impressions);
+            let counted: f32 = Style::ALL
+                .iter()
+                .map(|&s| m.get(MetricId::toxic_count(s)))
+                .sum();
+            assert_eq!(counted, t.toxic_impressions as f32);
+            let share = t.toxic_impressions as f32 / t.impressions as f32;
+            assert!((m.get(MetricId::ToxicShare) - share).abs() < 1e-6);
+            assert_eq!(
+                m.get(MetricId::ToxicCountBots),
+                t.toxic_bot_impressions as f32
+            );
+            seen += t.toxic_impressions;
         }
         assert!(seen > 0);
     }

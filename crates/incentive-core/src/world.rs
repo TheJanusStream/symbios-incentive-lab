@@ -354,6 +354,10 @@ pub(crate) struct DayTally {
     /// posts included, and those of bot posts alone (docs/model.md, 9.2).
     pub misinformation_by_style: [u32; STYLE_COUNT],
     pub misinformation_bot_impressions: u32,
+    /// Toxic impressions today by the style of the post, bots' posts
+    /// included, and those of bot posts alone (docs/model.md, 9.2; lab #40).
+    pub toxic_by_style: [u32; STYLE_COUNT],
+    pub toxic_bot_impressions: u32,
     /// Posts with truth below 0.5 whose life ended today, bots' included,
     /// and of them those that got a community note (docs/model.md, 6.8).
     pub false_posts_ended: u32,

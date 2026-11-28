@@ -201,7 +201,7 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
     Suggestion {
         title: "Rank for quality and bridging",
         body: "Load the Quality and bridging design. The harm index falls by about four fifths, and the \
-            engagement index by about a sixth. Watch the survey: after three months and after a year alike, \
+            engagement index by about a quarter. Watch the survey: after three months and after a year alike, \
             the platform's own numbers say people are less happy than under the engagement ranking, while the \
             truth says they are better off throughout. The survey mixes wellbeing with recent pleasure and \
             habit, and the engagement ranking serves more of both. The harm cut survived every plausible world \
@@ -214,9 +214,9 @@ pub const SUGGESTIONS: [Suggestion; 3] = [
     },
     Suggestion {
         title: "Make the classifier stricter",
-        body: "Lower the classifier threshold to 0.3. Toxic impressions fall by about nineteen twentieths \
-            over a year, and authors' evasion barely dents that. But wrongful removals rise from about 4 to \
-            about 46 a day, and the harm index, which counts them, falls by only about a third. This trade-off \
+        body: "Lower the classifier threshold to 0.3. Toxic impressions fall by more than nine tenths over \
+            a year, and authors' evasion barely dents that. But wrongful removals rise from about 5 to \
+            about 58 a day, and the harm index, which counts them, falls by only about three tenths. This trade-off \
             survived every plausible world tried.",
         apply: |d| d.classifier_threshold = 0.3,
     },

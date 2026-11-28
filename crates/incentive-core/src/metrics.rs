@@ -221,6 +221,8 @@ metrics! {
     OutrageStyleImpressionCount, "outrage_style_impression_count", "Impressions of Outrage posts", Count, Content, Truth, "Impressions of Outrage posts today; a count for pooled diagnostics.";
     CalmStyleShareCount, "calm_style_share_count", "Human shares of calm posts", Count, Content, Truth, "Human shares of Informative, Entertaining and Personal posts today; a count for pooled diagnostics.";
     CalmStyleImpressionCount, "calm_style_impression_count", "Impressions of calm posts", Count, Content, Truth, "Impressions of Informative, Entertaining and Personal posts today; a count for pooled diagnostics.";
+    NotedShareCount, "noted_share_count", "Human shares of noted posts", Count, Harm, Truth, "Human shares of the noted posts ending today, over their lives; a count for pooled diagnostics.";
+    NotedShareBeforeNoteCount, "noted_share_before_note_count", "Human shares before the note", Count, Harm, Truth, "Of those, the shares made before the note; a count for pooled diagnostics.";
     LikeBiasSame, "like_bias_same", "Like logit: bias, same-group", Decimal, Discourse, Truth, "Mean bias of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
     LikeInterestSame, "like_interest_same", "Like logit: interest term, same-group", Decimal, Discourse, Truth, "Mean interest term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
     LikeArousalSame, "like_arousal_same", "Like logit: arousal term, same-group", Decimal, Discourse, Truth, "Mean arousal term of the like probability's logit (7.1) over today's impressions by same-group viewers; a diagnostic.";
@@ -243,6 +245,13 @@ metrics! {
     MisinformationCountClickbait, "misinformation_count_clickbait", "Misinformation impressions: Clickbait", Count, Harm, Truth, "Impressions today of Clickbait posts with truth below 0.5, bots' included; a count for pooled diagnostics.";
     MisinformationCountAttack, "misinformation_count_attack", "Misinformation impressions: Attack", Count, Harm, Truth, "Impressions today of Attack posts with truth below 0.5; a count for pooled diagnostics.";
     MisinformationCountBots, "misinformation_count_bots", "Misinformation impressions: bot posts", Count, Harm, Truth, "Impressions today of bot posts with truth below 0.5, of either style; a count for pooled diagnostics.";
+    ToxicCountInformative, "toxic_count_informative", "Toxic impressions: Informative", Count, Harm, Truth, "Impressions today of Informative posts with toxicity above 0.5; a count for pooled diagnostics.";
+    ToxicCountEntertaining, "toxic_count_entertaining", "Toxic impressions: Entertaining", Count, Harm, Truth, "Impressions today of Entertaining posts with toxicity above 0.5; a count for pooled diagnostics.";
+    ToxicCountPersonal, "toxic_count_personal", "Toxic impressions: Personal", Count, Harm, Truth, "Impressions today of Personal posts with toxicity above 0.5; a count for pooled diagnostics.";
+    ToxicCountOutrage, "toxic_count_outrage", "Toxic impressions: Outrage", Count, Harm, Truth, "Impressions today of Outrage posts with toxicity above 0.5, bots' included; a count for pooled diagnostics.";
+    ToxicCountClickbait, "toxic_count_clickbait", "Toxic impressions: Clickbait", Count, Harm, Truth, "Impressions today of Clickbait posts with toxicity above 0.5, bots' included; a count for pooled diagnostics.";
+    ToxicCountAttack, "toxic_count_attack", "Toxic impressions: Attack", Count, Harm, Truth, "Impressions today of Attack posts with toxicity above 0.5; a count for pooled diagnostics.";
+    ToxicCountBots, "toxic_count_bots", "Toxic impressions: bot posts", Count, Harm, Truth, "Impressions today of bot posts with toxicity above 0.5, of either style; a count for pooled diagnostics.";
     FalsePostsEnded, "false_posts_ended", "False posts ending", Count, Harm, Truth, "Posts with truth below 0.5 whose life ended today, bots' included; a count for pooled diagnostics.";
     NotedFalsePostsEnded, "noted_false_posts_ended", "Noted false posts ending", Count, Harm, Truth, "Of the false posts whose life ended today, those that got a community note; a count for pooled diagnostics.";
     ContagionAuthors, "contagion_authors", "Contagion: authors", Count, Content, Truth, "People who wrote at least one post today, the base of the causal exposure diagnostic (7.5); a count for pooled diagnostics.";
@@ -394,6 +403,8 @@ impl MetricId {
                 | MetricId::OutrageStyleImpressionCount
                 | MetricId::CalmStyleShareCount
                 | MetricId::CalmStyleImpressionCount
+                | MetricId::NotedShareCount
+                | MetricId::NotedShareBeforeNoteCount
                 | MetricId::LikeBiasSame
                 | MetricId::LikeInterestSame
                 | MetricId::LikeArousalSame
@@ -416,6 +427,13 @@ impl MetricId {
                 | MetricId::MisinformationCountClickbait
                 | MetricId::MisinformationCountAttack
                 | MetricId::MisinformationCountBots
+                | MetricId::ToxicCountInformative
+                | MetricId::ToxicCountEntertaining
+                | MetricId::ToxicCountPersonal
+                | MetricId::ToxicCountOutrage
+                | MetricId::ToxicCountClickbait
+                | MetricId::ToxicCountAttack
+                | MetricId::ToxicCountBots
                 | MetricId::FalsePostsEnded
                 | MetricId::NotedFalsePostsEnded
                 | MetricId::ContagionAuthors
@@ -444,6 +462,19 @@ impl MetricId {
             MetricId::PostShareOutrage,
             MetricId::PostShareClickbait,
             MetricId::PostShareAttack,
+        ];
+        BY_STYLE[style.index()]
+    }
+
+    /// The diagnostic count of a style's toxic impressions (lab #40).
+    pub fn toxic_count(style: Style) -> MetricId {
+        const BY_STYLE: [MetricId; STYLE_COUNT] = [
+            MetricId::ToxicCountInformative,
+            MetricId::ToxicCountEntertaining,
+            MetricId::ToxicCountPersonal,
+            MetricId::ToxicCountOutrage,
+            MetricId::ToxicCountClickbait,
+            MetricId::ToxicCountAttack,
         ];
         BY_STYLE[style.index()]
     }

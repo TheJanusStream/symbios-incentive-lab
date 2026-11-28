@@ -23,8 +23,13 @@
 //! - The other checks pair the design with its comparison design (V4 share
 //!   friction 0.3 against 0, V9 `ads_share` 0.5 against 1), or read one run
 //!   (V6, V7, V8), over the summary window of a full-size run, as the
-//!   headline claims do. V6 and V8 pool their counts over the window
+//!   headline claims do. V6, V7 and V8 pool their counts over the window
 //!   (`Measure::Pooled`) instead of averaging daily ratios.
+//! - V7 runs on the field's notes design (lab #41): community notes on and no
+//!   ranking penalty for noted posts ([`V7_NOTED_PENALTY`]), since X does not
+//!   demote them; the integrity preset's penalty of 1.0 stands for a
+//!   fact-check demotion. The change was made after the result at the
+//!   preset's penalty had been seen, so V7 is no genuine test.
 //! - The doses of V1 and V3 are manipulation checks, not outcomes: each was
 //!   calibrated at the default world under the integrity preset, at full
 //!   size on 8 seeds, before any outcome check was read, and is fixed here
@@ -74,20 +79,35 @@ pub const V5_DAYS: u32 = 90;
 pub const V4_FRICTION: f32 = 0.3;
 /// V9's ad funding share, against 1: half the ad load.
 pub const V9_ADS_SHARE: f32 = 0.5;
+/// V7's ranking penalty for a noted post, the field's notes design (lab
+/// #41): X does not demote posts with notes attached ("From the public
+/// release of the algorithm, we know that X does not explicitly deemphasize
+/// posts with notes attached", Saveski, of Slaughter et al.'s team, in the
+/// University of Washington's release of 2025-09-18). The integrity preset's
+/// 1.0 hides noted posts, as a fact-check demotion would (docs/model.md,
+/// 14.1), and made V7 1.000 by design (docs/validation.md, 4.3). Set after
+/// that result was seen.
+pub const V7_NOTED_PENALTY: f32 = 0.0;
 
 /// V1's penalty on posts by the viewer's own group (`fewer_same_group`),
 /// calibrated so that the treated's same-group impression share falls by a
 /// third against the placebo.
-pub const V1_PENALTY: f32 = 0.28;
+pub const V1_PENALTY: f32 = 0.26;
 /// V1's target dose: the relative change of the treated's same-group share
 /// of impressions, real against placebo (field: 53.7% to 36.2%).
 pub const V1_DOSE_TARGET: f32 = -0.33;
 /// V1's dose achieved at [`V1_PENALTY`] in the calibration (default world,
-/// integrity preset, full size, seeds 1 to 8): -0.331, 95% interval -0.423
-/// to -0.239. Searched coarse to fine: 0.5, 1, 2 and 4 gave -0.580, -0.858,
-/// -0.971 and -0.980; 0.1, 0.2 and 0.3 gave -0.111, -0.240 and -0.360;
-/// 0.25, 0.27 and 0.28 gave -0.299, -0.324 and -0.331.
-pub const V1_DOSE_ACHIEVED: f32 = -0.331;
+/// integrity preset, full size, seeds 1 to 8): -0.327, with a 95% interval
+/// of -0.395 to -0.259, at the fixed point after lab #40 (docs/model.md,
+/// section 13.2). The search of lab #31, coarse to fine: penalties of 0.5,
+/// 1, 2 and 4 gave -0.580, -0.858, -0.971 and -0.980; penalties of 0.1, 0.2
+/// and 0.3 gave -0.111, -0.240 and -0.360; penalties of 0.25, 0.27 and 0.28
+/// gave -0.299, -0.324 and -0.331, and it chose 0.28. Lab #40 searched the
+/// same grid of 0.01 again. After its toxicity change, before the fixed
+/// point, penalties of 0.27, 0.28 and 0.29 gave -0.306, -0.322 and -0.330;
+/// at the fixed point the penalties from 0.25 to 0.3 gave -0.316, -0.327,
+/// then -0.339, -0.355, -0.363 and -0.378, and 0.26 lies nearest the target.
+pub const V1_DOSE_ACHIEVED: f32 = -0.327;
 /// V3's classifier score threshold (`hide_flagged`), calibrated so that about
 /// 7% of the treated's impressions would be hidden.
 pub const V3_THRESHOLD: f32 = 0.56;
@@ -95,13 +115,18 @@ pub const V3_THRESHOLD: f32 = 0.56;
 /// run scored above the threshold (field: 7% of posts, comments and replies
 /// hidden).
 pub const V3_DOSE_TARGET: f32 = 0.07;
-/// V3's dose achieved at [`V3_THRESHOLD`] in the calibration (as V1's):
-/// 0.0729, 95% interval 0.0656 to 0.0802. Searched coarse to fine: 0.5 gave
-/// 0.193, and 0.6, 0.7 and 0.8 gave 0 (the integrity preset demotes posts
-/// scored above its classifier threshold of 0.6, and no demoted post reached
-/// the treated's feeds, so the threshold hides posts scored between it and
-/// 0.6); 0.52, 0.54, 0.56 and 0.58 gave 0.153, 0.115, 0.073 and 0.034.
-pub const V3_DOSE_ACHIEVED: f32 = 0.0729;
+/// V3's dose achieved at [`V3_THRESHOLD`] in the calibration (as V1's): a
+/// share of 0.0727, with a 95% interval of 0.0652 to 0.0801, at the fixed
+/// point after lab #40. The search of lab #31, coarse to fine: a threshold
+/// of 0.5 gave 0.193, and 0.6, 0.7 and 0.8 gave 0 (the integrity preset
+/// demotes posts scored above its classifier threshold of 0.6, and no
+/// demoted post reached the treated's feeds, so the threshold hides posts
+/// scored between it and 0.6); thresholds of 0.52, 0.54, 0.56 and 0.58
+/// gave 0.153, 0.115, 0.073 and 0.034. Lab #40 searched the grid of 0.02
+/// again: after its toxicity change thresholds of 0.54, 0.56 and 0.58 gave
+/// shares of 0.115, 0.073 and 0.035, and at the fixed point 0.114, 0.073
+/// and 0.035, so the threshold stays.
+pub const V3_DOSE_ACHIEVED: f32 = 0.0727;
 
 /// One out-of-sample check: its judged fact, its engagement-ranking twin,
 /// its source and design, its dose and its raw changes.
@@ -334,6 +359,7 @@ fn v5<const ER: bool, const PLACEBO: bool>(c: &mut Config) {
 fn v7<const ER: bool>(c: &mut Config) {
     design::<ER>(c);
     c.design.community_notes = true;
+    c.design.noted_penalty = V7_NOTED_PENALTY;
 }
 
 fn v9<const ER: bool, const HALF: bool>(c: &mut Config) {
@@ -529,6 +555,12 @@ const V6_LIKES: Measure = pooled(
     MetricId::InNetworkOutgroupImpressionCount,
     MetricId::InNetworkImpressionCount,
 );
+/// V7's measure: the human shares made before the note over all human shares
+/// of the noted posts ending in the window, pooled (lab #41).
+const V7_SHARE: Measure = pooled_share(
+    MetricId::NotedShareBeforeNoteCount,
+    MetricId::NotedShareCount,
+);
 /// V8's measure: human shares per impression of Outrage posts over those of
 /// the non-hostile styles, pooled.
 const V8_RATE: Measure = pooled(
@@ -554,8 +586,8 @@ const fn mean_of_ratio(label: &'static str, measure: Measure, low: f32, high: f3
 
 // V6, V7 and V8 read a ratio or a share of one run, so their neutral value
 // is 1, not the mean's natural 0: equal shares, every share before the note,
-// equal share rates. V6 and V8 pool their counts over the summary window
-// (lab #39); V7 still averages its daily shares.
+// equal share rates. They pool their counts over the summary window (V6 and
+// V8 since lab #39, V7 since lab #41).
 const V6_CHECKS: &[Check] = &[
     mean_of_ratio(
         "out-group share of in-network impressions over that of in-network candidates, pooled",
@@ -571,14 +603,12 @@ const V6_CHECKS: &[Check] = &[
     ),
 ];
 
-const V7_CHECKS: &[Check] = &[summary(
-    "share of a noted post's human shares made before its note",
-    MetricId::NotedSharesBeforeNote,
-    MEAN,
+const V7_CHECKS: &[Check] = &[mean_of_ratio(
+    "share of noted posts' human shares made before the note, pooled",
+    V7_SHARE,
     0.70,
     0.95,
-)
-.with_neutral(1.0)];
+)];
 
 const V8_CHECKS: &[Check] = &[mean_of_ratio(
     "shares per impression of Outrage posts over the non-hostile styles, pooled",
@@ -1058,15 +1088,22 @@ static VALIDATIONS: [Validation; 10] = [
             reposts ... after being attached. Over the posts' entire lifespans, these reductions amount to \
             11.6% fewer reposts\". Derived: about 0.85 of a noted post's reposts come before its note (the \
             -46% after the note is circular, the model assumes it).",
-        design: "One full run of the design with community notes on, over the summary window.",
+        design: "One full run of the design with community notes on and no ranking penalty for noted \
+            posts, the field's notes design (X does not demote them; set after the result at the integrity \
+            preset's penalty of 1.0 was seen, lab #41), over the summary window, pooled from the window's \
+            counts.",
         dose: None,
-        raws: &[raw(
-            "share of noted posts' human shares before the note",
+        raws: &[Raw {
+            label: "share of noted posts' human shares before the note, pooled",
+            measure: V7_SHARE,
+            effect: MEAN,
+        }],
+        others: &[raw(
+            "share before the note as a mean of daily shares (before lab #41)",
             MetricId::NotedSharesBeforeNote,
             MEAN,
             false,
         )],
-        others: &[],
     },
     Validation {
         id: "V8",
@@ -1296,8 +1333,11 @@ mod tests {
             for id in ["V6", "V8"] {
                 assert_eq!(v(id)[0].design, design(er), "{id}");
             }
+            // V7: the field's notes design, notes on without a ranking
+            // penalty, under both rankings (lab #41).
             let mut notes = design(er);
             notes.community_notes = true;
+            notes.noted_penalty = 0.0;
             assert_eq!(v("V7")[0].design, notes);
             let c = v("V9");
             assert_eq!((c[0].design.ads_share, c[1].design.ads_share), (0.5, 1.0));
@@ -1312,7 +1352,7 @@ mod tests {
 
     #[test]
     fn the_doses_are_the_calibrated_values() {
-        assert_eq!((V1_PENALTY, V3_THRESHOLD), (0.28, 0.56));
+        assert_eq!((V1_PENALTY, V3_THRESHOLD), (0.26, 0.56));
         assert!((V1_DOSE_ACHIEVED - V1_DOSE_TARGET).abs() < 0.005);
         assert!((V3_DOSE_ACHIEVED - V3_DOSE_TARGET).abs() < 0.005);
         let dose = |id: &str| {
@@ -1370,8 +1410,15 @@ mod tests {
                 }
                 let raws = v.raw_changes(&histories);
                 assert_eq!(raws.len(), fact.checks.len());
+                // V7's reported mean of daily shares has no value on a seed
+                // whose small run ends no noted post with a share, like its
+                // check, whose effect is not asserted either.
                 for other in v.others(&histories) {
-                    assert!(other.effect.is_finite(), "{}: {other:?}", v.id);
+                    assert!(
+                        other.effect.is_finite() || v.id == "V7",
+                        "{}: {other:?}",
+                        v.id
+                    );
                 }
                 // An effect in standard deviations reports the one it used.
                 for (c, d) in fact.checks.iter().zip(&details) {

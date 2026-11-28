@@ -85,6 +85,12 @@ pub const NOISY_LOCAL: [&str; 9] = [
 /// [`NOISY_LOCAL`]: H7.
 pub const NOISY_GLOBAL_EXTRA: [&str; 1] = ["H7"];
 
+/// The noisiest checks, among [`NOISY_LOCAL`]: V3, V5 and V9, whose local
+/// seed shares stayed 0.84 (V3's time), 0.82 (V5's extremes) and 0.59 at 4
+/// seeds in milestone 2 (docs/validation.md, 5.2; lab #43). They run on
+/// `--seeds-noisiest` seeds.
+pub const NOISIEST: [&str; 3] = ["V3", "V5", "V9"];
+
 /// Whether a fact or claim, by id, runs on the noisy seeds in this mode.
 pub fn is_noisy(mode: Mode, id: &str) -> bool {
     NOISY_LOCAL.contains(&id) || (mode == Mode::Global && NOISY_GLOBAL_EXTRA.contains(&id))
@@ -188,6 +194,9 @@ pub struct Options {
     /// Seeds 1 to this for the noisy facts and claims ([`is_noisy`]);
     /// `None` runs them on `seeds` too.
     pub seeds_noisy: Option<u64>,
+    /// Seeds 1 to this for the noisiest checks ([`NOISIEST`]); `None` runs
+    /// them on the noisy seeds.
+    pub seeds_noisiest: Option<u64>,
     /// Seed of the world sampling.
     pub sample_seed: u64,
     /// Which battery.
@@ -269,9 +278,19 @@ impl Options {
         self.seeds_noisy.unwrap_or(self.seeds).max(1)
     }
 
+    /// Seeds of the noisiest checks: 1 to `seeds_noisiest`, or to the noisy
+    /// seeds without it.
+    fn noisiest_seeds(&self) -> u64 {
+        self.seeds_noisiest
+            .unwrap_or_else(|| self.noisy_seeds())
+            .max(1)
+    }
+
     /// The seeds a fact or claim runs on, by id.
     fn seeds_of(&self, id: &str) -> Vec<u64> {
-        if is_noisy(self.mode, id) {
+        if NOISIEST.contains(&id) {
+            (1..=self.noisiest_seeds()).collect()
+        } else if is_noisy(self.mode, id) {
             (1..=self.noisy_seeds()).collect()
         } else {
             self.base_seeds()
@@ -281,6 +300,11 @@ impl Options {
     /// Whether the noisy facts and claims run on other seeds than the rest.
     fn noisy_differs(&self) -> bool {
         self.noisy_seeds() != self.seeds.max(1)
+    }
+
+    /// Whether the noisiest checks run on other seeds than the noisy ones.
+    fn noisiest_differs(&self) -> bool {
+        self.noisiest_seeds() != self.noisy_seeds()
     }
 }
 
@@ -587,9 +611,22 @@ pub struct WorldCheck<'a> {
 pub struct SeedNoise {
     /// Seeds per world.
     pub seeds: usize,
-    /// The seed SD: the SD of the per-seed effects within a world, pooled
-    /// over the worlds ([`stats::pooled_sd`]); NaN with one seed.
+    /// The seed SD: the SD of the per-seed effects within a world, robust
+    /// over the worlds ([`stats::robust_sd`], lab #42): the median of the
+    /// worlds' SDs over its normal consistency factor; NaN with one seed, and
+    /// NaN when that median is 0 while some world's seeds spread (most
+    /// worlds' seeds agree exactly, as for a share pinned at a bound, so no
+    /// common seed SD exists and failures stay unclassed instead of all
+    /// clear).
     pub seed_sd: f64,
+    /// Worlds whose seeds agree exactly (a seed SD of 0), among those with a
+    /// seed SD.
+    pub zero_spread_worlds: usize,
+    /// The SD of the per-seed effects within a world pooled over the worlds
+    /// ([`stats::pooled_sd`]), the seed SD before lab #42: inflated by the
+    /// few worlds whose spread is outlying (docs/validation.md, 5.3). Reported
+    /// beside the seed SD, used for nothing.
+    pub seed_sd_pooled: f64,
     /// The standard error of a world's seed mean: seed SD / sqrt(seeds).
     pub standard_error: f64,
     /// The seed share: the squared standard error over the variance of the
@@ -605,13 +642,26 @@ pub fn seed_noise(worlds: &[WorldCheck]) -> SeedNoise {
         .map(|w| w.per_seed.iter().map(|x| f64::from(*x)).collect())
         .collect();
     let seeds = worlds.iter().map(|w| w.per_seed.len()).max().unwrap_or(0);
-    let seed_sd = stats::pooled_sd(&groups);
+    let pooled = stats::pooled_sd(&groups);
+    let robust = stats::robust_sd(&groups);
+    // A median of zeros while some world spreads: no common seed SD.
+    let seed_sd = if robust == 0.0 && pooled > 0.0 {
+        f64::NAN
+    } else {
+        robust
+    };
+    let zero_spread_worlds = groups
+        .iter()
+        .filter(|g| g.len() >= 2 && g.iter().all(|x| x.is_finite()) && stats::variance(g) == 0.0)
+        .count();
     let standard_error = seed_sd / (seeds.max(1) as f64).sqrt();
     let effects: Vec<f64> = worlds.iter().map(|w| f64::from(w.effect)).collect();
     let between = stats::variance(&effects);
     SeedNoise {
         seeds,
         seed_sd,
+        zero_spread_worlds,
+        seed_sd_pooled: pooled,
         standard_error,
         seed_share: if between > 0.0 {
             standard_error.powi(2) / between
@@ -1123,6 +1173,9 @@ fn command_text(options: &Options) -> String {
     if let Some(n) = options.seeds_noisy {
         let _ = write!(c, " --seeds-noisy {}", n.max(1));
     }
+    if let Some(n) = options.seeds_noisiest {
+        let _ = write!(c, " --seeds-noisiest {}", n.max(1));
+    }
     match options.mode {
         Mode::Local => {
             let _ = write!(c, " --jitter {}", options.jitter);
@@ -1201,23 +1254,38 @@ fn plausible_text(v: &Varied) -> &'static str {
     }
 }
 
-/// The seeds as text: `1 to S`, and the noisy items' when they differ.
+/// The seeds as text: `1 to S`, the noisy items' when they differ, and the
+/// noisiest items' when theirs differ from the noisy ones'.
 fn seeds_text(options: &Options, quote: &str) -> String {
-    let base = format!("seeds 1 to {}", options.seeds.max(1));
-    if !options.noisy_differs() {
-        return base;
+    let mut text = format!("seeds 1 to {}", options.seeds.max(1));
+    let split = options.noisiest_differs();
+    if options.noisy_differs() {
+        let noisy: Vec<String> = NOISY_LOCAL
+            .iter()
+            .chain(NOISY_GLOBAL_EXTRA.iter())
+            .filter(|id| is_noisy(options.mode, id) && !(split && NOISIEST.contains(id)))
+            .map(|id| format!("{quote}{id}{quote}"))
+            .collect();
+        let _ = write!(
+            text,
+            ", 1 to {} for the noisy facts and claims ({})",
+            options.noisy_seeds(),
+            noisy.join(", ")
+        );
     }
-    let noisy: Vec<String> = NOISY_LOCAL
-        .iter()
-        .chain(NOISY_GLOBAL_EXTRA.iter())
-        .filter(|id| is_noisy(options.mode, id))
-        .map(|id| format!("{quote}{id}{quote}"))
-        .collect();
-    format!(
-        "{base}, 1 to {} for the noisy facts and claims ({})",
-        options.noisy_seeds(),
-        noisy.join(", ")
-    )
+    if split {
+        let noisiest: Vec<String> = NOISIEST
+            .iter()
+            .map(|id| format!("{quote}{id}{quote}"))
+            .collect();
+        let _ = write!(
+            text,
+            ", 1 to {} for the noisiest ({})",
+            options.noisiest_seeds(),
+            noisiest.join(", ")
+        );
+    }
+    text
 }
 
 /// A number in its shortest form.
@@ -1512,6 +1580,8 @@ fn settings_json(
         "seeds_noisy": (1..=options.noisy_seeds()).collect::<Vec<u64>>(),
         "noisy_items": NOISY_LOCAL.iter().chain(NOISY_GLOBAL_EXTRA.iter())
             .filter(|id| is_noisy(options.mode, id)).collect::<Vec<_>>(),
+        "seeds_noisiest": (1..=options.noisiest_seeds()).collect::<Vec<u64>>(),
+        "noisiest_items": NOISIEST,
         "sample_seed": options.sample_seed,
         "jitter": (options.mode == Mode::Local).then_some(options.jitter),
         "ranges": (options.mode == Mode::Global).then_some(options.ranges),
@@ -1703,13 +1773,16 @@ fn summary_md(
              \"Failing\" counts the non-degenerate worlds where it fails; a failure is noise-compatible when \
              the world's effect lies within two standard errors of its band, so that the interval of the \
              effect +- 2 SE overlaps the band, and clear otherwise (docs/validation.md, 5.2). The SE is \
-             the seed SD over sqrt(seeds), the seed SD the SD of the per-seed effects within a world, pooled \
-             over the non-degenerate worlds with a value; a fact or claim fails within noise when every \
-             failing check that is not a known limit does. Without a seed SD (one seed) a failure is \
-             unclassed. One SD pooled over the worlds is inflated where a ratio's denominator nears 0 in \
-             some worlds, which overstates the noise-compatible failures across wide ranges \
-             (docs/validation.md, 5.3). \"Seed share\" is the squared SE over the variance of the worlds' \
-             effects: the part of their spread that seed noise alone would make.\n",
+             the seed SD over sqrt(seeds), the seed SD a robust SD of the per-seed effects within a world \
+             over the non-degenerate worlds with a value: the median of the worlds' SDs over its normal \
+             consistency factor (0.674 for 2 seeds, 0.888 for 4, 0.952 for 8), so the few worlds where a \
+             ratio's denominator nears 0 do not inflate it as they inflate a pooled SD (docs/validation.md, \
+             5.3; summary.json keeps the pooled SD beside it). A fact or claim fails within noise when every \
+             failing check that is not a known limit does. Without a seed SD a failure is unclassed: with \
+             one seed, or where most worlds' seeds agree exactly while some spread, so the median is 0 \
+             (summary.json counts the worlds whose seeds agree). One SE serves every world, so \"clear\" \
+             means beyond the typical world's seed noise. \"Seed share\" is the squared SE over the \
+             variance of the worlds' effects: the part of their spread that seed noise alone would make.\n",
             b.battery,
             b.worlds,
             b.degenerate_worlds,
@@ -1876,6 +1949,7 @@ mod tests {
             worlds: 64,
             seeds: 2,
             seeds_noisy: None,
+            seeds_noisiest: None,
             sample_seed: 2,
             battery: BatteryChoice::All,
             population: None,
@@ -1903,6 +1977,13 @@ mod tests {
             "{}",
             command_text(&options)
         );
+        options.seeds_noisiest = Some(8);
+        assert!(
+            command_text(&options)
+                .contains(" --seeds-noisy 4 --seeds-noisiest 8 --ranges plausible "),
+            "{}",
+            command_text(&options)
+        );
     }
 
     fn options(mode: Mode, seeds: u64, seeds_noisy: Option<u64>) -> Options {
@@ -1911,6 +1992,7 @@ mod tests {
             worlds: 4,
             seeds,
             seeds_noisy,
+            seeds_noisiest: None,
             sample_seed: 1,
             battery: BatteryChoice::All,
             population: None,
@@ -1965,6 +2047,35 @@ mod tests {
             "{}",
             seeds_text(&global, "")
         );
+        // `--seeds-noisiest` gives V3, V5 and V9 their own seeds (lab #43),
+        // in both modes; without it they keep the noisy seeds.
+        assert!(!global.noisiest_differs());
+        assert_eq!(global.seeds_of("V5").len(), 4);
+        for mode in [Mode::Local, Mode::Global] {
+            let mut tiered = options(mode, 2, Some(4));
+            tiered.seeds_noisiest = Some(8);
+            for id in &ids {
+                let expected = if NOISIEST.contains(id) {
+                    8
+                } else if is_noisy(mode, id) {
+                    4
+                } else {
+                    2
+                };
+                assert_eq!(tiered.seeds_of(id).len(), expected, "{id}");
+            }
+            assert!(tiered.noisiest_differs());
+        }
+        let mut tiered = options(Mode::Local, 2, Some(4));
+        tiered.seeds_noisiest = Some(8);
+        assert_eq!(
+            seeds_text(&tiered, ""),
+            "seeds 1 to 2, 1 to 4 for the noisy facts and claims (outrage-learning, harassment-exit, H5, \
+             V1, V4, V10), 1 to 8 for the noisiest (V3, V5, V9)"
+        );
+        for id in &NOISIEST {
+            assert!(NOISY_LOCAL.contains(id), "{id}");
+        }
     }
 
     fn check(effect: f32, per_seed: &[f32], bound: Bound) -> CheckRecord {
@@ -1981,13 +2092,17 @@ mod tests {
         }
     }
 
-    /// Synthetic per-seed data with a seed SD of 0.1 in every world: two
-    /// seeds give an SE of 0.1 / sqrt 2 = 0.0707, so a failure within 0.141
-    /// of the band is noise-compatible and one farther is clear.
+    /// Synthetic per-seed data with a robust seed SD of 0.1: two seeds give
+    /// an SE of 0.1 / sqrt 2 = 0.0707, so a failure within 0.141 of the band
+    /// is noise-compatible and one farther is clear. Where most worlds' seeds
+    /// agree exactly while others spread, there is no seed SD to class by.
     #[test]
     fn failure_classes_follow_the_seed_noise() {
-        // Pairs differing by 0.1 * sqrt 2 have a within-pair SD of 0.1.
-        let d = 0.1 * std::f32::consts::SQRT_2 / 2.0;
+        // Pairs differing by 0.1 * 0.6745 * sqrt 2 have a within-pair SD of
+        // 0.06745. With every pair alike, the robust SD is that SD over the
+        // consistency factor for two seeds, 0.6745: 0.1; the pooled SD is
+        // the pairs' SD.
+        let d = 0.1 * 0.674_489_75 * std::f32::consts::SQRT_2 / 2.0;
         let band = Bound::Between(0.0, 1.0);
         let worlds: Vec<CheckRecord> = [0.5, 0.9, -0.1, 1.13, -0.2, 1.5, f32::NAN]
             .iter()
@@ -2001,7 +2116,8 @@ mod tests {
             .collect();
         let noise = seed_noise(&finite);
         assert_eq!(noise.seeds, 2);
-        assert!((noise.seed_sd - 0.1).abs() < 1e-6, "{noise:?}");
+        assert!((noise.seed_sd - 0.1).abs() < 1e-5, "{noise:?}");
+        assert!((noise.seed_sd_pooled - 0.067_449).abs() < 1e-5, "{noise:?}");
         assert!((noise.standard_error - 0.1 / 2f64.sqrt()).abs() < 1e-6);
         let classes: Vec<Option<bool>> = values
             .iter()
@@ -2047,6 +2163,35 @@ mod tests {
         let none = seed_noise(&single);
         assert!(none.seed_sd.is_nan());
         assert_eq!(noise_compatible(&single[1], none.standard_error), None);
+        // Most worlds' seeds agree exactly (a share pinned at 1) while two
+        // spread: the median SD is 0, so there is no seed SD and the
+        // failures stay unclassed instead of all clear.
+        let mut pinned: Vec<CheckRecord> = (0..5)
+            .map(|_| check(1.0, &[1.0, 1.0], Bound::Between(0.7, 0.95)))
+            .collect();
+        pinned.push(check(0.9, &[0.85, 0.95], Bound::Between(0.7, 0.95)));
+        pinned.push(check(0.97, &[0.96, 0.98], Bound::Between(0.7, 0.95)));
+        let pinned: Vec<WorldCheck> = pinned.iter().map(world_check).collect();
+        let flat = seed_noise(&pinned);
+        assert!(
+            flat.seed_sd.is_nan() && flat.seed_sd_pooled > 0.0,
+            "{flat:?}"
+        );
+        assert_eq!(flat.zero_spread_worlds, 5);
+        assert!(
+            pinned
+                .iter()
+                .all(|w| noise_compatible(w, flat.standard_error).is_none())
+        );
+        // Every world's seeds agree: no seed noise at all, so a failure is
+        // clear.
+        let exact = seed_noise(&pinned[..5]);
+        assert_eq!((exact.seed_sd, exact.zero_spread_worlds), (0.0, 5));
+        assert_eq!(
+            noise_compatible(&pinned[0], exact.standard_error),
+            Some(false)
+        );
+        assert_eq!(noise.zero_spread_worlds, 0);
         // Seed share: the squared SE over the variance of the world effects.
         let between = stats::variance(
             &finite

@@ -322,7 +322,10 @@ fn diagnostics(world: &World, m: &mut DailyMetrics) {
         ),
         count(M::CalmStyleShareCount, calm_shares),
         count(M::CalmStyleImpressionCount, calm_seen),
+        count(M::NotedShareCount, t.noted_shares),
+        count(M::NotedShareBeforeNoteCount, t.noted_shares_before_note),
         count(M::MisinformationCountBots, t.misinformation_bot_impressions),
+        count(M::ToxicCountBots, t.toxic_bot_impressions),
         count(M::FalsePostsEnded, t.false_posts_ended),
         count(M::NotedFalsePostsEnded, t.noted_false_posts_ended),
         count(M::ContagionAuthors, t.contagion.authors),
@@ -337,6 +340,10 @@ fn diagnostics(world: &World, m: &mut DailyMetrics) {
         m.set(
             M::misinformation_count(style),
             t.misinformation_by_style[style.index()] as f32,
+        );
+        m.set(
+            M::toxic_count(style),
+            t.toxic_by_style[style.index()] as f32,
         );
     }
     // The sums have no value on a day without authors, their subject.
@@ -866,6 +873,8 @@ mod tests {
         close(M::OutrageStyleImpressionCount, 50.0);
         close(M::CalmStyleShareCount, 6.0);
         close(M::CalmStyleImpressionCount, 400.0);
+        close(M::NotedShareCount, 20.0);
+        close(M::NotedShareBeforeNoteCount, 17.0);
         // Same-group means over two impressions, out-group over one.
         close(M::LikeBiasSame, -3.5);
         close(M::LikeInterestSame, 0.3);

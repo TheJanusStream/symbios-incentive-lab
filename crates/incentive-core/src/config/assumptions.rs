@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// The default subscription price, which is also the reference price of
 /// uptake: at it, the price factor of the subscription decision is 1
 /// (docs/model.md, 8.3).
-pub(crate) const REFERENCE_SUBSCRIPTION_PRICE: f32 = 1.91;
+pub(crate) const REFERENCE_SUBSCRIPTION_PRICE: f32 = 1.99;
 
 /// How bot farms run their accounts (docs/model.md, 3.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +184,7 @@ impl Default for WorldAssumptions {
             harassment_harm: 3.0,
             comparison_cost: 0.1,
             regret_cost: 0.05,
-            time_cost: 0.06,
+            time_cost: 0.035,
             interruption_cost: 0.0,
             wrongful_sanction_cost: 0.5,
             learning_rate: 0.1,
@@ -212,10 +212,10 @@ impl Default for WorldAssumptions {
             ad_rate: 0.001,
             subscription_price: REFERENCE_SUBSCRIPTION_PRICE,
             subscription_hurdle: 0.5,
-            subscription_uptake: 0.0695,
+            subscription_uptake: 0.097,
             subscription_elasticity: 1.0,
             ad_annoyance: 0.02,
-            living_income: 0.02,
+            living_income: 0.025,
             base_session_items: 20.0,
             recheck_rate: 0.0,
             notification_pull: 0.0,

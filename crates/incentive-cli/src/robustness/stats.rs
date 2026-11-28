@@ -186,6 +186,62 @@ pub fn pooled_sd(groups: &[Vec<f64>]) -> f64 {
     }
 }
 
+/// The medians of the chi-square distribution with 1 to 15 degrees of
+/// freedom, for [`sd_consistency`].
+const CHI_SQUARE_MEDIANS: [f64; 15] = [
+    0.454_936_4,
+    1.386_294_4,
+    2.365_973_9,
+    3.356_694_0,
+    4.351_460_2,
+    5.348_120_6,
+    6.345_811_2,
+    7.344_121_5,
+    8.342_832_7,
+    9.341_817_8,
+    10.340_998_1,
+    11.340_322_4,
+    12.339_755_9,
+    13.339_274_1,
+    14.338_859_5,
+];
+
+/// The normal consistency factor of the median of sample SDs (n - 1) from
+/// samples of `n` values: the median of such an SD over the population's SD,
+/// sqrt(m / (n - 1)) with m the median of the chi-square distribution with
+/// n - 1 degrees of freedom; 0.674 for 2 values, 0.888 for 4, 0.952 for 8.
+/// Beyond 16 values m is taken from the Wilson-Hilferty approximation,
+/// k (1 - 2 / (9k))^3, which puts the factor within 1.3e-4 there. NaN for
+/// fewer than two values.
+pub fn sd_consistency(n: usize) -> f64 {
+    if n < 2 {
+        return f64::NAN;
+    }
+    let k = n - 1;
+    let median = CHI_SQUARE_MEDIANS.get(k - 1).copied().unwrap_or_else(|| {
+        let k = k as f64;
+        k * (1.0 - 2.0 / (9.0 * k)).powi(3)
+    });
+    (median / k as f64).sqrt()
+}
+
+/// A robust standard deviation within groups (docs/validation.md, 5.3): the
+/// median over the groups of each group's sample SD divided by its normal
+/// consistency factor ([`sd_consistency`]), so that under normal noise with
+/// one SD every term has that SD as its median. Groups with a value that is
+/// not finite or with fewer than two values are skipped, as in
+/// [`pooled_sd`]; NaN without any group. A few groups with outlying spread,
+/// such as a ratio whose denominator nears 0 in some worlds, move it little,
+/// where they inflate the pooled SD.
+pub fn robust_sd(groups: &[Vec<f64>]) -> f64 {
+    let terms: Vec<f64> = groups
+        .iter()
+        .filter(|g| g.len() >= 2 && g.iter().all(|x| x.is_finite()))
+        .map(|g| variance(g).sqrt() / sd_consistency(g.len()))
+        .collect();
+    quantile(&terms, 0.5)
+}
+
 /// The sample variance (n - 1) of the finite values; NaN for fewer than two.
 pub fn variance(values: &[f64]) -> f64 {
     let v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
@@ -386,5 +442,59 @@ mod tests {
         assert!((pooled_sd(&mixed) - (4.0 / 3.0_f64).sqrt()).abs() < 1e-12);
         assert!(pooled_sd(&[vec![1.0]]).is_nan());
         assert!((variance(&[1.0, 2.0, 3.0, f64::NAN, f64::INFINITY]) - 1.0).abs() < 1e-12);
+    }
+
+    /// The consistency factors: the median of |Z| for two values, the
+    /// tabled medians up to 16 values and the approximation beyond.
+    #[test]
+    fn consistency_factors_match_the_chi_square_medians() {
+        assert!((sd_consistency(2) - 0.674_49).abs() < 1e-5);
+        assert!((sd_consistency(4) - 0.888_064).abs() < 1e-6);
+        assert!((sd_consistency(8) - 0.952_126).abs() < 1e-6);
+        assert!((sd_consistency(16) - 0.977_714).abs() < 1e-6);
+        // 32 values: the chi-square median with 31 degrees of freedom is
+        // 30.33594.
+        assert!((sd_consistency(32) - (30.335_94_f64 / 31.0).sqrt()).abs() < 1e-4);
+        assert!(sd_consistency(1).is_nan());
+    }
+
+    /// The robust SD: the median of the scaled group SDs, which recovers the
+    /// SD of normal noise on pairs and on fours, skips what pooled_sd skips,
+    /// and hardly moves where a few groups spread wildly.
+    #[test]
+    fn robust_sd_resists_outlying_groups() {
+        // Pairs with SDs 0.1, 0.2 and 0.3 (differences of sqrt 2 times the
+        // SD): the median 0.2 over 0.6745.
+        let s = std::f64::consts::SQRT_2;
+        let pairs = vec![
+            vec![0.0, 0.1 * s],
+            vec![1.0, 1.0 + 0.2 * s],
+            vec![2.0, 2.0 + 0.3 * s],
+        ];
+        assert!((robust_sd(&pairs) - 0.2 / sd_consistency(2)).abs() < 1e-12);
+        let mut skipped = pairs.clone();
+        skipped.extend([vec![7.0], vec![f64::NAN, 1.0], vec![f64::INFINITY, 1.0]]);
+        assert!((robust_sd(&skipped) - robust_sd(&pairs)).abs() < 1e-12);
+        assert!(robust_sd(&[vec![1.0]]).is_nan());
+        // Normal noise with SD 1 (Box-Muller on a seeded generator).
+        let mut rng = Pcg64::seed_from_u64(5);
+        let mut normal = || {
+            let (u, v): (f64, f64) = (rng.random(), rng.random());
+            (-2.0 * (1.0 - u).ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        };
+        for n in [2, 4] {
+            let mut groups: Vec<Vec<f64>> = (0..4000)
+                .map(|_| (0..n).map(|_| normal()).collect())
+                .collect();
+            let sd = robust_sd(&groups);
+            assert!((sd - 1.0).abs() < 0.05, "{n} values: {sd}");
+            // A tenth of the groups with a hundredfold spread: the pooled SD
+            // grows about tenfold, the robust one by a fraction.
+            for g in groups.iter_mut().step_by(10) {
+                g.iter_mut().for_each(|x| *x *= 100.0);
+            }
+            assert!(pooled_sd(&groups) > 20.0, "{n}: {}", pooled_sd(&groups));
+            assert!(robust_sd(&groups) < 1.25, "{n}: {}", robust_sd(&groups));
+        }
     }
 }

@@ -763,9 +763,9 @@ mod tests {
         let (range, src) = global_of(&revised, "world.ad_rate").expect("continuous");
         assert_eq!(src, RangeSource::DefaultThirds);
         assert!((range.0 - 0.001 / 3.0).abs() < 1e-9 && (range.1 - 0.003).abs() < 1e-9);
-        // living_income: 0.02 / 3 to 3 x 0.02, above the catalogue's floor of 0.005.
+        // living_income: 0.025 / 3 to 3 x 0.025, above the catalogue's floor of 0.005.
         let (range, _) = global_of(&revised, "world.living_income").expect("continuous");
-        assert!((range.0 - 0.02 / 3.0).abs() < 1e-6 && (range.1 - 0.06).abs() < 1e-6);
+        assert!((range.0 - 0.025 / 3.0).abs() < 1e-6 && (range.1 - 0.075).abs() < 1e-6);
         // Judgement ranges replace the rule's (lab #35).
         assert_eq!(
             global_of(&revised, "world.leave_threshold"),
@@ -903,7 +903,7 @@ mod tests {
         };
         // Scales: default/1.5 to 1.5 x default.
         close(range("world.outrage_appeal"), (0.8, 1.8));
-        close(range("world.time_cost"), (0.04, 0.09));
+        close(range("world.time_cost"), (0.035 / 1.5, 0.0525));
         close(range("world.exposure_contagion"), (0.28 / 1.5, 0.42));
         // A negative scale keeps its order.
         close(range("world.stop_bias"), (-3.75, -2.5 / 1.5));

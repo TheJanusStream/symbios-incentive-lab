@@ -1857,8 +1857,11 @@ mod tests {
             let mut config = feed_config(CHRONO, 0.5, placebo);
             crate::presets::integrity_ranking(&mut config.design);
             // At 400 people, with the exposure contagion of lab #38, the
-            // placebo's treated saw no demoted post in these ten days.
+            // placebo's treated saw no demoted post in these ten days, and
+            // with the milder Outrage posts of lab #40 neither at 1,000
+            // after 30 days nor at 2,000, so the run lasts 90 days.
             config.run.population_size = 1000;
+            config.run.days = 90;
             let mut sim = Simulation::new(config).expect("valid");
             sim.run_to_end();
             let last = sim.history().last().expect("days").clone();

@@ -220,8 +220,8 @@ toxic share and wrongful sanctions, then for engagement, harm and benefit each l
 interactions and each lever's Shapley share of the difference, all in the direction from A to B with 95% intervals:
 
 ```text
-target/release/incentive factorial --a engagement-maximiser --b front-32.json --days 365 --population 2000 \
-    --levers notification_intensity,w_bridging,w_dwell,w_like,payout_share,predictor_quality
+target/release/incentive factorial --a engagement-maximiser --b front-37.json --days 365 --population 2000 \
+    --levers notification_intensity,w_bridging,w_dwell,review_capacity,payout_share,ads_share
 ```
 
 A main effect is the mean change when one lever goes from A's value to B's, over every setting of the others; an
@@ -236,7 +236,7 @@ by its generation number or `last`. The file keeps the search's base configurati
 `--days 365 --population 2000` to `compare` or `factorial` to run it at full size:
 
 ```text
-target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 32 > front-32.json
+target/release/incentive config --from-atlas crates/incentive-app/assets/atlas/pareto.json --design 37 > front-37.json
 ```
 
 ### Robustness across worlds
@@ -360,10 +360,10 @@ search's, as `confirmed` for each design and `confirm_seeds` in its settings (fi
 printed tables show them side by side in the `c.` columns.
 
 The Atlas tab embeds four files in `crates/incentive-app/assets/atlas/`. They were made with these commands, one at a
-time, which regenerate them byte for byte: about 29 minutes on 8 CPUs in all with the desktop under other load (a load
-average of about 13, 2026-11-27), the confirmation on seeds 9 to 16 included (about 4 minutes for each Goodhart search
-and 10 to 11 each for the map and the Pareto front). Raise `--generations`, `--batch`, `--seeds`, `--population` or
-`--days` to regenerate them at a larger scale (the app needs a rebuild to embed new files):
+time, which regenerate them byte for byte: about 36 minutes on 8 CPUs in all with the desktop under other load (a load
+average of about 16, 2026-11-27), the confirmation on seeds 9 to 16 included (about 4 to 5 minutes for each Goodhart
+search and 13 to 14 each for the map and the Pareto front). Raise `--generations`, `--batch`, `--seeds`,
+`--population` or `--days` to regenerate them at a larger scale (the app needs a rebuild to embed new files):
 
 ```text
 taskset -c 0-7 nice -n 19 target/release/incentive explore goodhart --proxy engagement_index \
